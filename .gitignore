@@ -1,0 +1,8 @@
+node_modules/
+.cache/
+proxy-output.txt
+proxy-error.txt
+.*/
+!.git/
+bun.lock
+.config/
