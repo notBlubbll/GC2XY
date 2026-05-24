@@ -462,36 +462,34 @@ export async function chatCompletion(modelId: string, messages: any[], tools?: a
   return resp;
 }
 
-// ── Model ID Cache (fetches paid + pollinations; only re-fetches on key change) ──
-let _cachedModelIds: string[] | null = null;
-let _modelsInitialized = false;
+// ── Per-Provider Model Caching ──
 
-function modelDiskPath(): string {
-  return path.join(ensureCacheDir(), "models.json");
+type Provider = "go" | "poll" | "zen";
+
+function modelDiskPath(provider: Provider): string {
+  return path.join(ensureCacheDir(), `models-${provider}.json`);
 }
 
-function loadModelIdsFromDisk(): string[] | null {
+function loadProviderModels(provider: Provider): string[] | null {
   try {
-    const p = modelDiskPath();
+    const p = modelDiskPath(provider);
     if (!fs.existsSync(p)) return null;
     const data = JSON.parse(fs.readFileSync(p, "utf8"));
     const h = keyHash();
     if (data._keyHash !== h) {
-      if (isDebug()) console.log(`\n[MODEL CACHE] key hash ${(data._keyHash || "").slice(0, 8)} → ${h.slice(0, 8)} — re-fetching`);
+      if (isDebug()) console.log(`\n[MODEL CACHE:${provider.toUpperCase()}] key hash changed — re-fetching`);
       return null;
     }
     return data._modelIds || null;
   } catch { return null; }
 }
 
-function saveModelIdsToDisk(ids: string[]): void {
+function saveProviderModels(provider: Provider, ids: string[]): void {
   try {
     ensureCacheDir();
-    fs.writeFileSync(modelDiskPath(), JSON.stringify({ _modelIds: ids, _keyHash: keyHash() }));
-    if (isDebug()) console.log(`\n[MODEL CACHE] saved ${ids.length} model IDs to disk`);
-  } catch (e: any) {
-    if (isDebug()) console.log(`\n[MODEL CACHE] save error: ${e.message}`);
-  }
+    fs.writeFileSync(modelDiskPath(provider), JSON.stringify({ _modelIds: ids, _keyHash: keyHash() }));
+    if (isDebug()) console.log(`\n[MODEL CACHE:${provider.toUpperCase()}] saved ${ids.length} model IDs`);
+  } catch {}
 }
 
 async function fetchWithTimeout(url: string, opts: RequestInit = {}, ms = 8000): Promise<Response> {
@@ -514,9 +512,9 @@ async function fetchGoModels(goKey: string): Promise<string[]> {
       const data: any = await resp.json();
       return (data?.data || []).map((m: any) => typeof m === "string" ? m : m.id || "").filter((id: string) => id.length > 0);
     }
-    if (isDebug()) console.log(`\n[MODEL CACHE] go/v1/models returned ${resp.status}`);
+    if (isDebug()) console.log(`\n[MODEL CACHE:GO] fetch returned ${resp.status}`);
   } catch (e: any) {
-    if (isDebug()) console.log(`\n[MODEL CACHE] go/v1/models error: ${e.message}`);
+    if (isDebug()) console.log(`\n[MODEL CACHE:GO] fetch error: ${e.message}`);
   }
   return [];
 }
@@ -528,9 +526,9 @@ async function fetchPollinationsModels(): Promise<string[]> {
       const data: any = await resp.json();
       return (data || []).map((m: any) => `pol/${m.name}`).filter((id: string) => id.length > 4);
     }
-    if (isDebug()) console.log(`\n[MODEL CACHE] pollinations/models returned ${resp.status}`);
+    if (isDebug()) console.log(`\n[MODEL CACHE:POLL] fetch returned ${resp.status}`);
   } catch (e: any) {
-    if (isDebug()) console.log(`\n[MODEL CACHE] pollinations/models error: ${e.message}`);
+    if (isDebug()) console.log(`\n[MODEL CACHE:POLL] fetch error: ${e.message}`);
   }
   return [];
 }
@@ -579,20 +577,37 @@ export function modelHasVision(id: string): boolean {
   return _visionSet?.has(id) ?? false;
 }
 
+// ── Per-provider model ID caches ──
+let _cachedGoIds: string[] | null = null;
+let _cachedPollIds: string[] | null = null;
+let _providersInitialized = false;
+
+async function initProviderModels(provider: Provider, goKey: string): Promise<string[]> {
+  const diskIds = loadProviderModels(provider);
+  if (diskIds && diskIds.length > 0) {
+    if (isDebug()) console.log(`\n[MODEL CACHE:${provider.toUpperCase()}] loaded ${diskIds.length} from disk`);
+    return diskIds;
+  }
+
+  let fetched: string[] = [];
+  if (provider === "go") {
+    fetched = await fetchGoModels(goKey);
+  } else if (provider === "poll") {
+    fetched = await fetchPollinationsModels();
+  }
+
+  if (fetched.length > 0) {
+    saveProviderModels(provider, fetched);
+  }
+  return fetched;
+}
+
 export async function initModels(): Promise<string[]> {
-  if (_modelsInitialized && _cachedModelIds) return _cachedModelIds;
+  if (_providersInitialized && _cachedGoIds) {
+    return [...new Set([..._cachedGoIds, ...(_cachedPollIds || [])])];
+  }
 
   checkKeyChanged();
-
-  const diskIds = loadModelIdsFromDisk();
-  if (diskIds) {
-    _cachedModelIds = [...new Set(diskIds)];
-    setModelsList(_cachedModelIds);
-    _modelsInitialized = true;
-    if (isDebug()) console.log(`\n[MODEL CACHE] loaded ${_cachedModelIds.length} model IDs from disk`);
-    await fetchModelCtxMap();
-    return _cachedModelIds;
-  }
 
   const env = typeof process !== "undefined" ? process.env : {};
   let goKey = "";
@@ -602,28 +617,31 @@ export async function initModels(): Promise<string[]> {
     goKey = env.OPENCODE_API_KEY;
   }
 
-  const [goIds, polIds] = await Promise.all([
-    fetchGoModels(goKey),
-    fetchPollinationsModels(),
+  const [goIds, pollIds] = await Promise.all([
+    initProviderModels("go", goKey),
+    initProviderModels("poll", ""),
     fetchModelCtxMap(),
   ]);
 
-  const allIds = [...new Set([...goIds, ...polIds])];
-  if (allIds.length > 0) {
-    saveModelIdsToDisk(allIds);
-    _cachedModelIds = allIds;
-    setModelsList(_cachedModelIds);
-  }
+  _cachedGoIds = goIds;
+  _cachedPollIds = pollIds;
+  _providersInitialized = true;
 
-  _cachedModelIds = _cachedModelIds || [];
-  setModelsList(_cachedModelIds);
-  _modelsInitialized = true;
-  if (isDebug()) console.log(`\n[MODEL CACHE] init complete: ${_cachedModelIds.length} models (${goIds.length} go, ${polIds.length} pollinations)`);
-  return _cachedModelIds;
+  const allIds = [...new Set([...goIds, ...pollIds])];
+  setModelsList(allIds);
+  if (isDebug()) console.log(`\n[MODEL CACHE] init complete: ${allIds.length} models (${goIds.length} go, ${pollIds.length} poll)`);
+  return allIds;
 }
 
 export function getModelIds(): string[] {
-  return _cachedModelIds || [];
+  if (!_providersInitialized) return [];
+  return [...new Set([...(_cachedGoIds || []), ...(_cachedPollIds || [])])];
+}
+
+export function getProviderModelIds(provider: Provider): string[] {
+  if (provider === "go") return _cachedGoIds || [];
+  if (provider === "poll") return _cachedPollIds || [];
+  return [];
 }
 
 export function getKeyStatus(): any[] {
@@ -648,4 +666,109 @@ export function getKeyStatus(): any[] {
     }
     return { keyPrefix: short, status, reason, consecutive429: key429Count.get(k) || 0 };
   });
+}
+
+// ── Ollama-Compatible Model Metadata ──
+
+const MODEL_INFO: Record<string, { display: string; family: string; paramCount: number; contextLength: number; capabilities: string[] }> = {
+  "deepseek-v4-pro": { display: "DeepSeek V4 Pro", family: "deepseek4", paramCount: 1600000000000, contextLength: 1048576, capabilities: ["completion", "tools", "thinking"] },
+  "deepseek-v4-flash": { display: "DeepSeek V4 Flash", family: "deepseek4", paramCount: 158000000000, contextLength: 1048576, capabilities: ["completion", "tools", "thinking"] },
+  "glm-5.1": { display: "GLM 5.1", family: "glm", paramCount: 756000000000, contextLength: 202752, capabilities: ["thinking", "completion", "tools"] },
+  "glm-5": { display: "GLM 5", family: "glm", paramCount: 540000000000, contextLength: 202752, capabilities: ["thinking", "completion", "tools"] },
+  "kimi-k2.6": { display: "Kimi K2.6", family: "kimi-k2", paramCount: 1040000000000, contextLength: 262144, capabilities: ["vision", "thinking", "completion", "tools"] },
+  "kimi-k2.5": { display: "Kimi K2.5", family: "kimi-k2", paramCount: 1040000000000, contextLength: 262144, capabilities: ["thinking", "completion", "tools"] },
+  "minimax-m2.7": { display: "MiniMax M2.7", family: "minimax-m2", paramCount: 229000000000, contextLength: 196608, capabilities: ["completion", "tools", "thinking"] },
+  "minimax-m2.5": { display: "MiniMax M2.5", family: "minimax-m2", paramCount: 200000000000, contextLength: 196608, capabilities: ["completion", "tools", "thinking"] },
+  "mimo-v2.5-pro": { display: "MiMo V2.5 Pro", family: "mimo", paramCount: 456000000000, contextLength: 262144, capabilities: ["completion", "tools", "thinking"] },
+  "mimo-v2.5": { display: "MiMo V2.5", family: "mimo", paramCount: 456000000000, contextLength: 262144, capabilities: ["completion", "tools", "thinking"] },
+  "mimo-v2-pro": { display: "MiMo V2 Pro", family: "mimo", paramCount: 456000000000, contextLength: 262144, capabilities: ["completion", "tools"] },
+  "mimo-v2-omni": { display: "MiMo V2 Omni", family: "mimo", paramCount: 456000000000, contextLength: 262144, capabilities: ["completion", "tools"] },
+  "qwen3.6-plus": { display: "Qwen 3.6 Plus", family: "qwen3", paramCount: 72000000000, contextLength: 131072, capabilities: ["completion", "tools", "thinking"] },
+  "qwen3.5-plus": { display: "Qwen 3.5 Plus", family: "qwen3", paramCount: 72000000000, contextLength: 131072, capabilities: ["completion", "tools", "thinking"] },
+  "hy3-preview": { display: "HY3 Preview", family: "hy3", paramCount: 0, contextLength: 131072, capabilities: ["completion", "tools"] },
+  "big-pickle": { display: "Big Pickle", family: "pickle", paramCount: 0, contextLength: 1000000, capabilities: ["completion", "tools", "thinking"] },
+};
+
+const THINKING_TAG_PARAMS: Record<string, string> = {
+  LOW: "low", MEDIUM: "medium", HIGH: "high", MAXIMUM: "max",
+  MED: "medium", MAX: "max", LO: "low", MD: "medium", HI: "high", MX: "max",
+};
+
+const THINKING_TAG_SHORT: Record<string, string> = {
+  L: "LOW", M: "MEDIUM", H: "HIGH", X: "MAXIMUM",
+  LO: "LOW", MD: "MEDIUM", HI: "HIGH", MX: "MAXIMUM",
+  MED: "MEDIUM", MAX: "MAXIMUM",
+};
+
+export function getThinkingModes(modelId: string): string[] {
+  const l = modelId.toLowerCase();
+  const exclude = ["glm", "kimi", "k2p", "minimax", "qwen", "big-pickle", "hy3", "ring", "nemotron",
+                   "deepseek-chat", "deepseek-reasoner", "deepseek-r1", "deepseek-v3"];
+  for (const e of exclude) {
+    if (l.includes(e)) return [];
+  }
+  if (l.includes("deepseek-v4")) return ["LOW", "MEDIUM", "HIGH", "MAXIMUM"];
+  if (l.includes("mimo") && MODEL_INFO[modelId]?.capabilities.includes("thinking")) {
+    return ["LOW", "MEDIUM", "HIGH"];
+  }
+  return [];
+}
+
+export function formatContext(n: number): string {
+  if (n >= 1000000) return `${Math.floor(n / 1000000)}M`;
+  if (n >= 1000) return `${Math.floor(n / 1000)}K`;
+  return `${n}`;
+}
+
+export function normalizeModel(raw: string): { modelId: string; level: string } {
+  const clean = raw.replace(/:latest$/, "").trim();
+  if (!clean) return { modelId: "", level: "" };
+
+  // VSCode format: deepseek-v4-pro/1_(low)
+  const m1 = clean.match(/^(.+?)\/(\d)_\((low|medium|high|maximum|xhigh)\)?$/i);
+  if (m1) {
+    const tag = m1[3].toUpperCase();
+    return { modelId: `${m1[1].trim()}:latest`, level: tag === "MAXIMUM" ? tag : tag };
+  }
+
+  // Bracket format: DeepSeek V4 Pro [HIGH]
+  const m2 = clean.match(/^(.+?)[\-\-: \u2009]\s*\[?(L|M|H|X|LOW|MEDIUM|HIGH|MAXIMUM|MED|MAX|XHIGH|MINIMAL|NONE|LO|MD|HI|MX)\]\s*$/i);
+  if (m2) {
+    const rawTag = m2[2].toUpperCase();
+    const tag = THINKING_TAG_SHORT[rawTag] || rawTag;
+    return { modelId: `${m2[1].trim()}:latest`, level: tag };
+  }
+
+  // Encoded suffix
+  for (const level of Object.keys(THINKING_TAG_PARAMS)) {
+    if (clean.endsWith(`:${level}`)) {
+      const mid = clean.slice(0, -level.length - 1).replace(":cloud", "");
+      if (MODEL_INFO[mid]) return { modelId: mid, level };
+    }
+    const ll = level.toLowerCase();
+    if (clean.endsWith(`:${ll}`)) {
+      const mid = clean.slice(0, -ll.length - 1).replace(":cloud", "");
+      if (MODEL_INFO[mid]) return { modelId: mid, level };
+    }
+  }
+
+  // Direct lookup
+  const stripped = clean.replace(":cloud", "");
+  if (MODEL_INFO[stripped]) return { modelId: stripped, level: "" };
+  if (MODEL_INFO[clean]) return { modelId: clean, level: "" };
+
+  // Fallback: return as-is
+  return { modelId: clean, level: "" };
+}
+
+export function getModelOllamaInfo(modelId: string) {
+  const baseId = modelId.replace(":latest", "").replace(":cloud", "").trim();
+  return MODEL_INFO[baseId] || MODEL_INFO[modelId] || null;
+}
+
+export function getOllamaThinkingParams(level: string): Record<string, any> {
+  if (level && THINKING_TAG_PARAMS[level]) {
+    return { reasoning_effort: THINKING_TAG_PARAMS[level] };
+  }
+  return {};
 }

@@ -14,7 +14,8 @@ import * as offlineStore from "./offline-store.ts";
 import * as splitConsole from "./split-console.ts";
 import { ts, agentTag, agentName, colorMethod, colorStatus, httpLogLine, generalLogLine, getTps, isDebug } from "./split-console.ts";
 import { getProjectRoot } from "./shared.ts";
-import { initModels } from "./handlers/opencode-client.ts";
+import { initModels, getModelIds as getOpencodeModelIds } from "./handlers/opencode-client.ts";
+import { fetchModels as fetchOpenCommandModels, hasKeys as hasOpenCommandKeys } from "./handlers/opencommand-client.ts";
 
 // Real IP cache to bypass hosts file for non-intercepted requests
 const INTERCEPTED_HOSTS = ["github.com", "www.github.com", "api.github.com", "api.githubcopilot.com", "copilot-proxy.githubusercontent.com", "api.individual.githubcopilot.com", "origin-tracker.individual.githubcopilot.com", "proxy.individual.githubcopilot.com", "telemetry.individual.githubcopilot.com"];
@@ -886,6 +887,79 @@ async function handlePlainHttpRequest(clientSocket: Socket, data: Buffer, port: 
 
   log("INFO", `HTTP: ${method} ${url} -> ${host}:${port}`);
 
+  // Dashboard API routes
+  if (host === "dashboard" || host === "localhost" || host === "127.0.0.1") {
+    // GET /dashboard - serve dashboard HTML
+    if (method === "GET" && (url === "/dashboard" || url === "/dashboard/" || url === "/")) {
+      const dashboardPath = join(getProjectRoot(), "dashboard.html");
+      if (existsSync(dashboardPath)) {
+        const html = readFileSync(dashboardPath, "utf8");
+        const resp = `HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: ${Buffer.byteLength(html)}\r\nConnection: close\r\n\r\n${html}`;
+        clientSocket.write(resp);
+        clientSocket.end();
+        return;
+      }
+      const notFound = "Dashboard not found";
+      const resp404 = `HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: ${Buffer.byteLength(notFound)}\r\nConnection: close\r\n\r\n${notFound}`;
+      clientSocket.write(resp404);
+      clientSocket.end();
+      return;
+    }
+    
+    // GET /health
+    if (method === "GET" && url === "/health") {
+      const healthData = {
+        status: "ok",
+        version: "3.0",
+        mode: IS_PROXY ? "PROXY" : IS_HYBRID ? "HYBRID" : "MOCK",
+        runtime: runtimeTag,
+        platform: process.platform + "-" + process.arch,
+        cwd: process.cwd(),
+      };
+      const body = JSON.stringify(healthData);
+      const resp = `HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n${body}`;
+      clientSocket.write(resp);
+      clientSocket.end();
+      return;
+    }
+    
+    // GET /api/config
+    if (method === "GET" && url === "/api/config") {
+      const configData = {
+        mode: IS_PROXY ? "PROXY" : IS_HYBRID ? "HYBRID" : "MOCK",
+        httpPort: HTTP_PORT,
+        httpsPort: HTTPS_PORT,
+        iisProxy: IIS_PROXY,
+        enableOpenCommand: process.env.ENABLE_OPENCOMMAND === "true",
+      };
+      const body = JSON.stringify(configData);
+      const resp = `HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n${body}`;
+      clientSocket.write(resp);
+      clientSocket.end();
+      return;
+    }
+    
+    // POST /api/config
+    if (method === "POST" && url === "/api/config") {
+      const bodyStr = data.slice(bodyOffset).toString("utf8");
+      try {
+        const newConfig = JSON.parse(bodyStr);
+        log("INFO", `Dashboard config update: ${JSON.stringify(newConfig)}`);
+        const respBody = JSON.stringify({ success: true, config: newConfig });
+        const resp = `HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${respBody.length}\r\nConnection: close\r\n\r\n${respBody}`;
+        clientSocket.write(resp);
+        clientSocket.end();
+        return;
+      } catch (e: any) {
+        const errBody = JSON.stringify({ error: e.message });
+        const resp = `HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: ${errBody.length}\r\nConnection: close\r\n\r\n${errBody}`;
+        clientSocket.write(resp);
+        clientSocket.end();
+        return;
+      }
+    }
+  }
+  
   // Mock GHCP app IPC endpoints (used for browser preview lifecycle)
   if (host === "ipc.localhost") {
     const body = JSON.stringify({ success: true, mock: "gc2xy" });
@@ -1028,6 +1102,14 @@ try {
 
 // Preload models at startup so the model list (?) is populated
 initModels().catch(() => {});
+// Load OpenCommand models if enabled
+if (process.env.ENABLE_OPENCOMMAND === "true" && hasOpenCommandKeys()) {
+  fetchOpenCommandModels().then((ocModels) => {
+    if (ocModels.length > 0) {
+      log("INFO", `Loaded ${ocModels.length} OpenCommand models`);
+    }
+  }).catch(() => {});
+}
 splitConsole.drawStatusBar({
   mode: IS_PROXY ? "PROXY" : IS_HYBRID ? "HYBRID" : "MOCK",
   requests: 0,

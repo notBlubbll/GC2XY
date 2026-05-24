@@ -3,6 +3,7 @@ import { jsonResponse, HandlerInput, HandlerResult } from "../shared.ts";
 import { chatCompletion as opencodeChat, getKeyStatus, storeReasoning, initModels, getModelIds, getModelCtx, modelHasVision } from "./opencode-client.ts";
 import { reqLog, agentTag } from "../split-console.ts";
 import { anthropicToOpenAIRequest } from "./anthropic-bridge.ts";
+import { fetchModels as fetchOpenCommandModels, hasKeys as hasOpenCommandKeys } from "./opencommand-client.ts";
 
 const FAKE_MODELS: any[] = [];
 let _lastModelIds: string[] = [];
@@ -99,41 +100,58 @@ async function ensureModels() {
 
   const changed = modelIds.length !== _lastModelIds.length ||
     modelIds.some((id, i) => id !== _lastModelIds[i]);
-  if (!changed && FAKE_MODELS.length > 0) return;
+  if (!changed && FAKE_MODELS.length > 0 && !process.env.ENABLE_OPENCOMMAND) return;
   _lastModelIds = [...modelIds];
 
   _rebuilding = true;
   FAKE_MODELS.length = 0;
   const seen = new Set<string>();
 
-  const addModel = (id: string) => {
+  const addModel = (id: string, isOC = false) => {
     if (seen.has(id)) return;
     seen.add(id);
-    const baseEmoji = supportsThinkingVariants(id) ? "💡" : "✨";
-    const mediaEmoji = modelHasVision(id) ? "🎞️" : "";
-    const name = `${baseEmoji}${mediaEmoji} ${id.split("-").map((p: string) => p.charAt(0).toUpperCase() + p.slice(1)).join(" ").replace(/(\d)\.(\d)/g, "$1.$2")}`;
-    const isLightweight = id.includes("mini") || id.includes("nano") || (id.includes("flash") && !id.includes("deepseek")) || id.includes("haiku") || id.includes("free");
-    const isPowerful = id.includes("pro") || id.includes("opus") || id.includes("codex") || id.includes("omni") || (id.includes("flash") && id.includes("deepseek"));
-    const limits = modelLimits(id);
+    const displayName = isOC ? id.replace(/^oc\//, "") : id;
+    const baseEmoji = supportsThinkingVariants(displayName) ? "💡" : "✨";
+    const mediaEmoji = modelHasVision(displayName) ? "🎞️" : "";
+    const name = `${baseEmoji}${mediaEmoji} ${displayName.split("-").map((p: string) => p.charAt(0).toUpperCase() + p.slice(1)).join(" ").replace(/(\d)\.(\d)/g, "$1.$2")}`;
+    const isLightweight = displayName.includes("mini") || displayName.includes("nano") || (displayName.includes("flash") && !displayName.includes("deepseek")) || displayName.includes("haiku") || displayName.includes("free");
+    const isPowerful = displayName.includes("pro") || displayName.includes("opus") || displayName.includes("codex") || displayName.includes("omni") || (displayName.includes("flash") && displayName.includes("deepseek"));
+    const limits = modelLimits(displayName);
     const baseModel = {
       id, object: "model",
-      name, vendor: detectVendor(id), version: id, preview: false,
+      name, vendor: detectVendor(displayName), version: id, preview: false,
       model_picker_category: isLightweight ? "lightweight" : isPowerful ? "powerful" : "versatile",
       model_picker_enabled: true,
-      is_chat_default: true,
-      is_chat_fallback: true,
-      billing: { is_premium: true, multiplier: getModelCtx(id) || limits.max_context_window_tokens, restricted_to: ["pro", "pro_plus", "business", "enterprise", "max"] },
-      policy: { state: "enabled", terms: `Enable access to the ${id} model. [Learn more](https://opencode.ai)` },
+      is_chat_default: !isOC && FAKE_MODELS.length === 0,
+      is_chat_fallback: !isOC,
+      billing: { is_premium: true, multiplier: getModelCtx(displayName) || limits.max_context_window_tokens, restricted_to: ["pro", "pro_plus", "business", "enterprise", "max"] },
+      policy: { state: "enabled", terms: `Enable access to the ${id} model. [Learn more](https://${isOC ? "opencommand.ai" : "opencode.ai"})` },
       supported_endpoints: ["/chat/completions", "/v1/messages"],
       capabilities: {
-        family: id, object: "model_capabilities", type: "chat", tokenizer: "o200k_base",
-        limits, supports: modelSupports(id),
+        family: displayName, object: "model_capabilities", type: "chat", tokenizer: "o200k_base",
+        limits, supports: modelSupports(displayName),
       },
     };
     FAKE_MODELS.push(baseModel);
   };
 
-  for (const id of modelIds) addModel(id);
+  for (const id of modelIds) addModel(id, false);
+  
+  // Add OpenCommand models if enabled
+  if (process.env.ENABLE_OPENCOMMAND === "true" && hasOpenCommandKeys()) {
+    try {
+      const ocModels = await fetchOpenCommandModels();
+      for (const id of ocModels) {
+        addModel(id, true);
+      }
+      if (ocModels.length > 0) {
+        console.log(`\n[MODEL CACHE] added ${ocModels.length} OpenCommand models (oc/ prefix)`);
+      }
+    } catch (e: any) {
+      console.log(`\n[MODEL CACHE] OpenCommand fetch error: ${e.message}`);
+    }
+  }
+  
   console.log(`\n[MODEL CACHE] copilot-handler rebuilt ${FAKE_MODELS.length} models`);
   _rebuilding = false;
 }
