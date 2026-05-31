@@ -40,17 +40,17 @@ let _dashboardConfig: Record<string, any> = {
   models: [],
 };
 
-// Hardcoded ZEN models (provider/slug format like the ZEN proxy)
-const ZENITH_MODELS = [
-  "deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash-full", "deepseek/deepseek-v4-flash-precision", "deepseek/deepseek-v4-pro-full", "deepseek/deepseek-v4-pro-precision", "deepseek/deepseek-v3.2",
-  "xiaomi/mimo-v2.5", "xiaomi/mimo-v2.5-pro", "xiaomi/mimo-v2.5-pro-full", "xiaomi/mimo-v2.5-pro-precision", "xiaomi/mimo-v2-pro", "xiaomi/mimo-v2-omni",
-  "alibaba/qwen-3.5-397b-a17b", "alibaba/qwen-3.5-9b", "alibaba/qwen-3.6-27b", "alibaba/qwen-3.6-27b-full", "alibaba/qwen-3.6-plus",
-  "google/gemma-4-31b", "google/gemma-4-31b-it-precision",
-  "minimax/minimax-m2.5", "minimax/minimax-m2.5-speed", "minimax/minimax-m2.7", "minimax/minimax-m2.7-speed",
-  "moonshot/kimi-k2.5", "moonshot/kimi-k2.6", "moonshot/kimi-k2.6-precision", "moonshot/kimi-k2.6-smart",
-  "stepfun/step-3.5-flash", "stepfun/step-3.5-flash-2603",
-  "zhipu/glm-4.7", "zhipu/glm-4.7-flash", "zhipu/glm-5", "zhipu/glm-5.1", "zhipu/glm-5.1-full", "zhipu/glm-5.1-precision",
-  "xai/grok-imagine-image",
+// ZEN model fallback when API fetch fails
+const ZENITH_FALLBACK = [
+  "deepseek-v4-pro", "deepseek-v4-flash-full", "deepseek-v4-flash-precision", "deepseek-v4-pro-full", "deepseek-v4-pro-precision", "deepseek-v3.2",
+  "mimo-v2.5", "mimo-v2.5-pro", "mimo-v2.5-pro-full", "mimo-v2.5-pro-precision", "mimo-v2-pro", "mimo-v2-omni",
+  "qwen-3.5-397b-a17b", "qwen-3.5-9b", "qwen-3.6-27b", "qwen-3.6-27b-full", "qwen-3.6-plus",
+  "gemma-4-31b", "gemma-4-31b-it-precision",
+  "minimax-m2.5", "minimax-m2.5-speed", "minimax-m2.7", "minimax-m2.7-speed",
+  "kimi-k2.5", "kimi-k2.6", "kimi-k2.6-precision", "kimi-k2.6-smart",
+  "step-3.5-flash", "step-3.5-flash-2603",
+  "glm-4.7", "glm-4.7-flash", "glm-5", "glm-5.1", "glm-5.1-full", "glm-5.1-precision",
+  "grok-imagine-image",
 ];
 
 // Load keys from env into unified _keys array
@@ -77,7 +77,18 @@ try {
 } catch (e) {}
 
 // Load persisted keys from .config/config.json on startup
+function tryParseJwtExp(token: string): number {
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return 0;
+    const b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const payload = JSON.parse(Buffer.from(b64, "base64").toString("utf-8"));
+    return payload.exp || 0;
+  } catch { return 0; }
+}
+
 loadZenConfig();
+fetchZenModels();
 
 function defaultProvider(): string {
   return _keys.some(k => k.provider === "zen") ? "zen" : "opencode";
@@ -88,13 +99,24 @@ function loadZenConfig() {
     const p = join(getProjectRoot(), ".config", "config.json");
     if (existsSync(p)) {
       const c = JSON.parse(readFileSync(p, "utf-8"));
-      if (c.ZENITH_SESSION && !_zenSessionCookie) _zenSessionCookie = c.ZENITH_SESSION;
+      if (c.ZENITH_SESSION) {
+        const exp = tryParseJwtExp(c.ZENITH_SESSION);
+        const now = Math.floor(Date.now() / 1000);
+        if (exp > now && !_zenSessionCookie) _zenSessionCookie = c.ZENITH_SESSION;
+      }
       if (c.ZENITH_EMAIL) _zenEmail = c.ZENITH_EMAIL;
       if (c.ZENITH_PASSWORD) _zenPassword = c.ZENITH_PASSWORD;
       if (c.TOKENS && Array.isArray(c.TOKENS)) {
         for (const t of c.TOKENS) {
           if (t.token && !_keys.find(x => x.token === t.token)) {
-            _keys.push({ name: t.name || "Key", token: t.token, session: t.session || "", provider: t.provider || "zen" });
+            const isZen = t.token.startsWith("sk-zenith-");
+            _keys.push({ name: t.name || "Key", token: t.token, session: t.session || "", provider: isZen ? "zen" : (t.provider || "opencode") });
+            if (isZen && t.session) {
+              const exp = tryParseJwtExp(t.session);
+              if (exp && exp > Math.floor(Date.now() / 1000) && (!_zenSessionCookie || exp > tryParseJwtExp(_zenSessionCookie) || 0)) {
+                _zenSessionCookie = t.session;
+              }
+            }
           }
         }
       }
@@ -176,8 +198,8 @@ async function fetchZenithStats(): Promise<any> {
     await tryZenithLogin();
     if (_zenSessionCookie) sessions.push(_zenSessionCookie);
   }
-  if (sessions.length === 0) return { loggedIn: false, requests: 0, tokens: 0, cost: 0, balance: 0, keysCount: 0 };
   let totalRequests = 0, totalTokens = 0, totalCost = 0, totalBalance = 0, anyLoggedIn = false;
+  // Try session cookie auth first
   for (const session of sessions) {
     try {
       const resp = await fetch("https://api.zenllm.org/api/dashboard", {
@@ -195,6 +217,28 @@ async function fetchZenithStats(): Promise<any> {
         totalBalance += data.stats.balanceUsd || 0;
       }
     } catch {}
+  }
+  // If no session worked, try Bearer token auth with a ZEN API key
+  if (!anyLoggedIn) {
+    for (const k of zenKeys) {
+      try {
+        const resp = await fetch("https://api.zenllm.org/api/dashboard", {
+          headers: { authorization: `Bearer ${k.token}`, "x-requested-with": "XMLHttpRequest" },
+          signal: AbortSignal.timeout(8000),
+        });
+        if (resp.status === 401) continue;
+        anyLoggedIn = true;
+        const data = await resp.json();
+        if (data?.stats?.totals) {
+          const totals = data.stats.totals;
+          totalRequests += totals.requests || 0;
+          totalTokens += (totals.prompt || 0) + (totals.completion || 0) + (totals.cached || 0);
+          totalCost += data.stats.totalCostUsd || 0;
+          totalBalance += data.stats.balanceUsd || 0;
+        }
+        break;
+      } catch {}
+    }
   }
   _dashboardCache = { requests: totalRequests, tokens: totalTokens, cost: totalCost, balance: totalBalance, loggedIn: anyLoggedIn, keysCount: zenKeys.length };
   _dashboardCacheTime = Date.now();
@@ -231,16 +275,26 @@ function formatModelName(id: string): string {
   return `💡 ${parts} [${modes.map(m => tagMap[m] || m).join(", ")}]`;
 }
 
+async function fetchZenModels(): Promise<void> {
+  if (_zenModelsLoaded) return;
+  try {
+    const resp = await fetch("https://opencode.ai/zen/go/v1/models", { signal: AbortSignal.timeout(5000) });
+    if (resp.ok) {
+      const data: any = await resp.json();
+      _zenModels = (data?.data || []).map((m: any) => typeof m === "string" ? m : m.id || "").filter((id: string) => id.length > 0);
+    }
+  } catch {}
+  if (_zenModels.length === 0) _zenModels = [...ZENITH_FALLBACK];
+  _zenModelsLoaded = true;
+}
+
 function getZenModels(): any[] {
-  return _zenModels.length > 0
-    ? _zenModels.map((id: string) => {
-        const enabled = _modelStates[`zen:${id}`] !== false;
-        return { id, name: formatModelName(id), provider: "zen", enabled, free: false, locked: false };
-      })
-    : ZENITH_MODELS.map((id: string) => {
-        const enabled = _modelStates[`zen:${id}`] !== false;
-        return { id, name: formatModelName(id), provider: "zen", enabled, free: false, locked: false };
-      });
+  if (!_zenModelsLoaded) fetchZenModels();
+  const list = _zenModels.length > 0 ? _zenModels : ZENITH_FALLBACK;
+  return list.map((id: string) => {
+    const enabled = _modelStates[id] !== false;
+    return { id, name: formatModelName(id), provider: "zen", enabled, free: false, locked: false };
+  });
 }
 
 function getOcModels(): any[] {
@@ -385,7 +439,7 @@ export async function handleDashboard(req: HandlerInput): Promise<HandlerResult>
   if (pathname === "/api/restart" && method === "POST") {
     setTimeout(() => {
       try { restoreTerminal(); } catch {}
-      try { unlinkSync(".proxy-host-pid"); } catch {}
+      try { unlinkSync(join(getProjectRoot(), ".cache", "proxy-host-pid")); } catch {}
       process.exit(42);
     }, 500);
     return { handled: true, response: jsonResponse({ success: true, message: "Restarting..." }) };

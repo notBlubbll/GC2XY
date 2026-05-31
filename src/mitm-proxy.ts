@@ -447,10 +447,12 @@ addRequestInterceptor(async (req) => {
       hostname: req.hostname, port: req.port, clientSocket: req.clientSocket,
     };
 
-    // Dashboard/API routes intercepted in ALL modes (including proxy)
     const urlPath = req.url.split("?")[0];
-    if (urlPath === "/dashboard" || urlPath === "/" || urlPath === "/health" ||
-        urlPath.startsWith("/api/")) {
+    // Dashboard/API routes — loopback only
+    const remoteAddr = req.clientSocket?.remoteAddress || "";
+    const isLoopback = remoteAddr.startsWith("127.") || remoteAddr.startsWith("::1") || remoteAddr === "::ffff:127.0.0.1";
+    if (isLoopback && (urlPath === "/dashboard" || urlPath === "/" || urlPath === "/health" ||
+        urlPath.startsWith("/api/"))) {
       const dashResult = await handleDashboard(handlerInput);
       if (dashResult.handled && dashResult.response) {
         dashIncReq();
@@ -833,8 +835,8 @@ function createProxyServer() {
     clientSocket.on("error", (err) => log("ERROR", `Client error: ${err.message}`));
   });
 
-  proxyServer.listen(PROXY_PORT, () => {
-    log("INFO", `Proxy server on port ${PROXY_PORT}`);
+  proxyServer.listen(PROXY_PORT, "127.0.0.1", () => {
+    log("INFO", `Proxy server on 127.0.0.1:${PROXY_PORT}`);
   });
   proxyServer.on("error", (err: Error) => {
     log("ERROR", `Failed to bind proxy port ${PROXY_PORT}: ${err.message}.`);
@@ -912,8 +914,10 @@ async function handlePlainHttpRequest(clientSocket: Socket, data: Buffer, port: 
     return;
   }
 
-  // Dashboard route — always intercepted (even in proxy mode)
-  if (url === "/dashboard" || url.startsWith("/dashboard?") || url === "/" || url === "/health" || url.startsWith("/api/")) {
+  // Dashboard route — always intercepted (even in proxy mode), loopback only
+  const remoteAddr = clientSocket.remoteAddress || "";
+  const isLoopback = remoteAddr.startsWith("127.") || remoteAddr.startsWith("::1") || remoteAddr === "::ffff:127.0.0.1";
+  if (isLoopback && (url === "/dashboard" || url.startsWith("/dashboard?") || url === "/" || url === "/health" || url.startsWith("/api/"))) {
     try {
       const dashReq = { method, url, headers, body, hostname: host, port, clientSocket: clientSocket as any };
       const result = await handleDashboard(dashReq);
@@ -1061,7 +1065,7 @@ try {
   const r = spawnSync("powershell", ["-NoP", "-Command",
     `$p=${process.pid};while($p-gt0){try{$c=Get-CimInstance Win32_Process -Filter ('ProcessId='+$p);if(-not$c){break};$n=$c.Name;if($n-match'WindowsTerminal|OpenConsole|conhost|cmd|powershell'){Write-Host -NoNewline $p;break};$p=$c.ParentProcessId}catch{break}}`
   ], { encoding: "utf8", timeout: 5000, windowsHide: true });
-  if (r.stdout?.trim()) writeFileSync(".proxy-host-pid", r.stdout.trim() + "\n", "utf-8");
+  if (r.stdout?.trim()) { try { mkdirSync(join(getProjectRoot(), ".cache"), { recursive: true }); writeFileSync(join(getProjectRoot(), ".cache", "proxy-host-pid"), r.stdout.trim() + "\n", "utf-8"); } catch {} }
 } catch {}
 
 // Preload models at startup so the model list (?) is populated
@@ -1085,7 +1089,7 @@ splitConsole.onCommand((cmd: string) => {
     splitConsole.restoreTerminal();
     for (const s of servers) s.close();
     logStream.end();
-    try { unlinkSync(".proxy-host-pid"); } catch {}
+    try { unlinkSync(join(getProjectRoot(), ".cache", "proxy-host-pid")); } catch {}
     process.exit(42);
   } else if (cmd.startsWith("switch:")) {
     const targetMode = cmd.split(":")[1].toLowerCase();
@@ -1158,7 +1162,7 @@ function shutdown() {
   for (const s of servers) s.close();
   logStream.end();
   splitConsole.restoreTerminal();
-  try { unlinkSync(".proxy-host-pid"); } catch {}
+  try { unlinkSync(join(getProjectRoot(), ".cache", "proxy-host-pid")); } catch {}
   process.exit(0);
 }
 

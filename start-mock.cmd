@@ -38,12 +38,12 @@ echo ==================================================
 echo.
 
 echo [1/3] Cleaning up ports...
-if not exist ".proxy-host-pid" goto :skip_pid_kill
-for /f %%p in (.proxy-host-pid) do (
+if not exist ".cache\proxy-host-pid" goto :skip_pid_kill
+for /f %%p in (.cache\proxy-host-pid) do (
     taskkill /F /PID %%p >nul 2>&1
     timeout /t 1 /nobreak >nul
 )
-del .proxy-host-pid >nul 2>&1
+del .cache\proxy-host-pid >nul 2>&1
 :skip_pid_kill
 
 
@@ -121,7 +121,7 @@ if errorlevel 42 goto :restart_mock
 
 echo.
 echo Proxy stopped.
-if exist ".proxy-host-pid" del .proxy-host-pid >nul 2>&1
+if exist ".cache\proxy-host-pid" del .cache\proxy-host-pid >nul 2>&1
 timeout /t 2 /nobreak >nul
 exit /b 0
 

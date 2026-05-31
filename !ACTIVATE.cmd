@@ -43,12 +43,12 @@ echo  gc2xy - Activate MITM Proxy
 echo ==================================================
 
 echo [1/4] Cleaning up...
-if not exist ".proxy-host-pid" goto :skip_pid_kill
-for /f %%p in (.proxy-host-pid) do (
+if not exist ".cache\proxy-host-pid" goto :skip_pid_kill
+for /f %%p in (.cache\proxy-host-pid) do (
     taskkill /F /PID %%p >nul 2>&1
     timeout /t 1 /nobreak >nul
 )
-del .proxy-host-pid >nul 2>&1
+del .cache\proxy-host-pid >nul 2>&1
 :skip_pid_kill
 
 taskkill /F /IM bun.exe >nul 2>&1
@@ -180,6 +180,6 @@ exit /b 0
 
 :done
 set gc2xy_SETUP_DONE=
-if exist ".proxy-host-pid" del .proxy-host-pid >nul 2>&1
+if exist ".cache\proxy-host-pid" del .cache\proxy-host-pid >nul 2>&1
 timeout /t 2 /nobreak >nul
 exit /b 0

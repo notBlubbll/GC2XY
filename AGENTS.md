@@ -371,8 +371,19 @@ Compact horizontal checkbox tiles in a flex-wrap container. Models are **grouped
 
 ### API Key Management
 - **OpenCode** key validation: pings `https://opencode.ai/zen/go/v1/models` + billing API. Shows VALID/UNKNOWN badge. Keys masked as first 5 + `...` + last 4 chars.
-- **ZEN** key management: Token pool with name/token/session cookies. CRUD via modal (add/edit/delete). Stats fetched from `api.zenllm.org/api/dashboard` using session cookies.
+- **ZEN** key management: Token pool with name/token/session cookies. CRUD via modal (add/edit/delete). Stats fetched from `api.zenllm.org/api/dashboard` using two-tier auth: session cookie (`zs=`) first, Bearer token (`sk-zenith-...`) fallback.
 - Keys filtered by selected provider (only current provider's keys shown).
+
+### ZEN Dashboard Auth
+
+The dashboard fetches ZEN stats from `https://api.zenllm.org/api/dashboard` using a two-tier auth strategy:
+
+1. **Session cookie** (`zs=<jwt>`): Tried first for each ZEN key's stored `session` field and the top-level `ZENITH_SESSION`
+2. **Bearer token** (`Authorization: Bearer sk-zenith-...`): Fallback if all cookie attempts return 401
+
+**`tryParseJwtExp(token)`** at `dashboard-handler.ts:80` decodes JWT payloads to check `exp` at module level. Used during `loadZenConfig()` to select the freshest non-expired session across all entries and `ZENITH_SESSION`. Base64url decoding uses standard base64 with `-/`→`+/` substitution.
+
+**Provider auto-detection**: In `loadZenConfig()`, any token starting with `sk-zenith-` is automatically assigned `provider: "zen"` regardless of the saved `provider` field. This fixes the bug where dashboard keys were labeled `"opencode"` and invisible in ZEN provider mode.
 
 ### ZEN Top Bar Columns
 When ZEN provider is active with a logged-in session, three extra inline columns appear in the status header: **Requests** (formatted with K/M suffix), **Tokens** (formatted with K/M suffix), **Used** (percentage + dollar cost). Hovering Used shows remaining balance. Columns show `n/a` when not on ZEN provider, `Loading...` when ZEN is selected but not yet logged in.
@@ -406,7 +417,7 @@ Fetches daily Bing wallpaper via `https://www.bing.com/HPImageArchive.aspx` at s
 | File | Purpose |
 |------|---------|
 | `dashboard.html` | Web dashboard HTML (project root) |
-| `handlers/dashboard-handler.ts` | Dashboard handler: serves HTML + JSON API endpoints. OpenCode key validation, ZEN key CRUD, session login, stats aggregation |
+| `src/handlers/dashboard-handler.ts` | Dashboard handler: serves HTML + JSON API endpoints. OpenCode key validation, ZEN key CRUD, session login, stats aggregation, Bearer/cookie two-tier ZEN auth, ZEN model list fetched from `opencode.ai/zen/go/v1/models` with `ZENITH_FALLBACK` fallback |
 | `src/mitm-proxy.ts` | Routes `/dashboard` and `/api/*` in all modes (mock/hybrid/proxy) |
 
 ### Keyboard Reference
@@ -429,7 +440,7 @@ All launcher scripts (`!ACTIVATE.cmd`, `start.cmd`, `start-*.cmd`, `!REMOVE.cmd`
 - If `WT_SESSION` is already set (already in WT) or `wt.exe` not found → run as-is (Server 2016 fallback)
 
 **Tab lifecycle cleanup** uses a PID file (`src/mitm-proxy.ts:929`):
-1. On proxy startup, saves the terminal host PID (nearest `OpenConsole.exe`, `conhost.exe`, or `WindowsTerminal.exe` ancestor) to `.proxy-host-pid`
+1. On proxy startup, saves the terminal host PID (nearest `OpenConsole.exe`, `conhost.exe`, or `WindowsTerminal.exe` ancestor) to `.cache/proxy-host-pid`
 2. Next run's cleanup reads this file → `taskkill /F /PID <pid>` → closes the previous proxy tab only (not the whole WT window, not other tabs)
 3. The same file is used at shutdown (label `:end`) to self-close the current tab after a 2-second delay
 4. File is deleted after use; repeated `taskkill` on an already-dead PID is harmless
