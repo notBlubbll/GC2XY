@@ -1,6 +1,7 @@
 import forge from "node-forge";
-import { jsonResponse, htmlResponse, HttpResponse, HandlerInput, HandlerResult } from "../shared.ts";
+import { jsonResponse, htmlResponse, HttpResponse, HandlerInput, HandlerResult, getMode, isHybrid } from "../shared.ts";
 import { handleVSAuth } from "./vs/auth.ts";
+import { trackRequest, getZenStats } from "../usage-tracker.ts";
 
 const ENABLED = process.env.FAKE_DEVICE_LOGIN !== "0";
 const FAKE_USER_CODE = process.env.FAKE_USER_CODE || "ABCD-1234";
@@ -14,6 +15,15 @@ const activeDevices = new Map<string, { deviceCode: string; userCode: string; ve
 const authCodes = new Map<string, { code: string; clientId: string; redirectUri: string; scope: string; createdAt: number }>();
 let deviceCodeCounter = 0;
 let authCodeCounter = 0;
+
+function getRemainingQuota(): { chat: number; completions: number } {
+  const zs = getZenStats();
+  if (!zs || !zs.loggedIn || (zs.cost + zs.balance) === 0) return { chat: 210, completions: 1680 };
+  const usedPct = Math.max(0, Math.min(100, (zs.cost / (zs.cost + zs.balance)) * 100));
+  const chatTotal = 500, completionsTotal = 4000;
+  const usedChat = Math.round(chatTotal * usedPct / 100);
+  return { chat: chatTotal - usedChat, completions: completionsTotal - Math.round(completionsTotal * usedPct / 100) };
+}
 
 function generateDeviceCode(): string {
   deviceCodeCounter++;
@@ -62,18 +72,15 @@ function generateTrackingId(): string {
   return forge.util.bytesToHex(forge.random.getBytesSync(16));
 }
 
-const ARGS = new Set(typeof process !== "undefined" ? process.argv.slice(2) : []);
-const IS_HYBRID_ARGS = ARGS.has("--mode-2");
-const IS_PROXY_ARGS = ARGS.has("--mode-3");
-
 function mitmMode(): string {
-  return IS_PROXY_ARGS ? "proxy" : IS_HYBRID_ARGS ? "hybrid" : "mock";
+  return getMode();
 }
 
 export function handleAuth(req: HandlerInput): HandlerResult {
+  trackRequest("auth");
   if (!ENABLED) return { handled: false };
   const { method, url, body, headers } = req;
-  const isHybrid = IS_HYBRID_ARGS;
+  const isHybridMode = isHybrid();
   const isVsOAuth = url.includes("vsweb+githubsi://") || url.includes("vsweb%2Bgithubsi%3A%2F%2F") || url.includes("client_id=a200baed193bb2088a6e");
   const isBrowser = (headers?.["accept"] || "").includes("text/html");
 
@@ -122,7 +129,7 @@ export function handleAuth(req: HandlerInput): HandlerResult {
     }
   }
 
-  if (isHybrid && isBrowser && method === "GET" && !isVsOAuth) {
+  if (isHybridMode && isBrowser && method === "GET" && !isVsOAuth) {
     return { handled: false };
   }
 
@@ -634,6 +641,7 @@ export function handleAuth(req: HandlerInput): HandlerResult {
   if (method === "GET" && url.includes("/copilot_internal/user")) {
     console.log(`\n[FAKE COPILOT] Intercepting copilot user request (enterprise)`);
     const tid = generateTrackingId();
+    const q = getRemainingQuota();
     return { handled: true, response: jsonResponse({
       login: "fake-github-user",
       access_type_sku: "enterprise",
@@ -657,7 +665,7 @@ export function handleAuth(req: HandlerInput): HandlerResult {
         telemetry: "https://telemetry.individual.githubcopilot.com",
       },
       can_upgrade_plan: false,
-      limited_user_quotas: { chat: 210, completions: 1680 },
+      limited_user_quotas: { chat: q.chat, completions: q.completions },
       limited_user_subscribed_day: 7,
       limited_user_reset_date: "2120-01-01",
       monthly_quotas: { chat: 500, completions: 4000 },
@@ -670,6 +678,7 @@ export function handleAuth(req: HandlerInput): HandlerResult {
     const exp = now + 1800;
     const iat = now;
     const reset = Math.floor(new Date("2500-01-01T00:00:00Z").getTime() / 1000);
+    const q = getRemainingQuota();
     return {
       agent_mode_auto_approval: true,
       annotations_enabled: true,
@@ -691,7 +700,7 @@ export function handleAuth(req: HandlerInput): HandlerResult {
       expires_at: exp,
       iat,
       individual: false,
-      limited_user_quotas: { chat: 210, completions: 1680 },
+      limited_user_quotas: { chat: q.chat, completions: q.completions },
       limited_user_reset_date: reset,
       public_suggestions: "disabled",
       refresh_in: 1500,
@@ -832,7 +841,7 @@ export function handleAuth(req: HandlerInput): HandlerResult {
 
   // GET /settings/* - Settings pages (redirect to root in hybrid, fake in mock)
   if (method === "GET" && url.startsWith("/settings/")) {
-    if (isHybrid) return { handled: false };
+    if (isHybridMode) return { handled: false };
     return { handled: true, response: htmlResponse(`<!DOCTYPE html><html><head><title>GitHub Settings</title></head>
 <body style="font-family:sans-serif;background:#0d1117;color:#e6edf3;padding:40px;">
 <h1>Settings</h1><p style="color:#8b949e">Fake settings page (MITM proxy)</p></body></html>`) };

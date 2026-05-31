@@ -3,6 +3,70 @@ import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+type ProxyMode = "mock" | "hybrid" | "proxy";
+
+let _currentMode: ProxyMode = "mock";
+
+// ── Nag handling ──
+const NAG_RE = /not yet (marked|complete)/i;
+
+export const RECENTLY_COMPLETED = new Map<string, number>();
+export const TASK_COMPLETED_SESSIONS = new Map<string, boolean>();
+export const RECENT_BODIES = new Map<string, number>();
+
+export function countConsecutiveNags(messages: any[]): number {
+  let count = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m?.role !== "user") continue;
+    const content = typeof m.content === "string" ? m.content :
+      Array.isArray(m.content) ? m.content.map((c: any) => c.text || "").join(" ") : "";
+    if (NAG_RE.test(content)) count++;
+    else break;
+  }
+  return count;
+}
+
+export function lastAssistantHasToolCalls(messages: any[]): boolean {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m?.role === "assistant") return !!(m.tool_calls?.length);
+  }
+  return false;
+}
+
+export function stripNagMessages(messages: any[]): { messages: any[]; stripped: number } {
+  const before = messages.length;
+  const filtered = messages.filter((m: any) => {
+    if (m?.role !== "user") return true;
+    const content = typeof m.content === "string" ? m.content :
+      Array.isArray(m.content) ? m.content.map((c: any) => c.text || "").join(" ") : "";
+    return !NAG_RE.test(content);
+  });
+  return { messages: filtered, stripped: before - filtered.length };
+}
+
+// Periodic purge
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, ts] of RECENTLY_COMPLETED) {
+    if (now - ts > 30000) RECENTLY_COMPLETED.delete(k);
+  }
+  for (const [k, ts] of RECENT_BODIES) {
+    if (now - ts > 30000) RECENT_BODIES.delete(k);
+  }
+}, 10000);
+
+const _ARGS = new Set(typeof process !== "undefined" ? process.argv.slice(1) : []);
+if (_ARGS.has("--mode-3") || process.env.gc2xy_MODE === "proxy") _currentMode = "proxy";
+else if (_ARGS.has("--mode-2") || process.env.gc2xy_MODE === "hybrid") _currentMode = "hybrid";
+
+export function getMode(): ProxyMode { return _currentMode; }
+export function setMode(m: ProxyMode) { _currentMode = m; }
+export function isProxy() { return _currentMode === "proxy"; }
+export function isHybrid() { return _currentMode === "hybrid"; }
+export function isMock() { return _currentMode === "mock"; }
+
 export function getProjectRoot(): string {
   let dir: string;
 

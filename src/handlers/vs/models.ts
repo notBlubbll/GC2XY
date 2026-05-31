@@ -1,6 +1,6 @@
 import forge from "node-forge";
 import { jsonResponse, HandlerInput, HandlerResult } from "../../shared.ts";
-import { initModels, getModelCtx } from "../opencode-client.ts";
+import { initModels, getModelCtx, getModelDisplayName } from "../opencode-client.ts";
 import { isDebug } from "../../split-console.ts";
 
 const VS_MODELS: any[] = [];
@@ -149,7 +149,7 @@ async function ensureModels() {
   const addModel = (id: string) => {
     if (seen.has(id)) return;
     seen.add(id);
-    let name = "✨" + id.split("-").map((p: string) => p.charAt(0).toUpperCase() + p.slice(1)).join(" ").replace(/(\d)\.(\d)/g, "$1.$2");
+    let name = "✨" + getModelDisplayName(id);
     if (name.length > 17) name = name.replace(/\s/g, "");
     const modes = getThinkingModes(id);
     const picker = { category: "powerful" as const, enabled: true, chat_default: true, chat_fallback: false };

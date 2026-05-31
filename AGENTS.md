@@ -8,6 +8,7 @@ A system-wide HTTPS interception proxy for `github.com` (and subdomains) that:
 - Supports record/replay of HTTP flows
 - Auto-caches upstream responses for offline mock replay
 - Can be extended with custom request/response interceptors
+- **Web dashboard** at `http://github.com/dashboard` — status header, provider/model toggles, free models
 
 ## ⚡ Key Finding: Real Copilot Endpoints (from proxy capture)
 
@@ -89,8 +90,9 @@ sc failure w3svc reset= 86400 actions= restart/5000/restart/10000/restart/30000
 | `bunfig.toml` | Bun runtime config: telemetry off, small heap mode, no install cache |
 | `.config/.env` | Environment configuration (API keys) |
 | `certs/` | Auto-generated CA key/cert and unified multi-SAN intercept cert |
-| `proxy-logs/` | Daily traffic log files with JSON entries + `bodyPreview` (first 1000 chars) |
-| `cache/` | Auto-populated cache files from proxy mode, keyed by `<method>_<host>_<path>.json` |
+| `.proxy-logs/` | Daily traffic log files with JSON entries + `bodyPreview` (first 1000 chars) |
+| `.cache/` | Auto-populated cache files from proxy mode, keyed by `<method>_<host>_<path>.json` |
+| `.config/config.json` | ZEN token pool persistence (tokens, session cookies, credentials) |
 | `prototype/` | Analysis artifacts, extracted response structures, User-Agent breakdowns |
 
 ## Architecture: Interceptor Flow
@@ -340,6 +342,76 @@ All intercepted traffic sources detected by User-Agent header:
 
 **Key insight**: The GitHub App (`github-app/*`) uses Rust reqwest. If it uses `rustls` (not `native-tls`), our CA cert won't be trusted even if installed in Windows cert store. The app constructs token exchange URLs using IP (`https://127.0.0.1/...`) rather than hostname.
 
+## Web Dashboard
+
+A web-based dashboard is available at `http://github.com/dashboard` (or `http://localhost:{HTTP_PORT}/dashboard`). Built with **Bootstrap 5.3** and custom liquid glass effect (SVG displacement maps with Snell's law refraction, IOR 2.5).
+
+### Layout
+- **Left (col-lg-8)**: Available Models — family-grouped model tags (deepseek, xiaomi, alibaba, etc.) with enabled/disabled toggle, model ID overlay
+- **Right (col-lg-4)**: API Key / ZEN Token Pool (pool cards with status badge), Quick Actions, Environment, Proxy Configuration
+
+### Status Header
+Replicates the TUI status bar with real-time values: mode (MOCK/HYBRID/PROXY), LReq (local proxy request count), TPS, active keys (active/total), models (enabled/total), Requests (ZEN dashboard), Tokens (ZEN), Used (ZEN % + $ cost, remaining balance on hover), provider. All inline in the header card with a dark `card-header` background. ZEN columns show `n/a` when provider is OpenCode, `Loading...` when ZEN is selected but not logged in. Updates every 5 seconds.
+
+### Provider Selector
+Horizontal radio button group:
+- **OpenCode** — route through opencode.ai
+- **ZEN** — route through zenllm.org
+
+### Model Tiles
+Compact horizontal checkbox tiles in a flex-wrap container. Models are **grouped by vendor family** using the `family` field from `models.dev/api.json`:
+
+- **Family normalization**: `getModelFamily()` in `opencode-client.ts` strips `thinking-` prefix, keeps text before first `-`, then strips trailing version digits. E.g. `deepseek-flash`/`deepseek-thinking` → `deepseek`, `minimax-m2`/`minimax-m2.5` → `minimax`, `qwen3.5`/`qwen3.6` → `qwen`.
+- **Fallback**: API `family` first, then `MODEL_INFO[id].family`, else `""` which falls through to `id.split('/')[0]` in the HTML.
+- Models show display names with:
+  - 💡 prefix + small-caps thinking modes (ᴀ ʙ ᴄ ᴅ ᴇ ғ ɢ ʜ ɪ ᴊ ᴋ ʟ ᴍ ɴ ᴏ ᴘ ǫ ʀ s ᴛ ᴜ v ᴡ x ʏ ᴢ) for controllable thinking models (deepseek-v4 [ʟᴏ, ᴍᴅ, ʜɪ, ᴍx], mimo [ʟᴏ, ᴍᴅ, ʜɪ])
+  - Base name only for non-thinking models (no emoji)
+  - Model ID shown on hover via `title` attribute
+  - Premium models locked with lock icon when no valid OpenCode key
+
+### API Key Management
+- **OpenCode** key validation: pings `https://opencode.ai/zen/go/v1/models` + billing API. Shows VALID/UNKNOWN badge. Keys masked as first 5 + `...` + last 4 chars.
+- **ZEN** key management: Token pool with name/token/session cookies. CRUD via modal (add/edit/delete). Stats fetched from `api.zenllm.org/api/dashboard` using session cookies.
+- Keys filtered by selected provider (only current provider's keys shown).
+
+### ZEN Top Bar Columns
+When ZEN provider is active with a logged-in session, three extra inline columns appear in the status header: **Requests** (formatted with K/M suffix), **Tokens** (formatted with K/M suffix), **Used** (percentage + dollar cost). Hovering Used shows remaining balance. Columns show `n/a` when not on ZEN provider, `Loading...` when ZEN is selected but not yet logged in.
+
+### Collapsible Sections
+All cards (keys, config, models, actions, env) collapse with chevron toggle icons.
+
+### Restart
+Shows yellow pulsing "Reconnecting..." while polling `/api/status` every 2s. Requires two consecutive successful responses before declaring online (prevents premature "Online" during initialization).
+
+### Bing Background
+Fetches daily Bing wallpaper via `https://www.bing.com/HPImageArchive.aspx` at startup.
+
+### API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/status` | GET | Status + mode + model list + key validity |
+| `/api/config` | GET/POST | Get/set config (mode, provider, keys, model states) |
+| `/api/provider` | GET/POST | Get/set upstream provider |
+| `/api/models` | GET/POST | Get/set model enabled states |
+| `/api/keys/validate` | POST | Validate all OpenCode keys |
+| `/api/keys` | GET/POST | ZEN token pool CRUD (add/update/delete keys with name/token/session) |
+| `/api/zen/login` | GET/POST/DELETE | ZEN session cookie management + OAuth URLs |
+| `/api/zenith/requests` | GET | ZEN dashboard aggregate stats (requests, tokens, cost, balance) |
+| `/api/restart` | POST | Trigger restart (exit code 42, picks up code changes) |
+| `/api/bg` | GET | Fetch Bing daily wallpaper URL |
+| `/health` | GET | Health check (status, version, cwd, platform, runtime, hasValidKey) |
+
+### Files
+| File | Purpose |
+|------|---------|
+| `dashboard.html` | Web dashboard HTML (project root) |
+| `handlers/dashboard-handler.ts` | Dashboard handler: serves HTML + JSON API endpoints. OpenCode key validation, ZEN key CRUD, session login, stats aggregation |
+| `src/mitm-proxy.ts` | Routes `/dashboard` and `/api/*` in all modes (mock/hybrid/proxy) |
+
+### Keyboard Reference
+The dashboard footer shows terminal keyboard shortcuts: `1`-`3` switch modes, `r` restart, `d` debug, `q` quit.
+
 ## Certificate Management
 
 See `skills.md` → **Managing Certificates** skill for CA cert install, regeneration, and SAN details.
@@ -371,6 +443,41 @@ On Server 2016 or systems without WT, the fallback is `timeout /t 3` then script
 - Format: `{ statusCode, statusMessage, headers, bodyBase64 }`
 - Priority: Cache → Fake handlers → Catch-all → Upstream
 - See `skills.md` → **Working with the Cache System** for cache ops and troubleshooting.
+
+## Nag Handling (task_complete suppression)
+
+Visual Studio sends "You have not yet marked the task as complete using the task_complete tool" when the LLM produces text without calling `task_complete`. Three interception layers (gc2oc pattern):
+
+### Mechanism
+
+All handlers (`copilot-handler.ts`, `vs/handler.ts`) share these helpers from `shared.ts`:
+
+| Helper | Purpose |
+|--------|---------|
+| `countConsecutiveNags(messages)` | Walks backwards counting consecutive nag user-messages |
+| `stripNagMessages(messages)` | Filters nag messages from the conversation array |
+| `RECENTLY_COMPLETED` | Map `model → timestamp` — drains follow-up requests after `task_complete` |
+
+### Flow
+
+1. **Nag detected** (`not yet (marked|complete)` in last user message): set `RECENTLY_COMPLETED[model]`, strip nag, return SSE stream with `task_complete` tool_use + `stop_reason: "tool_use"`
+2. **Body dedup** (identical body within 30s): return `task_complete` immediately without LLM forward (uses `RECENT_BODIES` map with smart key of `model+msgCount+lastUserMsg`)
+3. **Drain** (any request while `RECENTLY_COMPLETED[model]` < 20s): delete RC, return `task_complete` — covers "Task marked as complete" acknowledgment and retried original query
+4. **No nag**: forward to LLM normally
+
+### SSE Format
+
+VS expects `event:` + `data:` lines in Anthropic Messages API SSE format:
+
+```
+event: message_start\ndata: {type:"message_start",...}\n
+event: content_block_start\ndata: {type:"content_block_start",index:0,content_block:{type:"tool_use",name:"task_complete"}}\n
+event: content_block_stop\ndata: {type:"content_block_stop",index:0}\n
+event: message_delta\ndata: {type:"message_delta",delta:{stop_reason:"tool_use"}}\n
+event: message_stop\ndata: {type:"message_stop"}\n
+```
+
+Nag responses return SSE buffer with `Content-Length` + `Connection: close` (not chunked encoding) to avoid corrupting the stream for VS.
 
 ## Recordings
 
@@ -470,6 +577,8 @@ See `skills.md` → **Interceptor Development** for detailed handler chain prior
 | `SKIP_CACHE` | unset | Set to `"1"` to skip reading from cache |
 | `OPENCODE_API_KEYS` | unset | JSON array of opencode.ai API keys for model forwarding |
 | `OPENCODE_API_KEY` | unset | Single opencode.ai API key (alternative to array) |
+| `ZENITH_API_KEY` | unset | ZEN API key (`sk-zenith-...`) from zenllm.org |
+| `ZENITH_SESSION` | unset | ZEN session cookie (`zs=...`) for dashboard stats |
 | `VS_ENABLE_TIME` | `true` | Set to `"0"` to disable prepending `[HH:MM:SS]` to VS agent responses |
 | `ENFORCE_NODE` | `0` | Set to `"1"` to force Node.js runtime even if Bun is available. Affects all launchers and the C# service wrapper. |
 | `ENFORCE_CMD` | `0` | Set to `"1"` to force plain cmd.exe and skip Windows Terminal auto-detect. Affects all batch launchers, `.dist/start-*.cmd`, the C# service wrapper, and proxy status bar detection. |
@@ -545,7 +654,7 @@ See `skills.md` → **Using the Console Dashboard** for keyboard shortcuts, log 
 - **Billing multiplier formula**: For VS models (`vs/handler.ts`, `vs/models.ts`): `multiplier = realCtx / 100 + 0.01`. Real context length fetched from `models.dev/api.json` on startup. Non-VS/GHCP models use raw context value directly. Only `.01` decimal precision is reliably displayed by VS.
 - **Log sanitization**: `_pushLog` and patched `console.log` strip `\n` from entry text, collapse whitespace, and drop empty entries to prevent blank lines in the console dashboard (`split-console.ts:238-243`, `split-console.ts:690`).
 - **Debug-only log routing**: The console filters noisy internal traffic based on three rules (toggle with `d` to see all):
-  - **Handler console.log** calls (`[FAKE GHE]`, `[VISUAL STUDIO]`, `[MODEL*]`, `[GHCP*]`, `[RECORD]`, `[REPLAY]`, `[RESP BODY]`, etc.): any message starting with `[` is auto-pushed as debug entry by the patched `console.log` (`split-console.ts:694`).
+  - **Handler console.log** calls: only messages starting with a known-noisy prefix are debug-only: `[RESP BODY]`, `[REASONING CACHE]`, `[FAKE GHE]`, `[FAKE DEVICE LOGIN]`, `[FAKE DEVICE]`, `[RECORD]`, `[REPLAY]`, `[MOCK V1/MESSAGES]`, `[MOCK FALLBACK]`, `[VISUAL STUDIO]`, `[VS SESSION]`, `[COPILOT SESSION]`. All other `[` messages (model info, forwarding confirmations) show without debug (`split-console.ts:746`).
   - **Agent tag routing** in `logPlainEnglish`: traffic from `APP` (GitHub App), `VS` (Visual Studio), `TEAM` (VS Team Explorer), and `GO-HT` (Go HTTP client, e.g. Ollama updater) agents is always debug-only (`mitm-proxy.ts:87-89`).
   - **URL path routing** in `logPlainEnglish`: `/telemetry` and `/agents/sessions/*` URLs are always debug-only (`mitm-proxy.ts:89`).
 
@@ -604,16 +713,10 @@ Run `build.cmd` from the project root to produce `.dist\` with standalone execut
 ### Troubleshooting
 See `skills.md` → **Troubleshooting Proxy Issues** for cert, cache, token, and process issues.
 
-## VS Agent Mode Nag Loop Fix
+## Console Log Filtering
 
-Visual Studio's "agent" mode (`editor-version: VS/VisualStudio.*` + `baggage: VirtualAgentModeResponder`) has a built-in nag mechanism: after every `task_complete`, VS sends a follow-up message ("You have not yet marked the task as complete..."). This creates an infinite loop if not handled properly.
+Messages are filtered as debug-only (hidden unless `d` pressed) based on a denylist of known-noisy prefixes: `[RESP BODY]`, `[REASONING CACHE]`, `[FAKE GHE]`, `[FAKE DEVICE LOGIN]`, `[FAKE DEVICE]`, `[RECORD]`, `[REPLAY]`, `[MOCK V1/MESSAGES]`, `[MOCK FALLBACK]`, `[VISUAL STUDIO]`, `[VS SESSION]`, `[COPILOT SESSION]`.
 
-Handling in `src/handlers/vs/handler.ts`:
+All other `console.log` output (handler forwarding confirmations, model info) shows without debug mode.
 
-1. **Content-based nag detection** (`/chat/completions` and `/v1/messages`): If the last user message contains "not yet marked", immediately return `task_complete` with a timestamp text `[HH:MM:SS]` — no LLM call.
-
-2. **Cooldown** (`_lastNagTime`): After returning `task_complete`, subsequent nags within 30s are silently drained with an empty stop — prevents loops from repeated VS follow-ups.
-
-3. **Duplicate agent resend** (`_lastUserContent` + `_initiator === "agent"`): If the agent resends the exact same user message content, drain it immediately.
-
-4. **Timer reset on user message**: When `x-initiator` is not `"agent"` (real user message), `_lastNagTime` is reset to 0 so the next nag gets a fresh `task_complete`.
+Agent tag routing in `logPlainEnglish`: traffic from `APP` (GitHub App), `VS` (Visual Studio), `TEAM` (VS Team Explorer), and `GO-HT` (Go HTTP client) agents is always debug-only. URL path routing: `/telemetry` and `/agents/sessions/*` URLs are always debug-only.

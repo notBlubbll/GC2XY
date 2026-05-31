@@ -1,16 +1,31 @@
 import forge from "node-forge";
-import { jsonResponse, HandlerInput, HandlerResult } from "../../shared.ts";
-import { chatCompletion as opencodeChat, initModels } from "../opencode-client.ts";
+import { jsonResponse, HandlerInput, HandlerResult, countConsecutiveNags, stripNagMessages, RECENTLY_COMPLETED, RECENT_BODIES } from "../../shared.ts";
+import { chatCompletion as opencodeChat, initModels, detectSessionSignal, extractUserPrompt, getModelDisplayName } from "../opencode-client.ts";
 import { handleVSModels } from "./models.ts";
 import { recordTps, reqLog, agentTag } from "../../split-console.ts";
+import { trackRequest } from "../../usage-tracker.ts";
 import { anthropicToOpenAIRequest } from "../anthropic-bridge.ts";
-
-let _lastNagTime = 0;
-let _lastUserContent = "";
 
 const FAKE_MODELS: any[] = [];
 let _lastModelIds: string[] = [];
 let _rebuilding = false;
+
+function _extractText(raw: any): string {
+  if (typeof raw === "string") return raw;
+  if (Array.isArray(raw)) return raw.map((b: any) => {
+    if (typeof b === "string") return b;
+    if (b.text) return b.text;
+    if (b.content) return typeof b.content === "string" ? b.content : JSON.stringify(b.content);
+    return "";
+  }).join(" ");
+  if (raw && typeof raw === "object") {
+    if (raw.text) return raw.text;
+    if (raw.content) return typeof raw.content === "string" ? raw.content : _extractText(raw.content);
+    if (raw.value) return raw.value;
+    return JSON.stringify(raw);
+  }
+  return "";
+}
 
 function detectVendor(id: string): string {
   const l = id.toLowerCase();
@@ -106,7 +121,7 @@ async function ensureModels() {
   const addModel = (id: string) => {
     if (seen.has(id)) return;
     seen.add(id);
-    const name = id.split("-").map((p: string) => p.charAt(0).toUpperCase() + p.slice(1)).join(" ").replace(/(\d)\.(\d)/g, "$1.$2");
+    const name = getModelDisplayName(id);
     const baseModel = {
       id, object: "model",
       name, vendor: detectVendor(id), version: id, preview: false,
@@ -181,11 +196,57 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
   console.log(`[VISUAL STUDIO] ${method} ${url} (editor: ${editorVersion})`);
 
   // POST /v1/messages - Visual Studio Copilot chat endpoint (Anthropic Messages API)
-  if (method === "POST" && url === "/v1/messages") {
+  if (method === "POST" && url === "/v1/messages") { trackRequest("vs");
     let parsed: any = {};
     try { parsed = JSON.parse(body?.toString() || "{}"); } catch {}
-    let model = parsed.model || "";
-    const messages = parsed.messages || [];
+    const _v1NagModel = parsed.model || "";
+    const _v1NagMessages = parsed.messages || [];
+
+    // ── Nag: drain → auto-resolve → forward + append ──
+    // Body dedup: skip identical bodies within 20s
+    const _bodyStr = body?.toString() || "";
+    const _vssId = headers["x-vss-session-id"] || headers["X-VSS-Session-Id"] || "";
+    const _dedupKey = _vssId ? `${_vssId}:${_bodyStr.length}:${_bodyStr.slice(-50)}` : `${_bodyStr.length}:${_bodyStr.slice(-50)}`;
+    if ((RECENT_BODIES.get(_dedupKey) ?? 0) && Date.now() - (RECENT_BODIES.get(_dedupKey) ?? 0) < 20000) {
+      RECENT_BODIES.set(_dedupKey, Date.now());
+      const _toolId = `toolu_${forge.util.bytesToHex(forge.random.getBytesSync(8))}`;
+      const _nagId = `msg_${forge.util.bytesToHex(forge.random.getBytesSync(8))}`;
+      const msgStart = JSON.stringify({ type: "message_start", message: { id: _nagId, type: "message", role: "assistant", content: [], model: _v1NagModel, stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } } });
+      const blockStart = JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: _toolId, name: "task_complete", input: {} } });
+      const blockStop = JSON.stringify({ type: "content_block_stop", index: 0 });
+      const msgDelta = JSON.stringify({ type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 0 } });
+      const msgStop = JSON.stringify({ type: "message_stop" });
+      const sse = `event: message_start\ndata: ${msgStart}\n\nevent: content_block_start\ndata: ${blockStart}\n\nevent: content_block_stop\ndata: ${blockStop}\n\nevent: message_delta\ndata: ${msgDelta}\n\nevent: message_stop\ndata: ${msgStop}\n\n`;
+      return { handled: true, response: { statusCode: 200, headers: { "content-type": "text/event-stream", "cache-control": "no-store", "access-control-allow-origin": "*", "connection": "close" }, body: Buffer.from(sse) } };
+    }
+    RECENT_BODIES.set(_dedupKey, Date.now());
+
+    // ── Nag: drain → empty stop, nag → task_complete ──
+    const _nagCount = countConsecutiveNags(_v1NagMessages);
+    if (RECENTLY_COMPLETED.get(_v1NagModel) && Date.now() - RECENTLY_COMPLETED.get(_v1NagModel) < 20000) {
+      RECENTLY_COMPLETED.delete(_v1NagModel);
+      const id = `msg_${forge.util.bytesToHex(forge.random.getBytesSync(8))}`;
+      const msgStart = JSON.stringify({ type: "message_start", message: { id, type: "message", role: "assistant", content: [], model: _v1NagModel, stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } } });
+      const msgDelta = JSON.stringify({ type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 0 } });
+      const msgStop = JSON.stringify({ type: "message_stop" });
+      return { handled: true, response: { statusCode: 200, headers: { "content-type": "text/event-stream", "cache-control": "no-store", "access-control-allow-origin": "*", "connection": "close" }, body: Buffer.from(`event: message_start\ndata: ${msgStart}\n\nevent: message_delta\ndata: ${msgDelta}\n\nevent: message_stop\ndata: ${msgStop}\n\n`) } };
+    }
+    if (_nagCount > 0) {
+      RECENTLY_COMPLETED.set(_v1NagModel, Date.now());
+      stripNagMessages(_v1NagMessages);
+      const nagId = `msg_${forge.util.bytesToHex(forge.random.getBytesSync(8))}`;
+      const toolId = `toolu_${forge.util.bytesToHex(forge.random.getBytesSync(8))}`;
+      const msgStart = JSON.stringify({ type: "message_start", message: { id: nagId, type: "message", role: "assistant", content: [], model: _v1NagModel, stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } } });
+      const blockStart = JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: toolId, name: "task_complete", input: {} } });
+      const blockStop = JSON.stringify({ type: "content_block_stop", index: 0 });
+      const msgDelta = JSON.stringify({ type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 0 } });
+      const msgStop = JSON.stringify({ type: "message_stop" });
+      const sse = `event: message_start\ndata: ${msgStart}\n\nevent: content_block_start\ndata: ${blockStart}\n\nevent: content_block_stop\ndata: ${blockStop}\n\nevent: message_delta\ndata: ${msgDelta}\n\nevent: message_stop\ndata: ${msgStop}\n\n`;
+      return { handled: true, response: { statusCode: 200, headers: { "content-type": "text/event-stream", "cache-control": "no-store", "access-control-allow-origin": "*", "connection": "close" }, body: Buffer.from(sse) } };
+    }
+
+    let model = _v1NagModel;
+    const messages = _v1NagMessages;
     const isStream = parsed.stream === true;
     const tools = parsed.tools || [];
     const maxTokens = parsed.max_tokens || 4096;
@@ -215,31 +276,34 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
       console.log(`[MODEL VS/MESSAGES] ${model} not found, picked ${model}`);
     }
 
-    // VS nag detection: auto task_complete for VS "not yet complete" messages
-    const _lm = [...messages].reverse().find((m: any) => m.role === "user") || messages[messages.length - 1];
-    const _lc = typeof _lm?.content === "string" ? _lm.content :
-      Array.isArray(_lm?.content) ? _lm.content.map((c: any) => c.text || c.content || "").join(" ") : "";
-    if (_lc && /not yet marked/i.test(_lc)) {
-      console.log(`[VS NAG] Auto task_complete via /v1/messages`);
-      return { handled: true, response: jsonResponse({
-        id: `msg_${forge.util.bytesToHex(forge.random.getBytesSync(8))}`,
-        type: "message", role: "assistant",
-        content: [{ type: "tool_use", id: `toolu_${forge.util.bytesToHex(forge.random.getBytesSync(8))}`, name: "task_complete", input: {} }],
-        model: model, stop_reason: "end_turn", stop_sequence: null,
-        usage: { input_tokens: 0, output_tokens: 0 },
-        })};
-    }
-
     try {
       const bridge = anthropicToOpenAIRequest(parsed);
+
+      const vsSession = detectSessionSignal(bridge.messages);
+      if (vsSession) {
+        const ts = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+        console.log(`[VS SESSION] ${ts} [Session#${vsSession.sessNum}>${vsSession.keyLabel}] ${model} "${extractUserPrompt(bridge.messages).substring(0, 120)}"`);
+      }
+
+      const lastUserMsg = [...bridge.messages].reverse().find((m: any) => m.role === "user");
+      const vsTag = agentTag(headers);
+      const vsProvider = model.startsWith("pol/") ? "poll" : "go";
+      const vsPreview = lastUserMsg ? (
+        typeof lastUserMsg.content === "string" ? lastUserMsg.content :
+        Array.isArray(lastUserMsg.content) ? lastUserMsg.content.filter((c: any) => c.type === "text").map((c: any) => c.text || "").join(" ") : ""
+      ) : "";
+      const messagesComplete = reqLog({ tag: vsTag, provider: vsProvider, model, preview: vsPreview, body: parsed });
+      const startTime = Date.now();
 
       const resp = await opencodeChat(bridge.model, bridge.messages, bridge.tools, bridge.stream, {
         max_tokens: bridge.max_tokens,
         ...parsed,
-      });
+      }, vsSession?.keyIdx);
 
       if (!isStream) {
         const openaiData: any = await resp.json();
+        const elapsed = Date.now() - startTime;
+        if (messagesComplete) messagesComplete(elapsed);
         const choice = openaiData.choices?.[0]?.message;
         const content = choice?.content || "";
         const toolCalls = choice?.tool_calls;
@@ -254,6 +318,11 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
             contentBlocks.push({ type: "tool_use", id: tc.id, name: fn.name || "unknown", input: args });
           }
           stopReason = "tool_use";
+        }
+        if (_nagAppend) {
+          contentBlocks.push({ type: "tool_use", id: `toolu_${forge.util.bytesToHex(forge.random.getBytesSync(8))}`, name: "task_complete", input: {} });
+          stopReason = "tool_use";
+          RECENTLY_COMPLETED.set(model, Date.now());
         }
 
         const responseBody = {
@@ -275,16 +344,19 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
         const respHead = `HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-store\r\naccess-control-allow-origin: *\r\nx-accel-buffering: no\r\nconnection: close\r\n\r\n`;
         sock.write(respHead);
 
+        const sseEvent = (s: any, evt: string, data: any) => {
+          if (s.destroyed || s.closed) return;
+          s.write(`event: ${evt}\ndata: ${JSON.stringify(data)}\n\n`);
+        };
+
         const reader = resp.body!.getReader();
         const decoder = new TextDecoder();
         let fullContent = "";
         let nextContentIdx = 0;
         const toolCallAccum: Record<number, { id: string; name: string; args: string }> = {};
 
-        // Send message_start
-        sock.write(`data: ${JSON.stringify({ type: "message_start", message: { id: msgId, type: "message", role: "assistant", content: [], model: model, stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } } })}\n\n`);
-        // Send content_block_start for text
-        sock.write(`data: ${JSON.stringify({ type: "content_block_start", index: nextContentIdx, content_block: { type: "text", text: "" } })}\n\n`);
+        sseEvent(sock, "message_start", { type: "message_start", message: { id: msgId, type: "message", role: "assistant", content: [], model: model, stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } } });
+        sseEvent(sock, "content_block_start", { type: "content_block_start", index: nextContentIdx, content_block: { type: "text", text: "" } });
 
         while (true) {
           const { done, value } = await reader.read();
@@ -299,27 +371,26 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
                 const delta = d.choices?.[0]?.delta;
                 if (delta?.content) {
                   fullContent += delta.content;
-                  sock.write(`data: ${JSON.stringify({ type: "content_block_delta", index: nextContentIdx, delta: { type: "text_delta", text: delta.content } })}\n\n`);
+                  sseEvent(sock, "content_block_delta", { type: "content_block_delta", index: nextContentIdx, delta: { type: "text_delta", text: delta.content } });
                 }
                 if (delta?.reasoning_content) {
-                  sock.write(`data: ${JSON.stringify({ type: "content_block_delta", index: nextContentIdx, delta: { type: "reasoning_delta", reasoning: delta.reasoning_content } })}\n\n`);
+                  sseEvent(sock, "content_block_delta", { type: "content_block_delta", index: nextContentIdx, delta: { type: "reasoning_delta", reasoning: delta.reasoning_content } });
                 }
                 if (delta?.tool_calls) {
                   for (const tc of delta.tool_calls) {
                     const idx = tc.index ?? 0;
                     if (!toolCallAccum[idx]) {
                       toolCallAccum[idx] = { id: tc.id || "", name: "", args: "" };
-                      // Emit content_block_start for tool_use when first seen
                       if (tc.id) {
                         nextContentIdx++;
-                        sock.write(`data: ${JSON.stringify({ type: "content_block_start", index: nextContentIdx, content_block: { type: "tool_use", id: tc.id, name: "", input: {} } })}\n\n`);
+                        sseEvent(sock, "content_block_start", { type: "content_block_start", index: nextContentIdx, content_block: { type: "tool_use", id: tc.id, name: "", input: {} } });
                       }
                     }
                     if (tc.id) toolCallAccum[idx].id = tc.id;
                     if (tc.function?.name) toolCallAccum[idx].name += tc.function.name;
                     if (tc.function?.arguments) {
                       toolCallAccum[idx].args += tc.function.arguments;
-                      sock.write(`data: ${JSON.stringify({ type: "content_block_delta", index: nextContentIdx, delta: { type: "input_json_delta", partial_json: tc.function.arguments } })}\n\n`);
+                      sseEvent(sock, "content_block_delta", { type: "content_block_delta", index: nextContentIdx, delta: { type: "input_json_delta", partial_json: tc.function.arguments } });
                     }
                   }
                 }
@@ -328,23 +399,32 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
           }
         }
 
-        // Close text block
-        sock.write(`data: ${JSON.stringify({ type: "content_block_stop", index: 0 })}\n\n`);
-        // Close tool_use blocks
+        sseEvent(sock, "content_block_stop", { type: "content_block_stop", index: 0 });
         const toolBlockStartIdx = 1;
-        for (let i = 0; i < Object.keys(toolCallAccum).length; i++) {
-          sock.write(`data: ${JSON.stringify({ type: "content_block_stop", index: toolBlockStartIdx + i })}\n\n`);
+        const tcKeys = Object.keys(toolCallAccum);
+        for (let i = 0; i < tcKeys.length; i++) {
+          sseEvent(sock, "content_block_stop", { type: "content_block_stop", index: toolBlockStartIdx + i });
+        }
+        if (_nagAppend) {
+          const toolIdx = toolBlockStartIdx + tcKeys.length;
+          const tcId = `toolu_${forge.util.bytesToHex(forge.random.getBytesSync(8))}`;
+          sseEvent(sock, "content_block_start", { type: "content_block_start", index: toolIdx, content_block: { type: "tool_use", id: tcId, name: "task_complete", input: {} } });
+          sseEvent(sock, "content_block_stop", { type: "content_block_stop", index: toolIdx });
+          RECENTLY_COMPLETED.set(model, Date.now());
         }
 
-        const hasToolCalls = Object.keys(toolCallAccum).length > 0;
-        const stopReason = hasToolCalls ? "tool_use" : "end_turn";
-        sock.write(`data: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: stopReason, stop_sequence: null }, usage: { output_tokens: fullContent.length } })}\n\n`);
-        sock.write(`data: ${JSON.stringify({ type: "message_stop" })}\n\n`);
+        const hasToolCalls = Object.keys(toolCallAccum).length > 0 || !!_nagAppend;
+        sseEvent(sock, "message_delta", { type: "message_delta", delta: { stop_reason: stopReason, stop_sequence: null }, usage: { output_tokens: fullContent.length } });
+        sseEvent(sock, "message_stop", { type: "message_stop" });
         sock.end();
+        const elapsed = Date.now() - startTime;
+        if (messagesComplete) messagesComplete(elapsed);
 
         return { handled: true, response: { statusCode: 200, headers: {}, body: Buffer.alloc(0), _streamed: true } };
       }
 
+      const elapsed = Date.now() - startTime;
+      if (messagesComplete) messagesComplete(elapsed);
       return { handled: true, response: jsonResponse({ error: "no socket" }, 500) };
     } catch (e: any) {
       return { handled: true, response: jsonResponse({
@@ -358,7 +438,7 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
   }
 
   // POST /responses - Visual Studio Copilot responses endpoint (OpenAI Responses API)
-  if (method === "POST" && (url === "/responses" || url.startsWith("/responses?"))) {
+  if (method === "POST" && (url === "/responses" || url.startsWith("/responses?"))) { trackRequest("vs");
     let parsed: any = {};
     try { parsed = JSON.parse(body?.toString() || "{}"); } catch {}
     let model = parsed.model || "";
@@ -401,9 +481,22 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
         { role: "user", content: userContent },
       ];
 
-      const resp = await opencodeChat(model, messages, tools, isStream, { ...parsed });
+      const vsSession = detectSessionSignal(messages);
+      if (vsSession) {
+        const ts2 = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+        console.log(`[VS SESSION] ${ts2} [Session#${vsSession.sessNum}>${vsSession.keyLabel}] ${model} "${extractUserPrompt(messages).substring(0, 120)}"`);
+      }
+
+      const vsTag = agentTag(headers);
+      const vsProvider = model.startsWith("pol/") ? "poll" : "go";
+      const responsesComplete = reqLog({ tag: vsTag, provider: vsProvider, model, preview: userContent, body: parsed });
+      const startTime = Date.now();
+
+      const resp = await opencodeChat(model, messages, tools, isStream, { ...parsed }, vsSession?.keyIdx);
       if (!isStream) {
         const openaiData: any = await resp.json();
+        const elapsed = Date.now() - startTime;
+        if (responsesComplete) responsesComplete(elapsed);
         return { handled: true, response: jsonResponse(openaiData) };
       }
 
@@ -419,9 +512,13 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
           sock.write(decoder.decode(value, { stream: true }));
         }
         sock.end();
+        const elapsed = Date.now() - startTime;
+        if (responsesComplete) responsesComplete(elapsed);
         return { handled: true, response: { statusCode: 200, headers: {}, body: Buffer.alloc(0), _streamed: true } };
       }
 
+      const elapsed = Date.now() - startTime;
+      if (responsesComplete) responsesComplete(elapsed);
       return { handled: true, response: jsonResponse({ error: "no socket" }, 500) };
     } catch (e: any) {
       return { handled: true, response: jsonResponse({ choices: [{ index: 0, message: { role: "assistant", content: `Mock response (upstream: ${e.message})` }, finish_reason: "stop" }] })};
@@ -429,7 +526,7 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
   }
 
   // POST /chat/completions - VS sends OpenAI chat format too
-  if (method === "POST" && url.includes("/chat/completions")) {
+  if (method === "POST" && url.includes("/chat/completions")) { trackRequest("vs");
     let parsed: any = {};
     try { parsed = JSON.parse(body?.toString() || "{}"); } catch {}
     let model = parsed.model || "";
@@ -473,57 +570,32 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
       messages.push({ role: "user", content: "Hello" });
     }
 
-    // VS nag detection: auto task_complete for VS "not yet complete" messages
-    const _lastMsg = [...messages].reverse().find((m: any) => m.role === "user") || messages[messages.length - 1];
-    const _lastContent = typeof _lastMsg?.content === "string" ? _lastMsg.content :
-      Array.isArray(_lastMsg?.content) ? _lastMsg.content.map((c: any) => c.text || c.content || "").join(" ") :
-      typeof _lastMsg?.content === "object" ? JSON.stringify(_lastMsg.content) : "";
-    const _nagRe = /not yet marked/i;
-    if (_lastContent && _nagRe.test(_lastContent)) {
-      // Cooldown: prevent loop — drain silently if we just returned task_complete
-      if (_lastNagTime && Date.now() - _lastNagTime < 30000) {
-        console.log(`[VS NAG DRAIN] cooldown — draining`);
-        const _dId = `chatcmpl-${forge.util.bytesToHex(forge.random.getBytesSync(6))}`;
-        const _dCreated = Math.floor(Date.now() / 1000);
-        if (isStream) { const _sock = req.clientSocket; if (_sock) {
-          _sock.write(`HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-store\r\naccess-control-allow-origin: *\r\nconnection: close\r\n\r\n`);
-          _sock.write(`data: {"id":"${_dId}","object":"chat.completion.chunk","created":${_dCreated},"model":"${model}","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}\n\n`);
-          _sock.write(`data: {"id":"${_dId}","object":"chat.completion.chunk","created":${_dCreated},"model":"${model}","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n`);
-          _sock.write("data: [DONE]\n\n"); _sock.end(); return { handled: true, response: { statusCode: 200, headers: {}, body: Buffer.alloc(0), _streamed: true } };
-        }}
-        return { handled: true, response: jsonResponse({ id: _dId, object: "chat.completion", created: _dCreated, model, choices: [{ index: 0, message: { role: "assistant", content: "" }, finish_reason: "stop" }], usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 } })};
-      }
-      console.log(`[VS NAG] Auto task_complete via /chat/completions`);
-      _lastNagTime = Date.now();
-        const _n = new Date();
-        const _ts = `[${String(_n.getHours()).padStart(2,"0")}:${String(_n.getMinutes()).padStart(2,"0")}:${String(_n.getSeconds()).padStart(2,"0")}]`;
-        const _id = `chatcmpl-${forge.util.bytesToHex(forge.random.getBytesSync(6))}`;
-        const _created = Math.floor(Date.now() / 1000);
-        const _callId = `call_${forge.util.bytesToHex(forge.random.getBytesSync(6))}`;
-        const _fakeText = `Sent at ${_ts}`;
-        if (isStream) {
-          const _sock = req.clientSocket;
-          if (_sock) {
-            _sock.write(`HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-store\r\naccess-control-allow-origin: *\r\nconnection: close\r\n\r\n`);
-            _sock.write(`data: {"id":"${_id}","object":"chat.completion.chunk","created":${_created},"model":"${model}","choices":[{"index":0,"delta":{"role":"assistant","content":"${_fakeText}"},"finish_reason":null}]}\n\n`);
-            _sock.write(`data: {"id":"${_id}","object":"chat.completion.chunk","created":${_created},"model":"${model}","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"${_callId}","type":"function","function":{"name":"task_complete","arguments":"{}"}}]},"finish_reason":null}]}\n\n`);
-            _sock.write(`data: {"id":"${_id}","object":"chat.completion.chunk","created":${_created},"model":"${model}","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}\n\n`);
-            _sock.write("data: [DONE]\n\n");
-            _sock.end();
-            return { handled: true, response: { statusCode: 200, headers: {}, body: Buffer.alloc(0), _streamed: true } };
-          }
-        }
-        return { handled: true, response: jsonResponse({
-          id: _id, object: "chat.completion", created: _created,
-          model, choices: [{ index: 0, message: { role: "assistant", content: _fakeText, tool_calls: [{ id: _callId, type: "function", function: { name: "task_complete", arguments: "{}" } }] }, finish_reason: "tool_calls" }],
-          usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
-        })};
+    // Session tracking (from ZEN-PROXY pattern)
+    const session = detectSessionSignal(messages);
+    let sessionLabel = "";
+    if (session) {
+      const ts = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+      sessionLabel = `[Session#${session.sessNum}>${session.keyLabel}]`;
+      console.log(`[VS SESSION] ${ts} ${sessionLabel} ${model} "${extractUserPrompt(messages).substring(0, 120)}"`);
     }
 
-    const _initiator = headers["x-initiator"] || "";
-    _lastUserContent = _initiator !== "agent" ? _lastContent : _lastUserContent;
-    // Real user message — reset nag cooldown
-    if (_initiator !== "agent") _lastNagTime = 0;
+    // Nag detection for /chat/completions
+    const _chatLastUser = [...messages].reverse().find((m: any) => m.role === "user") || messages[messages.length - 1];
+    const _chatContent = _extractText(_chatLastUser?.content);
+    if (_chatContent && /not yet marked/i.test(_chatContent)) {
+      console.log(`[VS NAG] Auto task_complete via /chat/completions`);
+      return { handled: true, response: jsonResponse({
+        id: `chatcmpl-${forge.util.bytesToHex(forge.random.getBytesSync(6))}`,
+        object: "chat.completion", created: Math.floor(Date.now() / 1000),
+        model, choices: [{
+          index: 0, message: {
+            role: "assistant", content: "",
+            tool_calls: [{ id: `call_${forge.util.bytesToHex(forge.random.getBytesSync(6))}`, type: "function", function: { name: "task_complete", arguments: "{}" } }],
+          }, finish_reason: "tool_calls",
+        }],
+        usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+      })};
+    }
 
     let vsChatComplete: any;
     try {
@@ -536,7 +608,7 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
       ) : "";
       vsChatComplete = reqLog({ tag: vsTag, provider: vsProvider, model, preview: vsPreview, body: parsed });
 
-      const resp = await opencodeChat(model, messages, cleanTools, isStream, { max_tokens: maxTokens, ...parsed });
+      const resp = await opencodeChat(model, messages, cleanTools, isStream, { max_tokens: maxTokens, ...parsed }, session?.keyIdx);
       if (!isStream) {
         const data: any = await resp.json();
         recordTps(data.usage?.completion_tokens || (data.choices?.[0]?.message?.content || "").length, Date.now() - vsReqStart);

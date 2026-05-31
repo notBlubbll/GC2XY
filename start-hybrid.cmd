@@ -46,9 +46,6 @@ for /f %%p in (.proxy-host-pid) do (
 del .proxy-host-pid >nul 2>&1
 :skip_pid_kill
 
-taskkill /F /IM bun.exe >nul 2>&1
-taskkill /F /IM node.exe >nul 2>&1
-
 sc query w3svc | findstr "RUNNING" >nul 2>&1
 if %ERRORLEVEL% NEQ 0 goto :no_iis
 echo   IIS detected - using IIS reverse proxy mode on port 3080

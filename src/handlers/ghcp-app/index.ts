@@ -1,9 +1,15 @@
 import { HandlerInput, HandlerResult, htmlResponse } from "../../shared.ts";
 import { isGHCPApp } from "./auth.ts";
 import { handleGHCPModels } from "./models.ts";
+import { trackRequest } from "../../usage-tracker.ts";
+
+export function handleGHCPApp(req: HandlerInput): Promise<HandlerResult> {
+  trackRequest("ghcp");
+  return _handleGHCPApp(req);
+}
 
 // GHCP feedback page — opened in browser when user clicks feedback in GitHub Desktop
-export function handleGHCPFeedback(req: HandlerInput): HandlerResult {
+function _handleGHCPFeedback(req: HandlerInput): HandlerResult {
   const { method, url } = req;
   if (method !== "GET") return { handled: false };
   if (!url.includes("/github/app/discussions") && !url.includes("/github/github-app/discussions")) {
@@ -31,9 +37,9 @@ In production, this would connect to the real GitHub Discussions.</p>
   };
 }
 
-export async function handleGHCPApp(req: HandlerInput): Promise<HandlerResult> {
+export async function _handleGHCPApp(req: HandlerInput): Promise<HandlerResult> {
   // Check feedback/discussions page first (regardless of UA — opened in browser)
-  const feedbackResult = handleGHCPFeedback(req);
+  const feedbackResult = _handleGHCPFeedback(req);
   if (feedbackResult.handled) return feedbackResult;
 
   if (!isGHCPApp(req)) return { handled: false };

@@ -29,9 +29,9 @@ function forceDarkMode(): void {
 }
 
 const LOGO = [
-`${S}${B}█▀▀▀ █▀▀▀ ${C}${B}█▀▀█ ${W}${B}▀▄ ▄▀ ▀▄ ▄▀${R}`,
-`${S}${B}█ ▀█ █    ${C}${B} ▄▀▀ ${W}${B}  █     █  ${R}`,
-`${S}${B}█▄▄█ █▄▄▄ ${C}${B}█▄▄▄ ${W}${B}▄▀ ▀▄   █  ${R}`,
+`${S}${B}█▀▀▀ █▀▀▀ ${C}${B}▀▀▀█ ${W}${B}█  █ █  █${R}`,
+`${S}${B}█ ▀█ █    ${C}${B}█▀▀▀ ${W}${B}▄▀▀▄ ▀▀▀█${R}`,
+`${S}${B}▀▀▀▀ ▀▀▀▀ ${C}${B}▀▀▀▀ ${W}${B}▀  ▀ ▀▀▀▀${R}`,
 ];
 
 let _initialized = false;
@@ -737,13 +737,19 @@ export function initSplitConsole(): void {
   setTabColor("00FFFF");
 
   // Patch console.log globally
-  // Messages starting with `[` (FAKE, VISUAL, MODEL, etc.) are internal/handler debug noise — push as debug-only
+  // Most `[`-prefixed messages are handler logs; only specific noisy ones are debug-only.
+  // Important: [VS SESSION], [COPILOT SESSION], [VISUAL STUDIO], [MODEL] show without debug.
+  const _debugPrefixes = [
+    "[RESP BODY]", "[REASONING CACHE]", "[FAKE GHE]", "[FAKE DEVICE LOGIN]", "[FAKE DEVICE]",
+    "[RECORD]", "[REPLAY]", "[MOCK V1/MESSAGES]", "[MOCK FALLBACK]", "[VISUAL STUDIO]",
+    "[VS SESSION]", "[COPILOT SESSION]",
+  ];
   _origLog = console.log;
   console.log = (...args: any[]) => {
     if (!_initialized) { _origLog!(...args); return; }
     const msg = args.map(a => typeof a === "object" ? JSON.stringify(a) : String(a)).join(" ").replace(/\n/g, " ").replace(/\s+/g, " ").trim();
     if (!msg) return;
-    const isDebug = msg.startsWith("[");
+    const isDebug = _debugPrefixes.some(p => msg.startsWith(p));
     _buffer.push({ text: msg, debug: isDebug, ts: ts() });
     _scrollOffset = 0;
     _redraw();

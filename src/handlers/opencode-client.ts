@@ -102,6 +102,77 @@ function saveKeyState(): void {
   } catch {}
 }
 
+// ── Session Tracking (from ZEN-PROXY proxy.js) ──
+
+const TITLE_PROMPT_RE = /generate\s+a\s+title\s+for\s+this\s+conversation/i;
+
+const conversationMap = new Map<string, { keyIdx: number; requestCount: number; sessNum: number }>();
+let globalSessionCounter = 0;
+
+export function extractUserPrompt(messages: any[]): string {
+  if (!Array.isArray(messages)) return '';
+  const text = (m: any) =>
+    typeof m.content === 'string' ? m.content :
+    (Array.isArray(m.content) ? m.content.find((p: any) => p?.type === 'text')?.text || '' : '');
+  const user = [...messages].reverse().find((m: any) => m.role === 'user');
+  if (!user) return '';
+  return text(user).replace(/^\[[^\]]+\]\s*/, '');
+}
+
+export function fingerprintPayload(messages: any[]): string | null {
+  if (!Array.isArray(messages)) return null;
+  const text = (m: any) =>
+    typeof m.content === 'string' ? m.content :
+    (Array.isArray(m.content) ? m.content.find((p: any) => p?.type === 'text')?.text || '' : '');
+  let idx = messages.findIndex((m: any) => m.role === 'user' && !TITLE_PROMPT_RE.test(text(m)));
+  if (idx < 0) idx = messages.findIndex((m: any) => m.role === 'user');
+  if (idx < 0) return null;
+  const raw = text(messages[idx]);
+  const stripped = raw.replace(/^\[[^\]]+\]\s*/, '');
+  return crypto.createHash('md5').update(stripped).digest('hex').slice(0, 12);
+}
+
+export function detectSessionSignal(messages: any[]): { sessNum: number; keyIdx: number; keyLabel: string } | null {
+  const fingerprint = fingerprintPayload(messages);
+  if (!fingerprint) return null;
+
+  loadKeys();
+
+  const entry = conversationMap.get(fingerprint);
+  if (entry !== undefined) {
+    entry.requestCount++;
+    const label = keys[entry.keyIdx] ? `Key${entry.keyIdx + 1}` : `Key${entry.keyIdx + 1}`;
+    return { sessNum: entry.sessNum, keyIdx: entry.keyIdx, keyLabel: label };
+  }
+
+  let keyIdx = 0;
+  if (keys.length > 1) {
+    const idx = Math.floor(Math.random() * keys.length);
+    keyIdx = idx;
+  }
+  const newEntry = { keyIdx, requestCount: 1, sessNum: ++globalSessionCounter };
+  conversationMap.set(fingerprint, newEntry);
+
+  const text = (m: any) =>
+    typeof m.content === 'string' ? m.content :
+    (Array.isArray(m.content) ? m.content.find((p: any) => p?.type === 'text')?.text || '' : '');
+  let stampIdx = messages.findIndex((m: any) => m.role === 'user' && !TITLE_PROMPT_RE.test(text(m)));
+  if (stampIdx < 0) stampIdx = messages.findIndex((m: any) => m.role === 'user');
+  const m = messages[stampIdx];
+  const curLabel = `Key${keyIdx + 1}|sess${newEntry.sessNum}`;
+  const setter = (c: any) => {
+    if (typeof c === 'string') return `[${curLabel}] ${c}`;
+    if (Array.isArray(c)) {
+      const b = c.find((p: any) => p?.type === 'text');
+      if (b) b.text = `[${curLabel}] ${b.text}`;
+    }
+    return c;
+  };
+  if (m) m.content = setter(m.content);
+
+  return { sessNum: newEntry.sessNum, keyIdx, keyLabel: `Key${keyIdx + 1}` };
+}
+
 export function storeReasoning(content: string, reasoning: string) {
   if (!content || !reasoning) return;
   reasoningCache.set(`r:${content.slice(0, 100)}`, reasoning);
@@ -284,8 +355,12 @@ class ApiBalancer {
   }
 }
 
-function withKey(): string {
+function withKey(pinnedKeyIdx?: number): string {
   loadKeys();
+  if (!keys.length) return "";
+  if (pinnedKeyIdx !== undefined && pinnedKeyIdx >= 0 && pinnedKeyIdx < keys.length) {
+    return keys[pinnedKeyIdx];
+  }
   if (!balancer) return keys[0] || "";
   return balancer.getNextKey();
 }
@@ -307,7 +382,31 @@ function getModelTier(modelId: string): "go" | "free" | "poll" {
   return "go";
 }
 
-export async function chatCompletion(modelId: string, messages: any[], tools?: any[], stream = true, extra: Record<string, any> = {}): Promise<Response> {
+function normalizeTool(t: any): any {
+  if (!t) return t;
+  // Already in proper OpenAI format
+  if (t.type === "function" && t.function?.name) return t;
+  // Has function wrapper but no type
+  if (t.function?.name) return { type: "function", function: t.function };
+  // Anthropic format: {name, description, input_schema}
+  if (t.name && t.input_schema) return { type: "function", function: { name: t.name, description: t.description || "", parameters: t.input_schema } };
+  // Simple format: {name, description, parameters}
+  if (t.name) return { type: "function", function: { name: t.name, description: t.description || "", parameters: t.parameters || {} } };
+  // Fallback with available properties
+  return { type: "function", function: { name: t.function?.name || t.name || "unknown", description: t.description || t.function?.description || "", parameters: t.parameters || t.input_schema || t.function?.parameters || {} } };
+}
+
+function normalizeToolChoice(tc: any): any {
+  if (tc === undefined || tc === null || typeof tc === "string") return tc;
+  // Anthropic format: {type: "auto"|"any"} → "auto"
+  if (tc.type === "auto" || tc.type === "any") return "auto";
+  // Anthropic format: {type: "tool", name: "..."} → OpenAI {type: "function", function: {name}}
+  if (tc.type === "tool" && tc.name) return { type: "function", function: { name: tc.name } };
+  // Already OpenAI format or pass-through
+  return tc;
+}
+
+export async function chatCompletion(modelId: string, messages: any[], tools?: any[], stream = true, extra: Record<string, any> = {}, pinnedKeyIdx?: number): Promise<Response> {
   loadKeys();
   const tier = getModelTier(modelId);
   const isFree = tier === "free" || tier === "poll";
@@ -319,7 +418,14 @@ export async function chatCompletion(modelId: string, messages: any[], tools?: a
 
   const base = isPoll ? "https://text.pollinations.ai/openai" : (isFree ? CONFIG.baseUrlFree : CONFIG.baseUrl);
   const url = `${base}/chat/completions`;
-  const key = withKey();
+  const key = withKey(pinnedKeyIdx);
+
+  // Extract and normalize tool_choice from extra before body spread
+  let _toolChoice: any;
+  if (extra.tool_choice !== undefined) {
+    _toolChoice = normalizeToolChoice(extra.tool_choice);
+    delete extra.tool_choice;
+  }
 
   const injected = injectCachedReasoning(messages, modelId);
   const body: any = { ...extra };
@@ -334,15 +440,14 @@ export async function chatCompletion(modelId: string, messages: any[], tools?: a
   });
   body.stream = stream;
   if (body.stream === false) delete body.stream;
-  // Normalize tools: ensure each has type=function and a function.name wrapper
-  if (tools?.length) {
-    body.tools = tools.map((t: any) => {
-      if (t.type !== "function" || !t.function) {
-        return { type: "function", function: { name: t.name || t.function?.name || "unknown", description: t.description || "", parameters: t.parameters || t.input_schema || {} } };
-      }
-      return t;
-    });
+  // Normalize tools with format-agnostic helper
+  if (tools !== undefined) {
+    body.tools = tools.length ? tools.map(normalizeTool) : undefined;
+  } else if (body.tools?.length) {
+    body.tools = body.tools.map(normalizeTool);
   }
+  // Set tool_choice explicitly after spread so it's never overwritten by extra
+  if (_toolChoice !== undefined) body.tool_choice = _toolChoice;
   const modelIdLower = modelId.toLowerCase();
   // DeepSeek min tokens — ensures enough room for thinking output
   if (modelIdLower.includes("deepseek") && (body.max_tokens == null || body.max_tokens < 1024)) {
@@ -536,6 +641,8 @@ async function fetchPollinationsModels(): Promise<string[]> {
 // ── Real context window cache (from models.dev) ──
 let _ctxCache: Record<string, number> | null = null;
 let _visionSet: Set<string> | null = null;
+let _familyCache: Record<string, string> = {};
+let _nameCache: Record<string, string> = {};
 
 async function fetchModelCtxMap(): Promise<Record<string, number>> {
   if (_ctxCache) return _ctxCache;
@@ -548,6 +655,8 @@ async function fetchModelCtxMap(): Promise<Record<string, number>> {
       const md: any = await resp.json();
       const ctx: Record<string, number> = {};
       const vis = new Set<string>();
+      const fam: Record<string, string> = {};
+      const nameCache: Record<string, string> = {};
       for (const ns of ["opencode-go", "opencode"]) {
         for (const [id, info] of Object.entries(md[ns]?.models || {})) {
           const entry = info as any;
@@ -555,11 +664,15 @@ async function fetchModelCtxMap(): Promise<Record<string, number>> {
           if (limit?.context) ctx[id] = limit.context;
           const mods = entry?.modalities;
           if (mods?.input?.includes("image")) vis.add(id);
+          if (entry?.family) fam[id] = entry.family;
+          if (entry?.name) nameCache[id] = entry.name;
         }
       }
       if (Object.keys(ctx).length > 0) {
         _ctxCache = ctx;
         _visionSet = vis;
+        _familyCache = fam;
+        _nameCache = nameCache;
         if (isDebug()) console.log(`\n[MODEL CTX] loaded ${Object.keys(ctx).length} context lengths from models.dev`);
       }
     }
@@ -575,6 +688,36 @@ export function getModelCtx(id: string): number {
 
 export function modelHasVision(id: string): boolean {
   return _visionSet?.has(id) ?? false;
+}
+
+export function getModelDisplayName(id: string): string {
+  const cached = _nameCache?.[id];
+  if (cached) {
+    const cleaned = cached.replace(/-/g, " ").replace(/\bV(?=\d)/g, "v");
+    return cleaned;
+  }
+  const base = id.split("/").pop() || id;
+  return base.split("-").map((p, i) => {
+    const first = p.charAt(0).toUpperCase() + p.slice(1);
+    if (p.length === 1 && p === "v" && i > 0) return p;
+    return first;
+  }).join(" ").replace(/(\d)\.(\d)/g, "$1.$2").replace(/\bV(?=\d)/g, "v");
+}
+
+function normalizeFamily(raw: string): string {
+  let f = raw.replace(/^thinking-/, "");
+  const idx = f.indexOf("-");
+  if (idx > 0) f = f.slice(0, idx);
+  f = f.replace(/[\d.]+$/, "");
+  return f || raw;
+}
+
+export function getModelFamily(id: string): string {
+  const fromApi = _familyCache?.[id];
+  if (fromApi) return normalizeFamily(fromApi);
+  const fromInfo = MODEL_INFO[id]?.family;
+  if (fromInfo) return normalizeFamily(fromInfo);
+  return "";
 }
 
 // ── Per-provider model ID caches ──
@@ -668,107 +811,25 @@ export function getKeyStatus(): any[] {
   });
 }
 
-// ── Ollama-Compatible Model Metadata ──
+// ── Model Metadata (for family lookups) ──
 
-const MODEL_INFO: Record<string, { display: string; family: string; paramCount: number; contextLength: number; capabilities: string[] }> = {
-  "deepseek-v4-pro": { display: "DeepSeek V4 Pro", family: "deepseek4", paramCount: 1600000000000, contextLength: 1048576, capabilities: ["completion", "tools", "thinking"] },
-  "deepseek-v4-flash": { display: "DeepSeek V4 Flash", family: "deepseek4", paramCount: 158000000000, contextLength: 1048576, capabilities: ["completion", "tools", "thinking"] },
-  "glm-5.1": { display: "GLM 5.1", family: "glm", paramCount: 756000000000, contextLength: 202752, capabilities: ["thinking", "completion", "tools"] },
-  "glm-5": { display: "GLM 5", family: "glm", paramCount: 540000000000, contextLength: 202752, capabilities: ["thinking", "completion", "tools"] },
-  "kimi-k2.6": { display: "Kimi K2.6", family: "kimi-k2", paramCount: 1040000000000, contextLength: 262144, capabilities: ["vision", "thinking", "completion", "tools"] },
-  "kimi-k2.5": { display: "Kimi K2.5", family: "kimi-k2", paramCount: 1040000000000, contextLength: 262144, capabilities: ["thinking", "completion", "tools"] },
-  "minimax-m2.7": { display: "MiniMax M2.7", family: "minimax-m2", paramCount: 229000000000, contextLength: 196608, capabilities: ["completion", "tools", "thinking"] },
-  "minimax-m2.5": { display: "MiniMax M2.5", family: "minimax-m2", paramCount: 200000000000, contextLength: 196608, capabilities: ["completion", "tools", "thinking"] },
-  "mimo-v2.5-pro": { display: "MiMo V2.5 Pro", family: "mimo", paramCount: 456000000000, contextLength: 262144, capabilities: ["completion", "tools", "thinking"] },
-  "mimo-v2.5": { display: "MiMo V2.5", family: "mimo", paramCount: 456000000000, contextLength: 262144, capabilities: ["completion", "tools", "thinking"] },
-  "mimo-v2-pro": { display: "MiMo V2 Pro", family: "mimo", paramCount: 456000000000, contextLength: 262144, capabilities: ["completion", "tools"] },
-  "mimo-v2-omni": { display: "MiMo V2 Omni", family: "mimo", paramCount: 456000000000, contextLength: 262144, capabilities: ["completion", "tools"] },
-  "qwen3.6-plus": { display: "Qwen 3.6 Plus", family: "qwen3", paramCount: 72000000000, contextLength: 131072, capabilities: ["completion", "tools", "thinking"] },
-  "qwen3.5-plus": { display: "Qwen 3.5 Plus", family: "qwen3", paramCount: 72000000000, contextLength: 131072, capabilities: ["completion", "tools", "thinking"] },
-  "hy3-preview": { display: "HY3 Preview", family: "hy3", paramCount: 0, contextLength: 131072, capabilities: ["completion", "tools"] },
-  "big-pickle": { display: "Big Pickle", family: "pickle", paramCount: 0, contextLength: 1000000, capabilities: ["completion", "tools", "thinking"] },
+const MODEL_INFO: Record<string, { family: string; paramCount: number; contextLength: number; capabilities: string[] }> = {
+  "deepseek-v4-pro": { family: "deepseek4", paramCount: 1600000000000, contextLength: 1048576, capabilities: ["completion", "tools", "thinking"] },
+  "deepseek-v4-flash": { family: "deepseek4", paramCount: 158000000000, contextLength: 1048576, capabilities: ["completion", "tools", "thinking"] },
+  "glm-5.1": { family: "glm", paramCount: 756000000000, contextLength: 202752, capabilities: ["thinking", "completion", "tools"] },
+  "glm-5": { family: "glm", paramCount: 540000000000, contextLength: 202752, capabilities: ["thinking", "completion", "tools"] },
+  "kimi-k2.6": { family: "kimi-k2", paramCount: 1040000000000, contextLength: 262144, capabilities: ["vision", "thinking", "completion", "tools"] },
+  "kimi-k2.5": { family: "kimi-k2", paramCount: 1040000000000, contextLength: 262144, capabilities: ["thinking", "completion", "tools"] },
+  "minimax-m2.7": { family: "minimax-m2", paramCount: 229000000000, contextLength: 196608, capabilities: ["completion", "tools", "thinking"] },
+  "minimax-m2.5": { family: "minimax-m2", paramCount: 200000000000, contextLength: 196608, capabilities: ["completion", "tools", "thinking"] },
+  "mimo-v2.5-pro": { family: "mimo", paramCount: 456000000000, contextLength: 262144, capabilities: ["completion", "tools", "thinking"] },
+  "mimo-v2.5": { family: "mimo", paramCount: 456000000000, contextLength: 262144, capabilities: ["completion", "tools", "thinking"] },
+  "mimo-v2-pro": { family: "mimo", paramCount: 456000000000, contextLength: 262144, capabilities: ["completion", "tools"] },
+  "mimo-v2-omni": { family: "mimo", paramCount: 456000000000, contextLength: 262144, capabilities: ["completion", "tools"] },
+  "qwen3.6-plus": { family: "qwen3", paramCount: 72000000000, contextLength: 131072, capabilities: ["completion", "tools", "thinking"] },
+  "qwen3.5-plus": { family: "qwen3", paramCount: 72000000000, contextLength: 131072, capabilities: ["completion", "tools", "thinking"] },
+  "hy3-preview": { family: "hy3", paramCount: 0, contextLength: 131072, capabilities: ["completion", "tools"] },
+  "big-pickle": { family: "pickle", paramCount: 0, contextLength: 1000000, capabilities: ["completion", "tools", "thinking"] },
 };
 
-const THINKING_TAG_PARAMS: Record<string, string> = {
-  LOW: "low", MEDIUM: "medium", HIGH: "high", MAXIMUM: "max",
-  MED: "medium", MAX: "max", LO: "low", MD: "medium", HI: "high", MX: "max",
-};
 
-const THINKING_TAG_SHORT: Record<string, string> = {
-  L: "LOW", M: "MEDIUM", H: "HIGH", X: "MAXIMUM",
-  LO: "LOW", MD: "MEDIUM", HI: "HIGH", MX: "MAXIMUM",
-  MED: "MEDIUM", MAX: "MAXIMUM",
-};
-
-export function getThinkingModes(modelId: string): string[] {
-  const l = modelId.toLowerCase();
-  const exclude = ["glm", "kimi", "k2p", "minimax", "qwen", "big-pickle", "hy3", "ring", "nemotron",
-                   "deepseek-chat", "deepseek-reasoner", "deepseek-r1", "deepseek-v3"];
-  for (const e of exclude) {
-    if (l.includes(e)) return [];
-  }
-  if (l.includes("deepseek-v4")) return ["LOW", "MEDIUM", "HIGH", "MAXIMUM"];
-  if (l.includes("mimo") && MODEL_INFO[modelId]?.capabilities.includes("thinking")) {
-    return ["LOW", "MEDIUM", "HIGH"];
-  }
-  return [];
-}
-
-export function formatContext(n: number): string {
-  if (n >= 1000000) return `${Math.floor(n / 1000000)}M`;
-  if (n >= 1000) return `${Math.floor(n / 1000)}K`;
-  return `${n}`;
-}
-
-export function normalizeModel(raw: string): { modelId: string; level: string } {
-  const clean = raw.replace(/:latest$/, "").trim();
-  if (!clean) return { modelId: "", level: "" };
-
-  // VSCode format: deepseek-v4-pro/1_(low)
-  const m1 = clean.match(/^(.+?)\/(\d)_\((low|medium|high|maximum|xhigh)\)?$/i);
-  if (m1) {
-    const tag = m1[3].toUpperCase();
-    return { modelId: `${m1[1].trim()}:latest`, level: tag === "MAXIMUM" ? tag : tag };
-  }
-
-  // Bracket format: DeepSeek V4 Pro [HIGH]
-  const m2 = clean.match(/^(.+?)[\-\-: \u2009]\s*\[?(L|M|H|X|LOW|MEDIUM|HIGH|MAXIMUM|MED|MAX|XHIGH|MINIMAL|NONE|LO|MD|HI|MX)\]\s*$/i);
-  if (m2) {
-    const rawTag = m2[2].toUpperCase();
-    const tag = THINKING_TAG_SHORT[rawTag] || rawTag;
-    return { modelId: `${m2[1].trim()}:latest`, level: tag };
-  }
-
-  // Encoded suffix
-  for (const level of Object.keys(THINKING_TAG_PARAMS)) {
-    if (clean.endsWith(`:${level}`)) {
-      const mid = clean.slice(0, -level.length - 1).replace(":cloud", "");
-      if (MODEL_INFO[mid]) return { modelId: mid, level };
-    }
-    const ll = level.toLowerCase();
-    if (clean.endsWith(`:${ll}`)) {
-      const mid = clean.slice(0, -ll.length - 1).replace(":cloud", "");
-      if (MODEL_INFO[mid]) return { modelId: mid, level };
-    }
-  }
-
-  // Direct lookup
-  const stripped = clean.replace(":cloud", "");
-  if (MODEL_INFO[stripped]) return { modelId: stripped, level: "" };
-  if (MODEL_INFO[clean]) return { modelId: clean, level: "" };
-
-  // Fallback: return as-is
-  return { modelId: clean, level: "" };
-}
-
-export function getModelOllamaInfo(modelId: string) {
-  const baseId = modelId.replace(":latest", "").replace(":cloud", "").trim();
-  return MODEL_INFO[baseId] || MODEL_INFO[modelId] || null;
-}
-
-export function getOllamaThinkingParams(level: string): Record<string, any> {
-  if (level && THINKING_TAG_PARAMS[level]) {
-    return { reasoning_effort: THINKING_TAG_PARAMS[level] };
-  }
-  return {};
-}

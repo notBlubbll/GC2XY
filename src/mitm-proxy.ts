@@ -1,4 +1,4 @@
-import { createServer, createConnection, Socket } from "node:net";
+﻿import { createServer, createConnection, Socket } from "node:net";
 import { createServer as createTlsServer, TLSSocket } from "node:tls";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
@@ -13,9 +13,9 @@ import * as deviceLogin from "./handlers/device-login-emulator.ts";
 import * as offlineStore from "./offline-store.ts";
 import * as splitConsole from "./split-console.ts";
 import { ts, agentTag, agentName, colorMethod, colorStatus, httpLogLine, generalLogLine, getTps, isDebug } from "./split-console.ts";
-import { getProjectRoot } from "./shared.ts";
-import { initModels, getModelIds as getOpencodeModelIds } from "./handlers/opencode-client.ts";
-import { fetchModels as fetchOpenCommandModels, hasKeys as hasOpenCommandKeys } from "./handlers/opencommand-client.ts";
+import { getProjectRoot, getMode, setMode, isProxy, isHybrid, isMock } from "./shared.ts";
+import { initModels } from "./handlers/opencode-client.ts";
+import { handleDashboard, incrementRequests as dashIncReq } from "./handlers/dashboard-handler.ts";
 
 // Real IP cache to bypass hosts file for non-intercepted requests
 const INTERCEPTED_HOSTS = ["github.com", "www.github.com", "api.github.com", "api.githubcopilot.com", "copilot-proxy.githubusercontent.com", "api.individual.githubcopilot.com", "origin-tracker.individual.githubcopilot.com", "proxy.individual.githubcopilot.com", "telemetry.individual.githubcopilot.com"];
@@ -42,11 +42,8 @@ async function getRealIp(host: string): Promise<string> {
   return host;
 }
 
-// Configuration � mode from launch args or gc2xy_MODE env
-const ARGS = new Set(process.argv.slice(1));
-const IS_PROXY = ARGS.has("--mode-3") || process.env.gc2xy_MODE === "proxy";
-const IS_HYBRID = ARGS.has("--mode-2") || process.env.gc2xy_MODE === "hybrid";
-const IS_MOCK = !IS_PROXY && !IS_HYBRID;
+// Configuration -- mode from launch args or gc2xy_MODE env (dynamic via setMode)
+
 const IIS_PROXY = process.env.IIS_PROXY === "1";
 const HTTP_PORT = parseInt(process.env.gc2xy_HTTP_PORT || (IIS_PROXY ? "3080" : "80"));
 const HTTPS_PORT = parseInt(process.env.gc2xy_HTTPS_PORT || "443");
@@ -62,7 +59,7 @@ mkdirSync(CERT_DIR, { recursive: true });
 try { unlinkSync("package-lock.json"); } catch {}
 
 // Logging with datetime + mode suffix
-const modeLogStr = IS_PROXY ? "PROXY" : IS_HYBRID ? "hybrid" : "mock";
+const modeLogStr = isProxy() ? "PROXY" : isHybrid() ? "hybrid" : "mock";
 const now = new Date();
 const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}_${String(now.getHours()).padStart(2, "0")}-${String(now.getMinutes()).padStart(2, "0")}`;
 const logFile = join(LOG_DIR, `traffic-${dateStr}-${modeLogStr}.log`);
@@ -93,7 +90,7 @@ function logPlainEnglish(reqNum: number, direction: "REQUEST" | "RESPONSE", meth
 
   const isDebugLine = (headers["editor-version"] || "").startsWith("VS/VisualStudio") ||
     (agentOverride || "").includes("VS") || agent.includes("VS") || agent.includes("TEAM") || agent.includes("APP") || agent.includes("GO-HT") ||
-    url.includes("/telemetry") || url.includes("/agents/sessions/") || url === "/" || url === "/favicon.ico" ||
+    url.includes("/telemetry") || url.includes("/agents/sessions/") || url === "/" || url === "/favicon.ico" || url === "/health" || url.includes("/api/status") || url.includes("/api/zenith/requests") ||
     headers["x-gc2xy-test"] === "1";
   if (isDebugLine) {
     splitConsole.debugLog(httpLogLine(dir, method, url, statusCode, agent));
@@ -116,12 +113,12 @@ function logPlainEnglish(reqNum: number, direction: "REQUEST" | "RESPONSE", meth
 
   if (reqNum % 5 === 0 || reqNum === 1) {
     splitConsole.drawStatusBar({
-      mode: IS_PROXY ? "PROXY" : IS_HYBRID ? "HYBRID" : "MOCK",
+      mode: getMode().toUpperCase(),
       requests: reqNum,
       port: IIS_PROXY ? `443 → ${HTTP_PORT}` : (INTERCEPT_MODE === "hosts" ? 443 : PROXY_PORT),
       target: TARGET_HOST,
       cacheHits: cacheHitCount,
-      PROXY: IS_PROXY,
+      PROXY: isProxy(),
       lastAgent: lastAgentName,
       tps: getTps(),
       runtime: runtimeTag,
@@ -441,15 +438,36 @@ async function runResponseInterceptors(res: InterceptedResponse): Promise<Interc
   return res;
 }
 
-// Device login bypass interceptor
+// Dashboard + device login interceptor chain
 addRequestInterceptor(async (req) => {
   if (req.response) return;
-  if (IS_PROXY) return;
   try {
     const handlerInput: HandlerInput = {
       method: req.method, url: req.url, headers: req.headers, body: req.body,
       hostname: req.hostname, port: req.port, clientSocket: req.clientSocket,
     };
+
+    // Dashboard/API routes intercepted in ALL modes (including proxy)
+    const urlPath = req.url.split("?")[0];
+    if (urlPath === "/dashboard" || urlPath === "/" || urlPath === "/health" ||
+        urlPath.startsWith("/api/")) {
+      const dashResult = await handleDashboard(handlerInput);
+      if (dashResult.handled && dashResult.response) {
+        dashIncReq();
+        if (dashResult.response._streamed) {
+          req._responseSent = true;
+        } else {
+          req.response = {
+            statusCode: dashResult.response.statusCode,
+            statusMessage: dashResult.response.statusMessage || "OK",
+            headers: dashResult.response.headers,
+            body: dashResult.response.body,
+          };
+        }
+        return;
+      }
+    }
+
     const result = await deviceLogin.handleDeviceLogin(handlerInput);
     if (result.handled && result.response) {
       if (result.response._streamed) {
@@ -574,12 +592,10 @@ async function forwardWithInterceptor(client: TLSSocket | Socket, method: string
       }
     }
     if (isSSE) {
-      respHeader += `Transfer-Encoding: chunked\r\n\r\n`;
+      respHeader += `Content-Length: ${resBody.length}\r\nConnection: close\r\n\r\n`;
       client.write(respHeader);
-      const chunk = Buffer.from(resBody.length.toString(16) + "\r\n");
-      client.write(chunk);
-      client.write(resBody);
-      client.write(Buffer.from("\r\n0\r\n\r\n"));
+      if (resBody.length > 0) client.write(resBody);
+      client.end();
     } else {
       respHeader += `Content-Length: ${resBody.length}\r\nConnection: close\r\n\r\n`;
       client.write(respHeader);
@@ -646,7 +662,7 @@ async function forwardWithInterceptor(client: TLSSocket | Socket, method: string
           const json = JSON.parse(raw.toString("utf8"));
           if (typeof json === "object" && json !== null) {
             json.mitm_status = "active";
-            json.mitm_mode = IS_PROXY ? "proxy" : IS_HYBRID ? "hybrid" : "mock";
+            json.mitm_mode = getMode();
             interceptedRes.body = Buffer.from(JSON.stringify(json));
             const clKey = Object.keys(interceptedRes.headers).find(k => k.toLowerCase() === "content-length");
             if (clKey) interceptedRes.headers[clKey] = String(interceptedRes.body.length);
@@ -887,79 +903,6 @@ async function handlePlainHttpRequest(clientSocket: Socket, data: Buffer, port: 
 
   log("INFO", `HTTP: ${method} ${url} -> ${host}:${port}`);
 
-  // Dashboard API routes
-  if (host === "dashboard" || host === "localhost" || host === "127.0.0.1") {
-    // GET /dashboard - serve dashboard HTML
-    if (method === "GET" && (url === "/dashboard" || url === "/dashboard/" || url === "/")) {
-      const dashboardPath = join(getProjectRoot(), "dashboard.html");
-      if (existsSync(dashboardPath)) {
-        const html = readFileSync(dashboardPath, "utf8");
-        const resp = `HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: ${Buffer.byteLength(html)}\r\nConnection: close\r\n\r\n${html}`;
-        clientSocket.write(resp);
-        clientSocket.end();
-        return;
-      }
-      const notFound = "Dashboard not found";
-      const resp404 = `HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: ${Buffer.byteLength(notFound)}\r\nConnection: close\r\n\r\n${notFound}`;
-      clientSocket.write(resp404);
-      clientSocket.end();
-      return;
-    }
-    
-    // GET /health
-    if (method === "GET" && url === "/health") {
-      const healthData = {
-        status: "ok",
-        version: "3.0",
-        mode: IS_PROXY ? "PROXY" : IS_HYBRID ? "HYBRID" : "MOCK",
-        runtime: runtimeTag,
-        platform: process.platform + "-" + process.arch,
-        cwd: process.cwd(),
-      };
-      const body = JSON.stringify(healthData);
-      const resp = `HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n${body}`;
-      clientSocket.write(resp);
-      clientSocket.end();
-      return;
-    }
-    
-    // GET /api/config
-    if (method === "GET" && url === "/api/config") {
-      const configData = {
-        mode: IS_PROXY ? "PROXY" : IS_HYBRID ? "HYBRID" : "MOCK",
-        httpPort: HTTP_PORT,
-        httpsPort: HTTPS_PORT,
-        iisProxy: IIS_PROXY,
-        enableOpenCommand: process.env.ENABLE_OPENCOMMAND === "true",
-      };
-      const body = JSON.stringify(configData);
-      const resp = `HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n${body}`;
-      clientSocket.write(resp);
-      clientSocket.end();
-      return;
-    }
-    
-    // POST /api/config
-    if (method === "POST" && url === "/api/config") {
-      const bodyStr = data.slice(bodyOffset).toString("utf8");
-      try {
-        const newConfig = JSON.parse(bodyStr);
-        log("INFO", `Dashboard config update: ${JSON.stringify(newConfig)}`);
-        const respBody = JSON.stringify({ success: true, config: newConfig });
-        const resp = `HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${respBody.length}\r\nConnection: close\r\n\r\n${respBody}`;
-        clientSocket.write(resp);
-        clientSocket.end();
-        return;
-      } catch (e: any) {
-        const errBody = JSON.stringify({ error: e.message });
-        const resp = `HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: ${errBody.length}\r\nConnection: close\r\n\r\n${errBody}`;
-        clientSocket.write(resp);
-        clientSocket.end();
-        return;
-      }
-    }
-  }
-  
   // Mock GHCP app IPC endpoints (used for browser preview lifecycle)
   if (host === "ipc.localhost") {
     const body = JSON.stringify({ success: true, mock: "gc2xy" });
@@ -967,6 +910,29 @@ async function handlePlainHttpRequest(clientSocket: Socket, data: Buffer, port: 
     clientSocket.write(resp);
     clientSocket.end();
     return;
+  }
+
+  // Dashboard route — always intercepted (even in proxy mode)
+  if (url === "/dashboard" || url.startsWith("/dashboard?") || url === "/" || url === "/health" || url.startsWith("/api/")) {
+    try {
+      const dashReq = { method, url, headers, body, hostname: host, port, clientSocket: clientSocket as any };
+      const result = await handleDashboard(dashReq);
+      if (result.handled && result.response) {
+        dashIncReq();
+        const { statusCode, statusMessage, headers: respHeaders, body: respBody } = result.response;
+        let resp = `HTTP/1.1 ${statusCode} ${statusMessage || "OK"}\r\n`;
+        for (const [k, v] of Object.entries(respHeaders)) {
+          resp += `${k}: ${v}\r\n`;
+        }
+        resp += `Connection: close\r\nContent-Length: ${respBody.length}\r\n\r\n`;
+        clientSocket.write(resp);
+        clientSocket.write(respBody);
+        clientSocket.end();
+        return;
+      }
+    } catch (e) {
+      log("ERROR", `Dashboard handler error: ${(e as Error).message || e}`);
+    }
   }
 
   const headers: Record<string, string> = {};
@@ -983,28 +949,26 @@ async function handlePlainHttpRequest(clientSocket: Socket, data: Buffer, port: 
     : null;
 
   // Run interceptor chain (same as TLS path)
-  if (!IS_PROXY) {
-    try {
-      const interceptedReq: InterceptedRequest = {
-        method, url, headers, body, hostname: host, port,
-        blocked: false, clientSocket: clientSocket as any,
-      };
-      await runRequestInterceptors(interceptedReq);
-      if (interceptedReq.response && !(interceptedReq as any)._responseSent) {
-        const { statusCode, statusMessage, headers: respHeaders, body: respBody } = interceptedReq.response;
-        let resp = `HTTP/1.1 ${statusCode} ${statusMessage || "OK"}\r\n`;
-        for (const [k, v] of Object.entries(respHeaders)) {
-          resp += `${k}: ${v}\r\n`;
-        }
-        resp += `Connection: close\r\nContent-Length: ${respBody.length}\r\n\r\n`;
-        clientSocket.write(resp);
-        clientSocket.write(respBody);
-        clientSocket.end();
-        return;
+  try {
+    const interceptedReq: InterceptedRequest = {
+      method, url, headers, body, hostname: host, port,
+      blocked: false, clientSocket: clientSocket as any,
+    };
+    await runRequestInterceptors(interceptedReq);
+    if (interceptedReq.response && !(interceptedReq as any)._responseSent) {
+      const { statusCode, statusMessage, headers: respHeaders, body: respBody } = interceptedReq.response;
+      let resp = `HTTP/1.1 ${statusCode} ${statusMessage || "OK"}\r\n`;
+      for (const [k, v] of Object.entries(respHeaders)) {
+        resp += `${k}: ${v}\r\n`;
       }
-    } catch (e) {
-      log("ERROR", `Fake handler (HTTP): ${(e as Error).message || e}`);
+      resp += `Connection: close\r\nContent-Length: ${respBody.length}\r\n\r\n`;
+      clientSocket.write(resp);
+      clientSocket.write(respBody);
+      clientSocket.end();
+      return;
     }
+  } catch (e) {
+    log("ERROR", `Fake handler (HTTP): ${(e as Error).message || e}`);
   }
 
   const useHttps = IIS_PROXY
@@ -1102,29 +1066,19 @@ try {
 
 // Preload models at startup so the model list (?) is populated
 initModels().catch(() => {});
-// Load OpenCommand models if enabled
-if (process.env.ENABLE_OPENCOMMAND === "true" && hasOpenCommandKeys()) {
-  fetchOpenCommandModels().then((ocModels) => {
-    if (ocModels.length > 0) {
-      log("INFO", `Loaded ${ocModels.length} OpenCommand models`);
-    }
-  }).catch(() => {});
-}
 splitConsole.drawStatusBar({
-  mode: IS_PROXY ? "PROXY" : IS_HYBRID ? "HYBRID" : "MOCK",
+  mode: getMode().toUpperCase(),
   requests: 0,
   port: IIS_PROXY ? `443 → ${HTTP_PORT}` : (INTERCEPT_MODE === "hosts" ? 443 : PROXY_PORT),
   target: TARGET_HOST,
   cacheHits: 0,
-  PROXY: IS_PROXY,
+  PROXY: isProxy(),
   lastAgent: "",
   tps: 0,
   runtime: runtimeTag,
 });
 
-const MODE_EXIT: Record<string, number> = { mock: 43, hybrid: 44, PROXY: 45 };
-
-// Wire up commands: exit codes signal launcher for restart/switch
+// Wire up commands
 splitConsole.onCommand((cmd: string) => {
   if (cmd === "stop") shutdown();
   else if (cmd === "restart") {
@@ -1134,13 +1088,23 @@ splitConsole.onCommand((cmd: string) => {
     try { unlinkSync(".proxy-host-pid"); } catch {}
     process.exit(42);
   } else if (cmd.startsWith("switch:")) {
-    const targetMode = cmd.split(":")[1];
-    const exitCode = MODE_EXIT[targetMode] || 43;
-    splitConsole.restoreTerminal();
-    for (const s of servers) s.close();
-    logStream.end();
-    try { unlinkSync(".proxy-host-pid"); } catch {}
-    process.exit(exitCode);
+    const targetMode = cmd.split(":")[1].toLowerCase();
+    const validModes: Record<string, "mock" | "hybrid" | "proxy"> = { mock: "mock", hybrid: "hybrid", proxy: "proxy" };
+    const newMode = validModes[targetMode] || "mock";
+    setMode(newMode);
+    log("INFO", `Switched to ${newMode.toUpperCase()} mode`);
+    initModels().catch(() => {});
+    splitConsole.drawStatusBar({
+      mode: getMode().toUpperCase(),
+      requests: requestCounter,
+      port: IIS_PROXY ? `443 → ${HTTP_PORT}` : (INTERCEPT_MODE === "hosts" ? 443 : PROXY_PORT),
+      target: TARGET_HOST,
+      cacheHits: cacheHitCount,
+      PROXY: isProxy(),
+      lastAgent: lastAgentName,
+      tps: getTps(),
+      runtime: runtimeTag,
+    });
   } else if (cmd === "record") {
     recorder.startRecording().catch(() => {});
     splitConsole.setRecording(true);
@@ -1167,7 +1131,7 @@ log("READY", "Proxy ready � status bar above, live log below");
 
 // Self-test: verify MITM interception works
 setTimeout(() => {
-  const mitmMode = IS_PROXY ? "proxy" : IS_HYBRID ? "hybrid" : "mock";
+  const mitmMode = getMode();
   const req = httpsRequest({
     hostname: "api.github.com",
     path: "/",
@@ -1200,3 +1164,4 @@ function shutdown() {
 
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
+

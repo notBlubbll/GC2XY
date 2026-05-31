@@ -1,5 +1,5 @@
 import { jsonResponse, HandlerInput, HandlerResult } from "../../shared.ts";
-import { initModels, getModelCtx, modelHasVision } from "../opencode-client.ts";
+import { initModels, getModelCtx, modelHasVision, getModelDisplayName } from "../opencode-client.ts";
 import { isDebug } from "../../split-console.ts";
 
 const GHCP_MODELS: any[] = [];
@@ -95,7 +95,7 @@ async function ensureModels() {
     seen.add(id);
     const baseEmoji = supportsThinkingVariants(id) ? "💡" : "✨";
     const mediaEmoji = modelHasVision(id) ? "🎞️" : "";
-    const name = `${baseEmoji}${mediaEmoji} ${id.split("-").map((p: string) => p.charAt(0).toUpperCase() + p.slice(1)).join(" ").replace(/(\d)\.(\d)/g, "$1.$2")}`;
+    const name = `${baseEmoji}${mediaEmoji} ${getModelDisplayName(id)}`;
     const isLightweight = id.includes("mini") || id.includes("nano") || (id.includes("flash") && !id.includes("deepseek")) || id.includes("haiku") || id.includes("free");
     const isPowerful = id.includes("pro") || id.includes("opus") || id.includes("codex") || id.includes("omni") || (id.includes("flash") && id.includes("deepseek"));
     const limits = modelLimits(id);

@@ -1,13 +1,14 @@
 import forge from "node-forge";
-import { jsonResponse, HandlerInput, HandlerResult } from "../shared.ts";
-import { chatCompletion as opencodeChat, getKeyStatus, storeReasoning, initModels, getModelIds, getModelCtx, modelHasVision } from "./opencode-client.ts";
+import { jsonResponse, HandlerInput, HandlerResult, countConsecutiveNags, stripNagMessages, RECENTLY_COMPLETED, RECENT_BODIES } from "../shared.ts";
+import { chatCompletion as opencodeChat, getKeyStatus, storeReasoning, initModels, getModelIds, getModelCtx, modelHasVision, detectSessionSignal, extractUserPrompt, getModelDisplayName } from "./opencode-client.ts";
 import { reqLog, agentTag } from "../split-console.ts";
+import { trackRequest } from "../usage-tracker.ts";
 import { anthropicToOpenAIRequest } from "./anthropic-bridge.ts";
-import { fetchModels as fetchOpenCommandModels, hasKeys as hasOpenCommandKeys } from "./opencommand-client.ts";
 
 const FAKE_MODELS: any[] = [];
 let _lastModelIds: string[] = [];
 let _rebuilding = false;
+let _lastUserContent = "";
 
 function detectVendor(id: string): string {
   const l = id.toLowerCase();
@@ -100,58 +101,41 @@ async function ensureModels() {
 
   const changed = modelIds.length !== _lastModelIds.length ||
     modelIds.some((id, i) => id !== _lastModelIds[i]);
-  if (!changed && FAKE_MODELS.length > 0 && !process.env.ENABLE_OPENCOMMAND) return;
+  if (!changed && FAKE_MODELS.length > 0) return;
   _lastModelIds = [...modelIds];
 
   _rebuilding = true;
   FAKE_MODELS.length = 0;
   const seen = new Set<string>();
 
-  const addModel = (id: string, isOC = false) => {
+  const addModel = (id: string) => {
     if (seen.has(id)) return;
     seen.add(id);
-    const displayName = isOC ? id.replace(/^oc\//, "") : id;
-    const baseEmoji = supportsThinkingVariants(displayName) ? "💡" : "✨";
-    const mediaEmoji = modelHasVision(displayName) ? "🎞️" : "";
-    const name = `${baseEmoji}${mediaEmoji} ${displayName.split("-").map((p: string) => p.charAt(0).toUpperCase() + p.slice(1)).join(" ").replace(/(\d)\.(\d)/g, "$1.$2")}`;
-    const isLightweight = displayName.includes("mini") || displayName.includes("nano") || (displayName.includes("flash") && !displayName.includes("deepseek")) || displayName.includes("haiku") || displayName.includes("free");
-    const isPowerful = displayName.includes("pro") || displayName.includes("opus") || displayName.includes("codex") || displayName.includes("omni") || (displayName.includes("flash") && displayName.includes("deepseek"));
-    const limits = modelLimits(displayName);
+    const baseEmoji = supportsThinkingVariants(id) ? "💡" : "✨";
+    const mediaEmoji = modelHasVision(id) ? "🎞️" : "";
+    const name = `${baseEmoji}${mediaEmoji} ${getModelDisplayName(id)}`;
+    const isLightweight = id.includes("mini") || id.includes("nano") || (id.includes("flash") && !id.includes("deepseek")) || id.includes("haiku") || id.includes("free");
+    const isPowerful = id.includes("pro") || id.includes("opus") || id.includes("codex") || id.includes("omni") || (id.includes("flash") && id.includes("deepseek"));
+    const limits = modelLimits(id);
     const baseModel = {
       id, object: "model",
-      name, vendor: detectVendor(displayName), version: id, preview: false,
+      name, vendor: detectVendor(id), version: id, preview: false,
       model_picker_category: isLightweight ? "lightweight" : isPowerful ? "powerful" : "versatile",
       model_picker_enabled: true,
-      is_chat_default: !isOC && FAKE_MODELS.length === 0,
-      is_chat_fallback: !isOC,
-      billing: { is_premium: true, multiplier: getModelCtx(displayName) || limits.max_context_window_tokens, restricted_to: ["pro", "pro_plus", "business", "enterprise", "max"] },
-      policy: { state: "enabled", terms: `Enable access to the ${id} model. [Learn more](https://${isOC ? "opencommand.ai" : "opencode.ai"})` },
+      is_chat_default: true,
+      is_chat_fallback: true,
+      billing: { is_premium: true, multiplier: getModelCtx(id) || limits.max_context_window_tokens, restricted_to: ["pro", "pro_plus", "business", "enterprise", "max"] },
+      policy: { state: "enabled", terms: `Enable access to the ${id} model. [Learn more](https://opencode.ai)` },
       supported_endpoints: ["/chat/completions", "/v1/messages"],
       capabilities: {
-        family: displayName, object: "model_capabilities", type: "chat", tokenizer: "o200k_base",
-        limits, supports: modelSupports(displayName),
+        family: id, object: "model_capabilities", type: "chat", tokenizer: "o200k_base",
+        limits, supports: modelSupports(id),
       },
     };
     FAKE_MODELS.push(baseModel);
   };
 
-  for (const id of modelIds) addModel(id, false);
-  
-  // Add OpenCommand models if enabled
-  if (process.env.ENABLE_OPENCOMMAND === "true" && hasOpenCommandKeys()) {
-    try {
-      const ocModels = await fetchOpenCommandModels();
-      for (const id of ocModels) {
-        addModel(id, true);
-      }
-      if (ocModels.length > 0) {
-        console.log(`\n[MODEL CACHE] added ${ocModels.length} OpenCommand models (oc/ prefix)`);
-      }
-    } catch (e: any) {
-      console.log(`\n[MODEL CACHE] OpenCommand fetch error: ${e.message}`);
-    }
-  }
-  
+  for (const id of modelIds) addModel(id);
   console.log(`\n[MODEL CACHE] copilot-handler rebuilt ${FAKE_MODELS.length} models`);
   _rebuilding = false;
 }
@@ -340,7 +324,7 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
   // POST /v1/messages - Anthropic Messages API (GHCP CLI, Copilot CLI, etc.)
   // Matches real Copilot SSE format from proxy capture:
   //   event: message_start / content_block_start / content_block_delta / message_stop
-  if (method === "POST" && url === "/v1/messages") {
+  if (method === "POST" && url === "/v1/messages") { trackRequest("copilot");
     let parsed: any = {};
     try { parsed = JSON.parse(body?.toString() || "{}"); } catch {}
     let model = parsed.model || "gpt-4o";
@@ -348,6 +332,19 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
     const tools = parsed.tools || [];
     const isStream = parsed.stream === true;
     const maxTokens = parsed.max_tokens || 4096;
+
+    // Body dedup: model + msg count + last user msg
+    const _messages = parsed.messages || [];
+    const _lastUMsg = _messages.filter((m: any) => m?.role === "user").pop();
+    const _lastUContent = typeof _lastUMsg?.content === "string" ? _lastUMsg.content.slice(0, 100) : "";
+    const _bdKey = `vm:${parsed.model || ""}:${_messages.length}:${_lastUContent}`;
+    if ((RECENT_BODIES.get(_bdKey) ?? 0) && Date.now() - (RECENT_BODIES.get(_bdKey) ?? 0) < 30000) {
+      RECENT_BODIES.set(_bdKey, Date.now());
+      const id = `msg_${forge.util.bytesToHex(forge.random.getBytesSync(8))}`;
+      const toolId = `toolu_${forge.util.bytesToHex(forge.random.getBytesSync(8))}`;
+      return { handled: true, response: { statusCode: 200, headers: { "content-type": "text/event-stream", "cache-control": "no-store", "access-control-allow-origin": "*", "connection": "close" }, body: Buffer.from(`event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: { id, type: "message", role: "assistant", content: [], model, stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } } })}\n\nevent: content_block_start\ndata: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: toolId, name: "task_complete", input: {} } })}\n\nevent: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: 0 })}\n\nevent: message_delta\ndata: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 0 } })}\n\nevent: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}\n\n`) } };
+    }
+    RECENT_BODIES.set(_bdKey, Date.now());
 
     const modelOverrides: Record<string, string> = {
       "gpt-4o": "", "gpt-4": "", "gpt-3.5-turbo": "", "gpt-4-turbo": "",
@@ -363,6 +360,20 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
       model = real?.id || model;
     }
 
+    // ── Nag: drain or nag → task_complete ──
+    if ((RECENTLY_COMPLETED.get(model) ?? 0) && Date.now() - (RECENTLY_COMPLETED.get(model) ?? 0) < 20000 || countConsecutiveNags(messages) > 0) {
+      RECENTLY_COMPLETED.set(model, Date.now());
+      stripNagMessages(messages);
+      const id = `msg_${forge.util.bytesToHex(forge.random.getBytesSync(8))}`;
+      const toolId = `toolu_${forge.util.bytesToHex(forge.random.getBytesSync(8))}`;
+      const msgStart = JSON.stringify({ type: "message_start", message: { id, type: "message", role: "assistant", content: [], model, stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } } });
+      const blockStart = JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: toolId, name: "task_complete", input: {} } });
+      const blockStop = JSON.stringify({ type: "content_block_stop", index: 0 });
+      const msgDelta = JSON.stringify({ type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 0 } });
+      const msgStop = JSON.stringify({ type: "message_stop" });
+      const sse = `event: message_start\ndata: ${msgStart}\n\nevent: content_block_start\ndata: ${blockStart}\n\nevent: content_block_stop\ndata: ${blockStop}\n\nevent: message_delta\ndata: ${msgDelta}\n\nevent: message_stop\ndata: ${msgStop}\n\n`;
+      return { handled: true, response: { statusCode: 200, headers: { "content-type": "text/event-stream", "cache-control": "no-store", "access-control-allow-origin": "*", "connection": "close" }, body: Buffer.from(sse) } };
+    }
     const lastUserMsg = [...messages].reverse().find((m: any) => m.role === "user");
     const queryPreview = lastUserMsg ? (
       typeof lastUserMsg.content === "string" ? lastUserMsg.content :
@@ -580,9 +591,9 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
       return { handled: true, response: { statusCode: 200, headers: {}, body: Buffer.alloc(0), _streamed: true } };
     }
   }
-
   // POST /v1/chat/completions - forward to opencode API
-  if (method === "POST" && url.includes("/chat/completions") && !url.includes("/agents/")) {
+
+  if (method === "POST" && url.includes("/chat/completions") && !url.includes("/agents/")) { trackRequest("copilot");
     let parsed: any = {};
     try { parsed = JSON.parse(body?.toString() || "{}"); } catch {}
 
@@ -633,40 +644,26 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
       messages.push({ role: "user", content: "Hello" });
     }
 
-    // VS nag detection: auto task_complete when VS says "not yet marked as complete"
-    const lastMsg = messages[messages.length - 1];
-    const nagRe = /\byou have not yet marked the task as complete\b/i;
-    const isNag = lastMsg?.role === "user" && typeof lastMsg.content === "string" && nagRe.test(lastMsg.content);
-    if (isNag) {
-      const hasToolActivity = messages.some((m: any) => m.role === "assistant" && (m.tool_calls?.length || /```tool\n\{/.test(typeof m.content === "string" ? m.content : "")));
-      if (!hasToolActivity) {
-        console.log(`\n[VS NAG] Auto task_complete — no tool activity in conversation`);
-        if (isStream) {
-          const sock = req.clientSocket;
-          if (sock) {
-            const respHead = `HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-store\r\naccess-control-allow-origin: *\r\nconnection: close\r\n\r\n`;
-            sock.write(respHead);
-            const toolCallId = `call_${forge.util.bytesToHex(forge.random.getBytesSync(6))}`;
-            const toolCall = { id: toolCallId, type: "function", function: { name: "task_complete", arguments: "{}" } };
-            const id = `chatcmpl-${forge.util.bytesToHex(forge.random.getBytesSync(6))}`;
-            const created = Math.floor(Date.now() / 1000);
-            sock.write(`data: {"id":"${id}","object":"chat.completion.chunk","created":${created},"model":"${model}","choices":[{"index":0,"delta":{"role":"assistant","content":null,"tool_calls":[${JSON.stringify(toolCall)}]},"finish_reason":null}]}\n\n`);
-            sock.write(`data: {"id":"${id}","object":"chat.completion.chunk","created":${created},"model":"${model}","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}\n\n`);
-            sock.write("data: [DONE]\n\n");
-            sock.end();
-            return { handled: true, response: { statusCode: 200, headers: {}, body: Buffer.alloc(0), _streamed: true } };
-          }
-        }
-        const toolCallId = `call_${forge.util.bytesToHex(forge.random.getBytesSync(6))}`;
-        return { handled: true, response: jsonResponse({
-          id: `chatcmpl-${forge.util.bytesToHex(forge.random.getBytesSync(6))}`,
-          object: "chat.completion",
-          created: Math.floor(Date.now() / 1000),
-          model, choices: [{ index: 0, message: { role: "assistant", content: null, tool_calls: [{ id: toolCallId, type: "function", function: { name: "task_complete", arguments: "{}" } }] }, finish_reason: "tool_calls" }],
-          usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
-        })};
+    // ── Nag: any nag or retry within 20s → task_complete ──
+    if (countConsecutiveNags(messages) > 0 || (RECENTLY_COMPLETED.get(model) ?? 0) && Date.now() - (RECENTLY_COMPLETED.get(model) ?? 0) < 20000) {
+      RECENTLY_COMPLETED.set(model, Date.now());
+      stripNagMessages(messages);
+      const _callId = `call_${forge.util.bytesToHex(forge.random.getBytesSync(6))}`;
+      const _id = `chatcmpl-${forge.util.bytesToHex(forge.random.getBytesSync(6))}`;
+      const _created = Math.floor(Date.now() / 1000);
+      const sse = `data: {"id":"${_id}","object":"chat.completion.chunk","created":${_created},"model":"${model}","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}\n\ndata: {"id":"${_id}","object":"chat.completion.chunk","created":${_created},"model":"${model}","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"${_callId}","type":"function","function":{"name":"task_complete","arguments":"{}"}}]},"finish_reason":null}]}\n\ndata: {"id":"${_id}","object":"chat.completion.chunk","created":${_created},"model":"${model}","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}\n\ndata: [DONE]\n\n`;
+      const sock = req.clientSocket;
+      if (sock) {
+        sock.write(`HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-store\r\naccess-control-allow-origin: *\r\nconnection: close\r\n\r\n`);
+        sock.write(sse); sock.end();
+        return { handled: true, response: { statusCode: 200, headers: {}, body: Buffer.alloc(0), _streamed: true } };
       }
+      return { handled: true, response: { statusCode: 200, headers: { "content-type": "text/event-stream", "cache-control": "no-store", "access-control-allow-origin": "*", "connection": "close" }, body: Buffer.from(sse) } };
     }
+
+
+    const _initiator = headers["x-initiator"] || "";
+    _lastUserContent = _initiator !== "agent" ? extractUserPrompt(messages) : _lastUserContent;
 
     const lastUserMsg = [...messages].reverse().find((m: any) => m.role === "user");
     const chatPreview = lastUserMsg ? (
@@ -678,8 +675,14 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
     const completeLog = reqLog({ tag, provider, model, preview: chatPreview, body: parsed });
     const startTime = Date.now();
 
+    const session = detectSessionSignal(messages);
+    if (session) {
+      const ts = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+      console.log(`[COPILOT SESSION] ${ts} [Session#${session.sessNum}>${session.keyLabel}] ${model} "${extractUserPrompt(messages).substring(0, 120)}"`);
+    }
+
     try {
-      const resp = await opencodeChat(model, messages, tools, isStream, parsed);
+      const resp = await opencodeChat(model, messages, tools, isStream, parsed, session?.keyIdx);
 
       if (!isStream) {
         const data: any = await resp.json();
@@ -703,8 +706,8 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
           const { done, value } = await reader.read();
           if (done) break;
           const chunk = decoder.decode(value, { stream: true });
-          sock.write(chunk);
-          // Capture reasoning_content from SSE for cache
+          const hasDone = chunk.includes("data: [DONE]");
+          if (!_nagAppend || !hasDone) sock.write(chunk);
           buf += chunk;
           const lines = buf.split("\n");
           buf = lines.pop() || "";
@@ -837,9 +840,9 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
     if (!session) session = createSession();
     return { handled: true, response: jsonResponse(session) };
   }
-
   // POST /agents/sessions/{id}/messages - send message to session
-  if (method === "POST" && url.match(/\/agents\/sessions\/[^/]+\/messages/)) {
+
+  if (method === "POST" && url.match(/\/agents\/sessions\/[^/]+\/messages/)) { trackRequest("copilot");
     const sessionId = url.split("/agents/sessions/")[1]?.split("/")[0] || "";
     let session = chatSessions.get(sessionId);
     if (!session) session = createSession();
@@ -1362,9 +1365,9 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
 
     return { handled: true, response: jsonResponse({ jsonrpc: "2.0", id: mcpId, result: {} }) };
   }
-
   // POST /completions - code completions (inline suggestions)
-  if (method === "POST" && url.includes("/completions") && !url.includes("/chat/completions")) {
+
+  if (method === "POST" && url.includes("/completions") && !url.includes("/chat/completions")) { trackRequest("copilot");
     let parsed: any = {};
     try { parsed = JSON.parse(body?.toString() || "{}"); } catch {}
 
@@ -1403,9 +1406,9 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
       }),
     };
   }
-
   // POST /v1/embeddings
-  if (method === "POST" && url.includes("/embeddings")) {
+
+  if (method === "POST" && url.includes("/embeddings")) { trackRequest("copilot");
     let parsed: any = {};
     try { parsed = JSON.parse(body?.toString() || "{}"); } catch {}
 
@@ -1427,9 +1430,9 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
       }),
     };
   }
-
   // POST /v1/tokenize
-  if (method === "POST" && url.includes("/tokenize")) {
+
+  if (method === "POST" && url.includes("/tokenize")) { trackRequest("copilot");
     let parsed: any = {};
     try { parsed = JSON.parse(body?.toString() || "{}"); } catch {}
     const text = parsed.text || parsed.input || "";

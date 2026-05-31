@@ -1,11 +1,20 @@
 import forge from "node-forge";
 import { jsonResponse, HandlerInput, HandlerResult } from "../../shared.ts";
+import { trackRequest, getZenStats } from "../../usage-tracker.ts";
 
 const YEAR10_S = 3600 * 24 * 365 * 10;
 const YEAR10_MS = YEAR10_S * 1000;
 const RESET_DATE_2500 = Math.floor(new Date("2500-01-01T00:00:00Z").getTime() / 1000);
 const MONTHLY_QUOTA_CHAT = 500;
 const MONTHLY_QUOTA_COMPLETIONS = 4000;
+
+function getRemainingQuota(): { chat: number; completions: number } {
+  const zs = getZenStats();
+  if (!zs || !zs.loggedIn || (zs.cost + zs.balance) === 0) return { chat: 290, completions: 2320 };
+  const usedPct = Math.max(0, Math.min(100, (zs.cost / (zs.cost + zs.balance)) * 100));
+  const chatTotal = 500, completionsTotal = 4000;
+  return { chat: chatTotal - Math.round(chatTotal * usedPct / 100), completions: completionsTotal - Math.round(completionsTotal * usedPct / 100) };
+}
 
 // VS OAuth app credentials (from VS 2026)
 const VS_CLIENT_ID = "a200baed193bb2088a6e";
@@ -53,6 +62,7 @@ export function handleVSCopilotUser(req: HandlerInput): HandlerResult | null {
   const resetDate = new Date("2120-01-01T00:00:00Z");
   const resetStr = resetDate.toISOString().slice(0, 10);
   const assignedDate = new Date(Date.now() - 12 * 86400000);
+  const q = getRemainingQuota();
   return { handled: true, response: jsonResponse({
     login: "fake-github-user",
     access_type_sku: "copilot_enterprise_seat",
@@ -78,8 +88,10 @@ export function handleVSCopilotUser(req: HandlerInput): HandlerResult | null {
       telemetry: "https://telemetry.individual.githubcopilot.com",
     },
     quota_reset_date: resetStr,
+    limited_user_quotas: { chat: q.chat, completions: q.completions },
     quota_snapshots: {
-      chat: { entitlement: 0, remaining: 0, percent_remaining: 0, unlimited: true, overage_permitted: false, overage_count: 0 },
+      chat: { entitlement: 500, remaining: q.chat, percent_remaining: Math.round(q.chat / 500 * 100), unlimited: false, overage_permitted: false, overage_count: 0 },
+      completions: { entitlement: 4000, remaining: q.completions, percent_remaining: Math.round(q.completions / 4000 * 100), unlimited: false, overage_permitted: false, overage_count: 0 },
       premium_interactions: { entitlement: 1000, remaining: 580, percent_remaining: 58, unlimited: true, overage_permitted: true, overage_count: 100 },
     },
   })};
@@ -94,7 +106,8 @@ export function handleVSToken(req: HandlerInput): HandlerResult | null {
   const iat = now;
   const resetDate = new Date("2120-01-01T00:00:00Z");
   const resetTs = Math.floor(resetDate.getTime() / 1000);
-    const token = `tid=${tid};exp=${exp};iat=${iat};sku=enterprise;proxy-ep=proxy.individual.githubcopilot.com;st=dotcom;chat=1;cit=1;malfil=1;editor_preview_features=1;agent_mode=1;agent_mode_auto_approval=1;mcp=1;blackbird_external_indexing=1;client_byok=1;rt=1;ip=91.200.103.13;asn=AS213250;cq=3934;rd=${resetTs}`;
+  const q = getRemainingQuota();
+  const token = `tid=${tid};exp=${exp};iat=${iat};sku=enterprise;proxy-ep=proxy.individual.githubcopilot.com;st=dotcom;chat=1;cit=1;malfil=1;editor_preview_features=1;agent_mode=1;agent_mode_auto_approval=1;mcp=1;blackbird_external_indexing=1;client_byok=0;rt=1;ip=91.200.103.13;asn=AS213250;cq=3934;rd=${resetTs}`;
   return { handled: true, response: jsonResponse({
     agent_mode_auto_approval: true,
     annotations_enabled: true,
@@ -115,7 +128,7 @@ export function handleVSToken(req: HandlerInput): HandlerResult | null {
     },
     expires_at: exp,
     iat,
-    limited_user_quotas: { chat: 290, completions: 2320 },
+    limited_user_quotas: { chat: q.chat, completions: q.completions },
     limited_user_reset_date: resetTs,
     quota_reset_date: resetTs,
     public_suggestions: "disabled",
@@ -134,6 +147,7 @@ export function handleVSContentExclusion(req: HandlerInput): HandlerResult | nul
 }
 
 export function handleVSAuth(req: HandlerInput): HandlerResult {
+  trackRequest("vs");
   const { headers } = req;
   if (!isVisualStudio(headers)) return { handled: false };
   let result: HandlerResult | null;

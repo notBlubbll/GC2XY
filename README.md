@@ -1,6 +1,6 @@
-# gc2xy — MITM Debug Proxy with Copilot Auth Bypass
+# gc2xy — MITM Debug Proxy with Copilot Auth Bypass + ZEN
 
-System-wide HTTPS interception proxy for `github.com` and Copilot subdomains. Decrypts traffic, fakes GitHub/Copilot API responses to bypass authentication, and supports record/replay of HTTP flows.
+System-wide HTTPS interception proxy for `github.com` and Copilot subdomains. Decrypts traffic, fakes GitHub/Copilot API responses to bypass authentication. Supports **dual upstream providers**: [opencode.ai](https://opencode.ai) and [ZEN (zenllm.org)](https://zenllm.org).
 
 ## Quick Start
 
@@ -24,12 +24,12 @@ start.cmd                   # Shorthand — prompts for mode then calls !ACTIVAT
 | Path | Purpose |
 |------|---------|
 | `src/` | TypeScript source |
-| `.config/` | Environment config (`.config/.env`) — API keys |
+| `.config/` | Environment config (`.config/.env` — API keys, `.config/config.json` — ZEN token pool) |
 | `.certs/` | Auto-generated CA + intercept certs |
 | `.recordings/` | Captured HTTP flow recordings |
 | `.cache/` | Upstream response cache (auto-populated in proxy mode) |
 | `.proxy-logs/` | Plain-English traffic logs |
-| `src/handlers/` | Handler modules for auth, copilot, repo, VS, GHCP app |
+| `src/handlers/` | Handler modules for auth, copilot, repo, VS, GHCP app, dashboard |
 | `src/handlers/vs/` | Visual Studio enterprise plan handlers |
 | `src/handlers/ghcp-app/` | GitHub App (Windows) handlers |
 
@@ -38,8 +38,8 @@ start.cmd                   # Shorthand — prompts for mode then calls !ACTIVAT
 1. **Hosts file redirect**: All intercepted hosts (`github.com`, Copilot subdomains) → `127.0.0.1`
 2. **TLS server on port 443** (or **IIS reverse proxy** on port 3080 when IIS detected): Intercepts HTTPS
 3. **HTTP server on port 80** (or configurable HTTP port): Intercepts plain HTTP
-4. **Interceptor chain**: Cache → VSAuth → Auth → Repo → GHCP → VS → Copilot → Catch-all → Upstream proxy
-5. **Chat completions** forward to [opencode.ai](https://opencode.ai) models via the LLM client
+4. **Interceptor chain**: Dashboard → Cache → VSAuth → Auth → Repo → GHCP → VS → Copilot → Catch-all → Upstream proxy
+5. **Chat completions** forward to **opencode.ai** or **ZEN (zenllm.org)** models via the LLM client, depending on selected provider
 
 ## Operation Modes
 
@@ -49,7 +49,7 @@ start.cmd                   # Shorthand — prompts for mode then calls !ACTIVAT
 | **hybrid** | Browser pages proxy to real GitHub. API/auth/Copilot endpoints mocked. |
 | **proxy** | Forward everything to real GitHub. Captures responses to cache. |
 
-Switch modes live in the dashboard with `1`, `2`, `3`.
+Switch modes live in the dashboard with radio buttons.
 
 ## IIS Mode
 
@@ -97,6 +97,8 @@ sc failure w3svc reset= 86400 actions= restart/5000/restart/10000/restart/30000
 | `gc2xy_HTTPS_PORT` | `443` | Port for HTTPS/TLS intercept server. |
 | `OPENCODE_API_KEYS` | — | JSON array of opencode.ai API keys |
 | `OPENCODE_API_KEY` | — | Single opencode.ai API key (alternative) |
+| `ZENITH_API_KEY` | — | ZEN API key (`sk-zenith-...`) from zenllm.org |
+| `ZENITH_SESSION` | — | ZEN session cookie (`zs=...`) for dashboard stats |
 | `gc2xy_MODE` | `mock` | Mode display label |
 | `FAKE_DEVICE_LOGIN` | `"0"` (enabled) | Set to `"1"` to DISABLE the emulator |
 | `INTERCEPT_MODE` | `hosts` | `hosts` for system-wide or `proxy` for HTTP_PROXY mode |
@@ -134,18 +136,46 @@ sc failure w3svc reset= 86400 actions= restart/5000/restart/10000/restart/30000
 | **VS Team Explorer** | `user-agent: VSTeamExplorer-GitHub/*` | Enterprise |
 | **Browser** | `accept: text/html` | Individual/Free |
 
+## Web Dashboard
+
+Available at `http://github.com/dashboard`. Built with **Bootstrap 5.3** + liquid glass UI (SVG displacement maps, Snell's law refraction).
+
+- **Header bar**: Mode (Mock/Hybrid/Proxy), LReq (local proxy requests), TPS, Keys, Models (enabled/total), Requests (ZEN), Tokens (ZEN), Used (ZEN — % + $ cost, remaining balance on hover), Provider (OpenCode/ZEN)
+- **Left column (col-lg-8)**: Model tiles grouped by normalized family from `models.dev/api.json` (e.g. `deepseek`, `minimax`, `qwen`, `mimo`), 💡 prefix + ID display
+- **Right column (col-lg-4)**: API Key token pool (OpenCode keys with VALID badge / ZEN pool with session status), Quick Actions, Environment, Proxy Configuration (mode + provider radio buttons)
+- **ZEN integration**: Requests, Tokens, Used inline in top bar (formatted K/M), fetched from `api.zenllm.org/api/dashboard` via session cookies. Shows `n/a` when provider is OpenCode, `Loading...` when ZEN selected but not logged in. ZEN token pool with inline CRUD management modal (add/edit/delete keys, session cookies)
+- **Provider selector**: Radio button group — OpenCode (routes through opencode.ai) or ZEN (routes through zenllm.org). Switching provider changes the key management section and model list.
+- **Collapsible cards**, restart with reconnecting polling, Bing daily wallpaper background
+
 ## Console Dashboard
 
-Status banner at top, live log below. Keyboard shortcuts:
+Status banner at top, live log below. Chat requests show as colored lines: `[tag][session]>[provider/model] — "preview" → [ms]` (pending shows `— …`, completed shows `→ [ms]`). Debug entries (noisy handler logs, VS/GHCP/telemetry traffic) hidden unless `d` pressed.
+
+Keyboard shortcuts:
 
 | Key | Action |
 |-----|--------|
 | `1` | Switch to MOCK mode |
 | `2` | Switch to HYBRID mode |
 | `3` | Switch to PROXY mode |
+| `r` | Restart proxy |
+| `d` | Toggle debug entries (handler noise, VS/GHCP/telemetry) |
+| `q` | Quit |
+| ↑↓ PgUp/PgDn | Scroll log |
+
+## Nag Handling (task_complete suppression)
+
+Visual Studio sends "You have not yet marked the task as complete" when the LLM produces text without calling `task_complete`. The proxy blocks these at three levels:
+
+1. **Nag detected** — returns `task_complete` tool_use in SSE stream (Anthropic Messages API format with `event:` + `data:` lines)
+2. **Body dedup** — identical request body within 30s gets `task_complete` immediately (no LLM forward)
+3. **Drain** — any request within 20s of a `task_complete` response returns `task_complete` again
+
+Shared helpers in `shared.ts`: `countConsecutiveNags()`, `stripNagMessages()`, `RECENTLY_COMPLETED` map. Nag responses use SSE buffer with `Content-Length` + `Connection: close` (not chunked) for VS compatibility.
+| `3` | Switch to PROXY mode |
 | `r` | Restart proxy (picks up code changes) |
 | `e` | Toggle recording |
-| `d` | Toggle debug entries (VS, GHCP App, telemetry, sessions) |
+| `d` | Toggle debug entries (noisy handler logs, VS/GHCP/telemetry traffic) |
 | `m` | Toggle model list overlay |
 | `s` | Stop proxy |
 

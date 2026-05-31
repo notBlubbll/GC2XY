@@ -1,6 +1,6 @@
 // Device Login Emulator for github.com MITM proxy
 // Routes requests to specialized handler modules
-import { HandlerInput, HandlerResult, jsonResponse } from "../shared.ts";
+import { HandlerInput, HandlerResult, jsonResponse, isHybrid } from "../shared.ts";
 import { handleAuth } from "./auth-handler.ts";
 import { handleCopilot } from "./copilot-handler.ts";
 import { handleRepo } from "./repo-handler.ts";
@@ -32,9 +32,7 @@ export async function handleDeviceLogin(req: HandlerInput): Promise<HandlerResul
     if (result.handled) return result;
 
     // Catch-all - skip in hybrid mode so non-mocked requests pass through
-    const ARGS = new Set(typeof process !== "undefined" ? process.argv.slice(2) : []);
-    const isHybrid = ARGS.has("--mode-2");
-    if (isHybrid) {
+    if (isHybrid()) {
       return { handled: false };
     }
     const host = req.headers?.["host"] || req.hostname || "unknown";

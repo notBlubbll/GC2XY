@@ -4,369 +4,187 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>gc2xy Dashboard</title>
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
   <style>
-    :root {
-      --primary-color: #0d6efd;
-      --secondary-color: #6c757d;
-      --success-color: #32CD32;
-      --bs-success: #32CD32;
-      --bs-success-rgb: 50, 205, 50;
-      --danger-color: #dc3545;
-      --lg-text: #ffffff;
-      --lg-red: #fb4268;
-      --lg-grey: #5b5b5b;
-    }
-    body {
-      margin: 0;
-      min-height: 100vh;
-      padding: 20px 0;
-      overflow-x: visible;
-      background: #0d1117;
-    }
-    .dashboard-container {
-      position: relative;
-      z-index: 10;
-      max-width: 1200px;
-      margin: 0 auto;
-    }
-
-    .card {
-      position: relative;
-      border: none;
-      border-radius: var(--glass-radius, 12px);
-      margin-bottom: 20px;
-      background: transparent !important;
-    }
-
-    .glass-panel {
-      position: absolute;
-      inset: 0;
-      z-index: 0;
-      border-radius: inherit;
-      overflow: hidden;
-    }
-
-    .glass-panel::before {
-      content: '';
-      position: absolute;
-      inset: 0;
-      z-index: 1;
-      border-radius: inherit;
-      background-color: rgba(255, 255, 255, 0.08);
-      pointer-events: none;
-    }
-
-    .glass-panel::after {
-      content: '';
-      position: absolute;
-      inset: 0;
-      z-index: 0;
-      border-radius: inherit;
-      pointer-events: none;
-    }
-
-    .card-content {
-      position: relative;
-      z-index: 3;
-      border-radius: inherit;
-      overflow: hidden;
-      background: rgba(0, 0, 0, 0.1);
-    }
-
-    .card-header {
-      background: rgba(0, 0, 0, 0.2) !important;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.15);
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      font-size: 14px;
-      color: white;
-      padding: 1rem 1.25rem;
-      position: relative;
-      z-index: 4;
-    }
-
-    .card-body {
-      padding: 0.5rem;
-      position: relative;
-      z-index: 4;
-      backdrop-filter: blur(13px) !important;
-      -webkit-backdrop-filter: blur(13px) !important;
-    }
-
-    .status-indicator {
-      width: 12px;
-      height: 12px;
-      border-radius: 50%;
-      display: inline-block;
-      margin-right: 8px;
-    }
+    :root { --primary-color: #0d6efd; --secondary-color: #6c757d; --success-color: #32CD32; --bs-success: #32CD32; --bs-success-rgb: 50,205,50; --danger-color: #dc3545; }
+    body { margin: 0; min-height: 100vh; padding: 20px 0; background: #0d1117; }
+    .dashboard-container { position: relative; z-index: 10; max-width: 1200px; margin: 0 auto; }
+    .card { position: relative; border: none; border-radius: var(--glass-radius, 12px); margin-bottom: 20px; background: transparent !important; }
+    .glass-panel { position: absolute; inset: 0; z-index: 0; border-radius: inherit; overflow: hidden; }
+    .glass-panel::before { content: ''; position: absolute; inset: 0; z-index: 1; border-radius: inherit; background-color: rgba(255,255,255,0.04); pointer-events: none; }
+    .card-content { position: relative; z-index: 3; border-radius: inherit; overflow: hidden; background: rgba(0,0,0,0.22); }
+    .card-header { background: rgba(0,0,0,0.2) !important; border-bottom: 1px solid rgba(255,255,255,0.15); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; font-size: 14px; color: white; padding: 0.4rem 1.25rem; position: relative; z-index: 4; }
+    .card-body { padding: 0.5rem; position: relative; z-index: 4; backdrop-filter: blur(13px) !important; -webkit-backdrop-filter: blur(13px) !important; }
+    .status-indicator { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
     .status-online { background-color: var(--success-color); box-shadow: 0 0 10px var(--success-color); }
     .status-offline { background-color: var(--danger-color); box-shadow: 0 0 10px var(--danger-color); }
+    .status-reconnecting { background-color: #ffd700; box-shadow: 0 0 10px #ffd700; animation: pulse 1s ease-in-out infinite; }
     .status-unknown { background-color: var(--secondary-color); }
-
-    .btn-white-bg {
-      background: white;
-      border: 1px solid white;
-      color: #0d1117;
-    }
-    .btn-white-bg:hover {
-      background: rgba(255, 255, 255, 0.85);
-      border-color: white;
-      color: #0d1117;
-    }
-
-    .btn-outline-action {
-      border: 1px solid rgba(255, 255, 255, 0.8);
-      color: white;
-      background: transparent;
-    }
-    .btn-outline-action:hover {
-      background: rgba(255, 255, 255, 0.15);
-      border-color: white;
-      color: white;
-    }
-
-    .stats-card {
-      background: transparent;
-      border-radius: 12px;
-      padding: 0;
-      text-align: center;
-      position: relative;
-      z-index: 10;
-      backdrop-filter: blur(13px);
-      -webkit-backdrop-filter: blur(13px);
-    }
-
-    .stats-value {
-      font-size: 28px;
-      font-weight: 700;
-      color: white;
-    }
-    .stats-label {
-      font-size: 12px;
-      color: rgba(255, 255, 255, 0.8);
-      text-transform: uppercase;
-      letter-spacing: 1px;
-    }
-
-    .credential-row {
-      background: transparent;
-      border-radius: 8px;
-      padding: 15px;
-      margin-bottom: 12px;
-      border: 1px solid rgba(255, 255, 255, 0.3);
-    }
-    .credential-row.expired {
-      opacity: 0.6;
-      background: rgba(220, 53, 69, 0.15);
-    }
-
-    .toast-container {
-      position: fixed;
-      top: 20px;
-      right: 20px;
-      z-index: 1050;
-    }
-
-    .form-label {
-      font-weight: 600;
-      font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      color: rgba(255, 255, 255, 0.9);
-      margin-bottom: 6px;
-    }
-    .form-control, .form-select {
-      display: block;
-      width: 100%;
-      background: rgba(255, 255, 255, 0.15);
-      border: 1px solid rgba(255, 255, 255, 0.2);
-      color: white;
-      padding: 0.375rem 0.75rem;
-      font-size: 1rem;
-      border-radius: 0.375rem;
-    }
-    .form-control:focus, .form-select:focus {
-      background: rgba(255, 255, 255, 0.2);
-      border-color: rgba(255, 255, 255, 0.4);
-      color: white;
-      outline: 0;
-      box-shadow: 0 0 0 0.2rem rgba(102, 126, 234, 0.25);
-    }
-    .form-control::placeholder {
-      color: rgba(255, 255, 255, 0.6);
-    }
-    .form-text {
-      color: rgba(255, 255, 255, 0.7);
-    }
-
-    .text-muted {
-      color: rgba(255, 255, 255, 0.7) !important;
-    }
-    .bg-light {
-      background: rgba(255, 255, 255, 0.1) !important;
-    }
-    h4, h5, strong, .fw-medium {
-      color: white !important;
-    }
-    small {
-      color: rgba(255, 255, 255, 0.8) !important;
-    }
-
-    .modal-content {
-      background: rgba(0, 0, 0, 0.6);
-      border: 1px solid rgba(255, 255, 255, 0.3);
-      box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37);
-      position: relative;
-      z-index: 20;
-      backdrop-filter: blur(30px);
-      -webkit-backdrop-filter: blur(30px);
-    }
-    .modal-header, .modal-body, .modal-footer {
-      border-color: rgba(255, 255, 255, 0.2);
-    }
-    .modal-title {
-      color: white !important;
-    }
-    .modal .btn-close {
-      filter: invert(1) grayscale(1) brightness(2);
-    }
-
-    .api-key-input {
-      font-family: 'Courier New', monospace;
-      font-size: 13px;
-    }
-
-    .collapsible-header {
-      cursor: pointer;
-      user-select: none;
-    }
-    .collapsible-header .toggle-icon {
-      transition: transform 0.2s ease;
-    }
-    .collapsible-header .toggle-icon.collapsed {
-      transform: rotate(-90deg);
-    }
-    .collapse-section {
-      transition: all 0.3s ease;
-    }
-    .collapse-section.collapsed {
-      display: none;
-    }
-
-    .provider-section {
-      margin-bottom: 20px;
-      padding: 15px;
-      border-radius: 8px;
-      border: 1px solid rgba(255, 255, 255, 0.2);
-      background: rgba(0, 0, 0, 0.15);
-    }
-    .provider-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 10px;
-    }
-    .provider-title {
-      font-weight: 600;
-      font-size: 14px;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      color: white;
-    }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+    .stats-card { background: transparent; border-radius: 12px; padding: 0; text-align: center; backdrop-filter: blur(13px); -webkit-backdrop-filter: blur(13px); }
+    .stats-value { font-weight: 700; color: white; }
+    .stats-label { font-size: 12px; color: rgba(255,255,255,0.8); text-transform: uppercase; letter-spacing: 1px; }
+    .btn-white-bg { background: white; border: 1px solid white; color: #0d1117; }
+    .btn-white-bg:hover { background: rgba(255,255,255,0.85); color: #0d1117; }
+    .btn-outline-action { border: 1px solid rgba(255,255,255,0.8); color: white; background: transparent; }
+    .btn-outline-action:hover { background: rgba(255,255,255,0.15); border-color: white; color: white; }
+    .btn-check:checked + .btn-outline-action { background: rgba(255,255,255,0.2); border-color: white; color: white; box-shadow: 0 0 0 0.2rem rgba(102,126,234,0.25); }
+    .form-label { font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: rgba(255,255,255,0.9); margin-bottom: 6px; }
+    .form-control, .form-select { width: 100%; background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.2); color: white; padding: 0.375rem 0.75rem; font-size: 1rem; border-radius: 0.375rem; }
+    .form-control:focus, .form-select:focus { background: rgba(255,255,255,0.2); border-color: rgba(255,255,255,0.4); color: white; outline: 0; box-shadow: 0 0 0 0.2rem rgba(102,126,234,0.25); }
+    .form-control::placeholder { color: rgba(255,255,255,0.6); }
+    .text-muted { color: rgba(255,255,255,0.7) !important; }
+    h4, h5, strong, .fw-medium { color: white !important; }
+    small { color: rgba(255,255,255,0.8) !important; }
+    .toast-container { position: fixed; top: 20px; right: 20px; z-index: 1050; }
+    dialog.dialog { border: 1px solid rgba(255,255,255,0.3); box-shadow: 0 8px 32px 0 rgba(31,38,135,0.37); backdrop-filter: blur(30px); -webkit-backdrop-filter: blur(30px); }
+    dialog.dialog::backdrop { background: rgba(0,0,0,0.5); }
+    .collapsible-header { cursor: pointer; user-select: none; }
+    .collapsible-header .toggle-icon { transition: transform 0.2s ease; }
+    .collapsible-header .toggle-icon.collapsed { transform: rotate(-90deg); }
+    .collapse-section { transition: all 0.3s ease; }
+    .collapse-section.collapsed { display: none; }
+    .model-tag { display: inline-flex; align-items: center; gap: 3px; padding: 2px 7px; border-radius: 4px; cursor: pointer; border: 1px solid rgba(255,255,255,0.12); background: rgba(255,255,255,0.03); opacity: 0.5; user-select: none; transition: all 0.15s ease; margin: 1.5px; }
+    .model-tag.enabled { border-color: rgba(50,205,50,0.3); background: rgba(50,205,50,0.1); opacity: 1; }
+    .model-tag:hover { opacity: 0.8; }
+    .model-tag.enabled:hover { opacity: 1; }
+    .model-tag-name { font-size: 12px; font-weight: 600; color: #fff; white-space: nowrap; }
+    .model-tag-id { font-size: 8px; color: #fff; white-space: nowrap; opacity: 0.6; }
+    .model-tag input[type="checkbox"] { pointer-events: none; transform: scale(0.75); margin: 0; }
+    .model-family-group { margin-bottom: 6px; }
+    .model-family-header { font-size: 12px; font-weight: 600; color: #fff; padding: 2px 0 1px 0; border-bottom: 1px solid rgba(255,255,255,0.05); margin-bottom: 2px; display: flex; align-items: center; }
+    .model-family-header .badge { font-size: 10px; margin-left: 6px; padding: 0 5px; line-height: 1.4; }
+    .mode-mock { color: #32CD32; }
+    .mode-hybrid { color: #ffd700; }
+    .mode-proxy { color: #00bfff; }
+    .pool-card { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 12px; margin-bottom: 10px; }
+    .pool-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+    .pool-name { font-weight: 600; color: #58a6ff; font-size: 0.95rem; }
+    .pool-status { padding: 3px 10px; border-radius: 10px; font-size: 0.75rem; font-weight: 600; }
+    .zen-input { max-width:220px; height:32px; border-radius:6px; border:1px solid rgba(255,255,255,0.15); padding:4px 10px; font-size:12px; background:rgba(255,255,255,0.1); color:white; }
+    .zen-input::placeholder { color: rgba(255,255,255,0.5); }
+    .rounded-0 { border-radius: 0 !important; }
+    .btn-outline-action.rounded-0 { border-radius: 0 !important; }
   </style>
 </head>
 <body>
-  <svg style="position:absolute;overflow:hidden;width:0;height:0" color-interpolation-filters="sRGB">
-    <defs id="glass-defs"></defs>
-  </svg>
+  <svg style="position:absolute;overflow:hidden;width:0;height:0" color-interpolation-filters="sRGB"><defs id="glass-defs"></defs></svg>
 
-  <div class="dashboard-container">
+  <div class="container pt-2">
+  <div class="row justify-content-center">
+  <div class="dashboard-container col-11">
     <!-- Header -->
-    <div class="card sticky-top" style="top:10px;z-index:100" data-glass>
+    <div class="card sticky-top p-0" style="top:0;z-index:100" data-glass>
       <div class="glass-panel"></div>
-      <div class="card-content">
-          <div>
-            <div class="d-flex justify-content-between align-items-center">
-            <div>
-              <h4 class="mb-0"><i class="bi bi-hexagon-fill me-2"></i>gc2xy Dashboard</h4>
-              <small class="text-muted">MITM Debug Proxy with Copilot Auth Bypass</small>
+      <div class="card-content px-2">
+        <div class="d-flex justify-content-between align-items-center" style="padding:0.4rem 1.25rem">
+          <div class="d-flex align-items-center gap-2">
+            <h4 class="mb-0" style="font-size:15px;letter-spacing:0"><i class="bi bi-hexagon-fill me-1"></i>gc2xy</h4>
+            <span id="statusIndicator" class="status-indicator status-unknown ms-1" style="width:8px;height:8px"></span>
+            <span id="statusText" style="font-size:11px;color:rgba(255,255,255,0.7)">Checking...</span>
+          </div>
+          <div class="d-flex align-items-center gap-2 flex-wrap">
+            <div class="text-center" style="line-height:1.1">
+              <div style="font-size:9px;color:rgba(255,255,255,0.5)">Mode</div>
+              <div style="font-size:13px;font-weight:600;color:white"><span id="modeDisplay" class="mode-mock">MOCK</span></div>
             </div>
-            <div class="text-end">
-              <div>
-                <span id="statusIndicator" class="status-indicator status-unknown"></span>
-                <span id="statusText" class="fw-medium">Checking...</span>
-              </div>
-              <div class="proxy-version" id="versionText">v3.0</div>
+            <div style="width:1px;height:24px;background:rgba(255,255,255,0.15)"></div>
+            <div class="text-center" style="line-height:1.1">
+              <div style="font-size:9px;color:rgba(255,255,255,0.5)">LReq</div>
+              <div style="font-size:13px;font-weight:600;color:white" id="reqDisplay">0</div>
+            </div>
+            <div style="width:1px;height:24px;background:rgba(255,255,255,0.15)"></div>
+            <div class="text-center" style="line-height:1.1">
+              <div style="font-size:9px;color:rgba(255,255,255,0.5)">TPS</div>
+              <div style="font-size:13px;font-weight:600;color:white" id="tpsDisplay">0.0</div>
+            </div>
+            <div style="width:1px;height:24px;background:rgba(255,255,255,0.15)"></div>
+            <div class="text-center" style="line-height:1.1">
+              <div style="font-size:9px;color:rgba(255,255,255,0.5)">Keys</div>
+              <div style="font-size:13px;font-weight:600;color:white" id="activeKeysBlock">0</div>
+            </div>
+            <div style="width:1px;height:24px;background:rgba(255,255,255,0.15)"></div>
+            <div class="text-center" style="line-height:1.1">
+              <div style="font-size:9px;color:rgba(255,255,255,0.5)">Models</div>
+              <div style="font-size:13px;font-weight:600;color:white" id="totalModels">0 / 0</div>
+            </div>
+            <div style="width:1px;height:24px;background:rgba(255,255,255,0.15)"></div>
+            <div class="text-center" style="line-height:1.1" id="requestsTopBar">
+              <div style="font-size:9px;color:rgba(255,255,255,0.5)">Requests</div>
+              <div style="font-size:13px;font-weight:600;color:white" id="requestsDisplay">n/a</div>
+            </div>
+            <div style="width:1px;height:24px;background:rgba(255,255,255,0.15)" id="requestsTopBarSep"></div>
+            <div class="text-center" style="line-height:1.1" id="tokensTopBar">
+              <div style="font-size:9px;color:rgba(255,255,255,0.5)">Tokens</div>
+              <div style="font-size:13px;font-weight:600;color:white" id="tokensDisplay">n/a</div>
+            </div>
+            <div style="width:1px;height:24px;background:rgba(255,255,255,0.15)" id="usedTopBarSep"></div>
+            <div class="text-center" style="line-height:1.1" id="usedTopBar">
+              <div style="font-size:9px;color:rgba(255,255,255,0.5)">Quota</div>
+              <div style="font-size:13px;font-weight:600;color:white" id="usedDisplay" title="">n/a</div>
+            </div>
+            <div style="width:1px;height:24px;background:rgba(255,255,255,0.15)"></div>
+            <div class="text-center" style="line-height:1.1">
+              <div style="font-size:9px;color:rgba(255,255,255,0.5)">Provider</div>
+              <div style="font-size:13px;font-weight:600;color:white" id="providerDisplay">opencode</div>
             </div>
           </div>
+          <div class="text-end" style="font-size:11px;color:rgba(255,255,255,0.5)" id="versionText">v3.0</div>
         </div>
       </div>
     </div>
 
-    <!-- Stats Row -->
-    <div class="row">
-      <div class="col-md-3 col-sm-6">
-        <div class="stats-card card" data-glass>
-          <div class="glass-panel"></div>
-          <div class="card-content" style="padding: 20px;">
-            <div class="stats-value" id="totalKeys">0</div>
-            <div class="stats-label">Total Keys</div>
-          </div>
+
+
+    <div id="zenithLoginRow" class="row text-center align-items-stretch mb-3" style="display:none">
+      <div class="col-12"><div class="card" data-glass><div class="glass-panel"></div><div class="card-content" style="padding:15px">
+        <div class="d-flex flex-wrap align-items-center justify-content-center gap-2">
+          <span style="color:rgba(255,255,255,0.6);font-size:14px">Connect your ZEN account</span>
+          <a href="https://zenllm.org/login" target="_blank" class="btn btn-white-bg btn-sm" style="font-size:12px">Sign in at zenllm.org</a>
+          <span style="color:rgba(255,255,255,0.4);font-size:12px">then paste session cookie:</span>
+          <input type="text" id="sessionCookieInput" placeholder="zs=..." class="zen-input" />
+          <button class="btn btn-sm btn-outline-action" onclick="saveZenSession()" style="font-size:11px">Save</button>
+          <button class="btn btn-sm" style="background:rgba(220,53,69,0.2);color:#dc3545;border:none;font-size:11px" onclick="logoutZenith()">Clear</button>
         </div>
-      </div>
-      <div class="col-md-3 col-sm-6">
-        <div class="stats-card card" data-glass>
-          <div class="glass-panel"></div>
-          <div class="card-content" style="padding: 20px;">
-            <div class="stats-value" id="activeKeys">0</div>
-            <div class="stats-label">Active Keys</div>
-          </div>
+        <div style="margin-top:6px;font-size:11px;color:rgba(255,255,255,0.4);text-align:center">
+          DevTools → Application → Cookies → <code style="background:rgba(255,255,255,0.05);padding:1px 4px;border-radius:3px">https://api.zenllm.org</code> → copy <code style="background:rgba(255,255,255,0.05);padding:1px 4px;border-radius:3px">zs</code> value
         </div>
-      </div>
-      <div class="col-md-3 col-sm-6">
-        <div class="stats-card card" data-glass>
-          <div class="glass-panel"></div>
-          <div class="card-content" style="padding: 20px;">
-            <div class="stats-value" id="totalModels">0</div>
-            <div class="stats-label">Models</div>
-          </div>
-        </div>
-      </div>
-      <div class="col-md-3 col-sm-6">
-        <div class="stats-card card" data-glass>
-          <div class="glass-panel"></div>
-          <div class="card-content" style="padding: 20px;">
-            <div class="stats-value" id="proxyPort">443</div>
-            <div class="stats-label">Port</div>
-          </div>
-        </div>
-      </div>
+      </div></div></div>
     </div>
 
     <div class="row">
-      <!-- Left Column -->
-      <div class="col-lg-7">
-        <!-- API Keys Management -->
+      <div class="col-lg-8">
+        <div class="card" data-glass data-section="models">
+          <div class="glass-panel"></div>
+          <div class="card-content">
+            <div class="card-header collapsible-header d-flex justify-content-between align-items-center" onclick="toggleSection('models')">
+              <span>
+                <i class="bi bi-chevron-down toggle-icon me-1"></i>
+                <i class="bi bi-cpu-fill me-2"></i>Available Models
+              </span>
+              <span class="badge bg-secondary" id="modelCountBadge">0</span>
+            </div>
+            <div class="card-body collapse-section" id="section-models">
+              <div id="modelsContainer"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-lg-4">
         <div class="card" data-glass data-section="keys">
           <div class="glass-panel"></div>
           <div class="card-content">
             <div class="card-header collapsible-header d-flex justify-content-between align-items-center" onclick="toggleSection('keys')">
               <span>
                 <i class="bi bi-chevron-down toggle-icon me-1"></i>
-                <i class="bi bi-key-fill me-2"></i>API Keys Management
+                <i class="bi bi-key-fill me-2"></i><span id="keysSectionTitle">API Key</span>
               </span>
-              <div>
-                <button class="btn btn-sm btn-white-bg me-1" onclick="event.stopPropagation();addApiKey('opencode')">
-                  <i class="bi bi-plus-lg me-1"></i>OpenCode
-                </button>
-                <button class="btn btn-sm btn-white-bg" onclick="event.stopPropagation();addApiKey('opencommand')">
-                  <i class="bi bi-plus-lg me-1"></i>OpenCommand
-                </button>
-              </div>
+              <span class="d-flex align-items-stretch gap-2" style="height:100%">
+                <span class="badge bg-secondary d-flex align-items-center" id="keysCountBadge">0</span>
+                <button class="btn btn-sm btn-outline-action rounded-0" id="addKeyBtn" onclick="event.stopPropagation();addCurrentProviderKey()" style="font-size:11px"><i class="bi bi-pencil me-1"></i><span id="addKeyBtnText">Manage</span></button>
+              </span>
             </div>
             <div class="card-body collapse-section" id="section-keys">
               <div id="apiKeysContainer"></div>
@@ -374,61 +192,6 @@
           </div>
         </div>
 
-        <!-- Proxy Configuration -->
-        <div class="card" data-glass data-section="config">
-          <div class="glass-panel"></div>
-          <div class="card-content">
-            <div class="card-header collapsible-header" onclick="toggleSection('config')">
-              <i class="bi bi-chevron-down toggle-icon collapsed me-1"></i>
-              <i class="bi bi-gear-fill me-2"></i>Proxy Configuration
-            </div>
-            <div class="card-body collapse-section collapsed" id="section-config">
-              <form id="configForm">
-                <div class="row mb-3">
-                  <div class="col-md-6">
-                    <label class="form-label">Mode</label>
-                    <select class="form-select" id="proxyMode">
-                      <option value="mock">MOCK (Offline)</option>
-                      <option value="hybrid">HYBRID (Browse + Mock API)</option>
-                      <option value="proxy">PROXY (Capture All)</option>
-                    </select>
-                  </div>
-                  <div class="col-md-6">
-                    <label class="form-label">HTTP Port</label>
-                    <input type="number" class="form-control" id="httpPortInput" min="1024" max="65535" value="80">
-                  </div>
-                </div>
-                <div class="mb-3 form-check">
-                  <input type="checkbox" class="form-check-input" id="iisProxy">
-                  <label class="form-check-label" for="iisProxy">IIS Reverse Proxy Mode</label>
-                </div>
-                <div class="mb-3 form-check">
-                  <input type="checkbox" class="form-check-input" id="enableOpenCommand">
-                  <label class="form-check-label" for="enableOpenCommand">Enable OpenCommand (oc/ models)</label>
-                </div>
-              </form>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Right Column -->
-      <div class="col-lg-5">
-        <!-- Models Status -->
-        <div class="card" data-glass data-section="models">
-          <div class="glass-panel"></div>
-          <div class="card-content">
-            <div class="card-header collapsible-header" onclick="toggleSection('models')">
-              <i class="bi bi-chevron-down toggle-icon me-1"></i>
-              <i class="bi bi-cpu-fill me-2"></i>Available Models
-            </div>
-            <div class="card-body collapse-section" id="section-models">
-              <div id="modelsContainer"></div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Quick Actions -->
         <div class="card" data-glass data-section="actions">
           <div class="glass-panel"></div>
           <div class="card-content">
@@ -438,24 +201,15 @@
             </div>
             <div class="card-body collapse-section collapsed" id="section-actions">
               <div class="d-grid gap-2">
-                <button class="btn btn-outline-action" onclick="checkHealth()">
-                  <i class="bi bi-activity me-2"></i>Check Health
-                </button>
-                <button class="btn btn-outline-action" onclick="validateAllKeys()">
-                  <i class="bi bi-check-circle me-2"></i>Validate All Keys
-                </button>
-                <button class="btn btn-outline-action" onclick="refreshModels()">
-                  <i class="bi bi-arrow-clockwise me-2"></i>Refresh Models
-                </button>
-                <button class="btn btn-white-bg" onclick="saveConfiguration()">
-                  <i class="bi bi-save me-2"></i>Save Configuration
-                </button>
+                <button class="btn btn-outline-action" onclick="checkHealth()"><i class="bi bi-activity me-2"></i>Check Health</button>
+                <button class="btn btn-outline-action" onclick="refreshModels()"><i class="bi bi-arrow-clockwise me-2"></i>Refresh Models</button>
+                <button class="btn btn-outline-action" onclick="saveConfiguration()"><i class="bi bi-save me-2"></i>Save Config</button>
+                <button class="btn btn-outline-action" id="restartBtn" onclick="restartProxy()"><i class="bi bi-arrow-counterclockwise me-2"></i>Restart</button>
               </div>
             </div>
           </div>
         </div>
 
-        <!-- Environment Info -->
         <div class="card" data-glass data-section="env">
           <div class="glass-panel"></div>
           <div class="card-content">
@@ -464,17 +218,40 @@
               <i class="bi bi-info-circle-fill me-2"></i>Environment
             </div>
             <div class="card-body collapse-section collapsed" id="section-env">
-              <div class="mb-2">
-                <small class="text-muted">Working Directory</small>
-                <div class="fw-medium text-truncate" id="workDir">-</div>
+              <div class="mb-2"><small class="text-muted">Working Directory</small><div class="fw-medium text-truncate" id="workDir">-</div></div>
+              <div class="mb-2"><small class="text-muted">Platform</small><div class="fw-medium" id="platform">-</div></div>
+              <div class="mb-2"><small class="text-muted">Runtime</small><div class="fw-medium" id="nodeVersion">-</div></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" data-glass data-section="config">
+          <div class="glass-panel"></div>
+          <div class="card-content">
+            <div class="card-header collapsible-header" onclick="toggleSection('config')">
+              <i class="bi bi-chevron-down toggle-icon collapsed me-1"></i>
+              <i class="bi bi-gear-fill me-2"></i>Proxy Configuration
+            </div>
+            <div class="card-body collapse-section collapsed" id="section-config">
+              <div class="mb-3">
+                <label class="form-label">Mode</label>
+                <div class="btn-group w-100" role="group" id="modeGroup">
+                  <input type="radio" class="btn-check" name="proxyMode" id="mode-mock" value="mock" autocomplete="off" checked>
+                  <label class="btn btn-outline-action" for="mode-mock">Mock</label>
+                  <input type="radio" class="btn-check" name="proxyMode" id="mode-hybrid" value="hybrid" autocomplete="off">
+                  <label class="btn btn-outline-action" for="mode-hybrid">Hybrid</label>
+                  <input type="radio" class="btn-check" name="proxyMode" id="mode-proxy" value="proxy" autocomplete="off">
+                  <label class="btn btn-outline-action" for="mode-proxy">Proxy</label>
+                </div>
               </div>
-              <div class="mb-2">
-                <small class="text-muted">Platform</small>
-                <div class="fw-medium" id="platform">-</div>
-              </div>
-              <div class="mb-2">
-                <small class="text-muted">Runtime</small>
-                <div class="fw-medium" id="nodeVersion">-</div>
+              <div class="mb-3">
+                <label class="form-label">Provider</label>
+                <div class="btn-group w-100" role="group" id="providerGroup">
+                  <input type="radio" class="btn-check" name="provider" id="prov-opencode" value="opencode" autocomplete="off" checked>
+                  <label class="btn btn-outline-action" for="prov-opencode">OpenCode</label>
+                  <input type="radio" class="btn-check" name="provider" id="prov-zen" value="zen" autocomplete="off">
+                  <label class="btn btn-outline-action" for="prov-zen">ZEN</label>
+                </div>
               </div>
             </div>
           </div>
@@ -482,53 +259,40 @@
       </div>
     </div>
   </div>
+  </div>
+  </div>
 
-  <!-- Toast Container -->
   <div class="toast-container" id="toastContainer"></div>
 
-  <!-- Modal for API Key -->
-  <div class="modal fade" id="apiKeyModal" tabindex="-1">
+  <!-- Keys Management Modal (Bootstrap, provider-agnostic) -->
+  <div class="modal fade" id="keysModal" tabindex="-1">
     <div class="modal-dialog">
-      <div class="modal-content">
-        <div class="modal-header">
-          <h5 class="modal-title">Add/Edit API Key</h5>
-          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      <div class="modal-content" style="background:rgba(0,0,0,0.9);border:1px solid rgba(255,255,255,0.15);backdrop-filter:blur(20px)">
+        <div class="modal-header" style="border-bottom:1px solid rgba(255,255,255,0.1)">
+          <h5 class="modal-title" style="color:white"><i class="bi bi-key-fill me-2"></i>Manage <span id="keysModalTitle">Keys</span></h5>
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
         </div>
         <div class="modal-body">
-          <form id="apiKeyForm">
-            <input type="hidden" id="editKeyIndex">
-            <input type="hidden" id="keyProvider">
-            <div class="mb-3">
-              <label class="form-label">Key Name</label>
-              <input type="text" class="form-control" id="keyName" placeholder="e.g., Primary Key" required>
-            </div>
-            <div class="mb-3">
-              <label class="form-label">API Key</label>
-              <input type="text" class="form-control api-key-input" id="keyValue" placeholder="sk-..." required>
-              <div class="form-text">Your API key (OpenCode or OpenCommand)</div>
-            </div>
-            <div class="mb-3">
-              <label class="form-label">Status</label>
-              <select class="form-select" id="keyStatus">
-                <option value="active">Active</option>
-                <option value="inactive">Inactive</option>
-              </select>
-            </div>
-          </form>
+          <div id="keysList"></div>
+          <hr style="border-color:rgba(255,255,255,0.1)">
+          <div class="mb-3">
+            <label class="form-label">Add New Key</label>
+            <input type="text" class="form-control form-control-sm mb-2" id="newKeyName" placeholder="Key name">
+            <input type="text" class="form-control form-control-sm mb-2" id="newKeyToken" placeholder="API token">
+            <input type="text" class="form-control form-control-sm mb-2" id="newKeySession" placeholder="Session cookie (zs=...)" style="display:none">
+            <button class="btn btn-success btn-sm w-100" onclick="addKey()"><i class="bi bi-plus-circle me-1"></i>Add Key</button>
+          </div>
         </div>
-        <div class="modal-footer">
-          <button type="button" class="btn btn-outline-action" data-bs-dismiss="modal">Cancel</button>
-          <button type="button" class="btn btn-white-bg" onclick="saveApiKey()">Save Key</button>
+        <div class="modal-footer" style="border-top:1px solid rgba(255,255,255,0.1)">
+          <button type="button" class="btn btn-outline-action" data-bs-dismiss="modal">Close</button>
         </div>
       </div>
     </div>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
   <script>
-    const SURFACE_FNS = {
-      convex_squircle: (x) => Math.pow(1 - Math.pow(1 - x, 4), 0.25),
-    };
+    const SURFACE_FNS = { convex_squircle: (x) => Math.pow(1 - Math.pow(1 - x, 4), 0.25) };
 
     function calculateRefractionProfile(glassThickness, bezelWidth, heightFn, ior, samples) {
       samples = samples || 128;
@@ -542,11 +306,9 @@
       }
       const profile = new Float64Array(samples);
       for (let i = 0; i < samples; i++) {
-        const x = i / samples;
-        const y = heightFn(x);
+        const x = i / samples, y = heightFn(x);
         const dx = x < 1 ? 0.0001 : -0.0001;
-        const y2 = heightFn(x + dx);
-        const deriv = (y2 - y) / dx;
+        const y2 = heightFn(x + dx), deriv = (y2 - y) / dx;
         const mag = Math.sqrt(deriv * deriv + 1);
         const ref = refract(-deriv / mag, -1 / mag);
         if (!ref) { profile[i] = 0; continue; }
@@ -561,582 +323,456 @@
       const ctx = c.getContext('2d');
       const img = ctx.createImageData(w, h);
       const d = img.data;
-      for (let i = 0; i < d.length; i += 4) {
-        d[i] = 128; d[i+1] = 128; d[i+2] = 0; d[i+3] = 255;
-      }
-      const r = radius, rSq = r*r, r1Sq = (r+1)**2;
-      const rBSq = Math.max(r - bezelWidth, 0)**2;
+      for (let i = 0; i < d.length; i += 4) { d[i] = 128; d[i+1] = 128; d[i+2] = 0; d[i+3] = 255; }
+      const r = radius, rSq = r*r, r1Sq = (r+1)**2, rBSq = Math.max(r - bezelWidth, 0)**2;
       const wB = w - r*2, hB = h - r*2, S = profile.length;
-      for (let y1 = 0; y1 < h; y1++) {
-        for (let x1 = 0; x1 < w; x1++) {
-          const x = x1 < r ? x1 - r : x1 >= w - r ? x1 - r - wB : 0;
-          const y = y1 < r ? y1 - r : y1 >= h - r ? y1 - r - hB : 0;
-          const dSq = x*x + y*y;
-          if (dSq > r1Sq || dSq < rBSq) continue;
-          const dist = Math.sqrt(dSq);
-          const fromSide = r - dist;
-          const op = dSq < rSq ? 1 : 1 - (dist - Math.sqrt(rSq)) / (Math.sqrt(r1Sq) - Math.sqrt(rSq));
-          if (op <= 0 || dist === 0) continue;
-          const cos = x / dist, sin = y / dist;
-          const bi = Math.min(((fromSide / bezelWidth) * S) | 0, S - 1);
-          const disp = profile[bi] || 0;
-          const dX = (-cos * disp) / maxDisp, dY = (-sin * disp) / maxDisp;
-          const idx = (y1 * w + x1) * 4;
-          d[idx] = (128 + dX * 127 * op + 0.5) | 0;
-          d[idx+1] = (128 + dY * 127 * op + 0.5) | 0;
-        }
+      for (let y1 = 0; y1 < h; y1++) for (let x1 = 0; x1 < w; x1++) {
+        const x = x1 < r ? x1 - r : x1 >= w - r ? x1 - r - wB : 0;
+        const y = y1 < r ? y1 - r : y1 >= h - r ? y1 - r - hB : 0;
+        const dSq = x*x + y*y; if (dSq > r1Sq || dSq < rBSq) continue;
+        const dist = Math.sqrt(dSq), fromSide = r - dist;
+        const op = dSq < rSq ? 1 : 1 - (dist - Math.sqrt(rSq)) / (Math.sqrt(r1Sq) - Math.sqrt(rSq));
+        if (op <= 0 || dist === 0) continue;
+        const cos = x / dist, sin = y / dist;
+        const bi = Math.min(((fromSide / bezelWidth) * S) | 0, S - 1);
+        const disp = profile[bi] || 0;
+        const dX = (-cos * disp) / maxDisp, dY = (-sin * disp) / maxDisp;
+        const idx = (y1 * w + x1) * 4;
+        d[idx] = (128 + dX * 127 * op + 0.5) | 0; d[idx+1] = (128 + dY * 127 * op + 0.5) | 0;
       }
-      ctx.putImageData(img, 0, 0);
-      return c.toDataURL();
+      ctx.putImageData(img, 0, 0); return c.toDataURL();
     }
 
     function generateSpecularMap(w, h, radius, bezelWidth, angle) {
       angle = angle != null ? angle : Math.PI / 3;
-      const c = document.createElement('canvas');
-      c.width = w; c.height = h;
+      const c = document.createElement('canvas'); c.width = w; c.height = h;
       const ctx = c.getContext('2d');
-      const img = ctx.createImageData(w, h);
-      const d = img.data; d.fill(0);
-      const r = radius, rSq = r*r, r1Sq = (r+1)**2;
-      const rBSq = Math.max(r - bezelWidth, 0)**2;
+      const img = ctx.createImageData(w, h); const d = img.data; d.fill(0);
+      const r = radius, rSq = r*r, r1Sq = (r+1)**2, rBSq = Math.max(r - bezelWidth, 0)**2;
       const wB = w - r*2, hB = h - r*2;
       const sv = [Math.cos(angle), Math.sin(angle)];
-      for (let y1 = 0; y1 < h; y1++) {
-        for (let x1 = 0; x1 < w; x1++) {
-          const x = x1 < r ? x1 - r : x1 >= w - r ? x1 - r - wB : 0;
-          const y = y1 < r ? y1 - r : y1 >= h - r ? y1 - r - hB : 0;
-          const dSq = x*x + y*y;
-          if (dSq > r1Sq || dSq < rBSq) continue;
-          const dist = Math.sqrt(dSq);
-          const fromSide = r - dist;
-          const op = dSq < rSq ? 1 : 1 - (dist - Math.sqrt(rSq)) / (Math.sqrt(r1Sq) - Math.sqrt(rSq));
-          if (op <= 0 || dist === 0) continue;
-          const cos = x / dist, sin = -y / dist;
-          const dot = Math.abs(cos * sv[0] + sin * sv[1]);
-          const edge = Math.sqrt(Math.max(0, 1 - (1 - fromSide)**2));
-          const coeff = dot * edge;
-          const col = (255 * coeff) | 0;
-          const alpha = (col * coeff * op) | 0;
-          const idx = (y1 * w + x1) * 4;
-          d[idx] = col; d[idx+1] = col; d[idx+2] = col; d[idx+3] = alpha;
-        }
+      for (let y1 = 0; y1 < h; y1++) for (let x1 = 0; x1 < w; x1++) {
+        const x = x1 < r ? x1 - r : x1 >= w - r ? x1 - r - wB : 0;
+        const y = y1 < r ? y1 - r : y1 >= h - r ? y1 - r - hB : 0;
+        const dSq = x*x + y*y; if (dSq > r1Sq || dSq < rBSq) continue;
+        const dist = Math.sqrt(dSq), fromSide = r - dist;
+        const op = dSq < rSq ? 1 : 1 - (dist - Math.sqrt(rSq)) / (Math.sqrt(r1Sq) - Math.sqrt(rSq));
+        if (op <= 0 || dist === 0) continue;
+        const cos = x / dist, sin = -y / dist;
+        const dot = Math.abs(cos * sv[0] + sin * sv[1]);
+        const edge = Math.sqrt(Math.max(0, 1 - (1 - fromSide)**2));
+        const coeff = dot * edge; const col = (255 * coeff) | 0; const alpha = (col * coeff * op) | 0;
+        const idx = (y1 * w + x1) * 4; d[idx] = col; d[idx+1] = col; d[idx+2] = col; d[idx+3] = alpha;
       }
-      ctx.putImageData(img, 0, 0);
-      return c.toDataURL();
+      ctx.putImageData(img, 0, 0); return c.toDataURL();
     }
 
     function initLiquidGlass() {
       const cards = document.querySelectorAll('[data-glass]');
       const defs = document.getElementById('glass-defs');
+      defs.innerHTML = '';
+      cards.forEach(c => { const p = c.querySelector('.glass-panel'); if (p) { p.style.backdropFilter = ''; p.style.webkitBackdropFilter = ''; } });
       let filterIndex = 0;
-
       cards.forEach(card => {
+        const panel = card.querySelector('.glass-panel');
+        if (!panel) return;
         requestAnimationFrame(() => {
           const rect = card.getBoundingClientRect();
           if (rect.width < 2 || rect.height < 2) return;
-          const w = Math.round(rect.width);
-          const h = Math.round(rect.height);
-          const radius = 12;
-          const bezelW = 30;
-          const glassThick = 60;
-          const ior = 2.5;
-          const blurAmt = 0.3;
-          const specOpacity = 0.5;
-          const specSat = 4;
-
-          const heightFn = SURFACE_FNS.convex_squircle;
-          const profile = calculateRefractionProfile(glassThick, bezelW, heightFn, ior, 128);
+          const w = Math.round(rect.width), h = Math.round(rect.height);
+          const radius = 12, bezelW = 30, glassThick = 60, ior = 2.5, blurAmt = 0.3, specOpacity = 0.5, specSat = 4;
+          const profile = calculateRefractionProfile(glassThick, bezelW, SURFACE_FNS.convex_squircle, ior, 128);
           const maxDisp = Math.max(...Array.from(profile).map(Math.abs)) || 1;
           const dispUrl = generateDisplacementMap(w, h, radius, bezelW, profile, maxDisp);
           const specUrl = generateSpecularMap(w, h, radius, bezelW * 2.5);
           const scale = maxDisp * 1.0;
-
-          const filterId = 'liquid-glass-' + filterIndex++;
+          const filterId = 'lg-' + (filterIndex++);
           const filter = document.createElementNS('http://www.w3.org/2000/svg', 'filter');
           filter.setAttribute('id', filterId);
-          filter.setAttribute('x', '0%');
-          filter.setAttribute('y', '0%');
-          filter.setAttribute('width', '100%');
-          filter.setAttribute('height', '100%');
-          filter.innerHTML = `
-            <feGaussianBlur in="SourceGraphic" stdDeviation="${blurAmt}" result="blurred_source" />
-            <feImage href="${dispUrl}" x="0" y="0" width="${w}" height="${h}" result="disp_map" />
-            <feDisplacementMap in="blurred_source" in2="disp_map" scale="${scale}" xChannelSelector="R" yChannelSelector="G" result="displaced" />
-            <feColorMatrix in="displaced" type="saturate" values="${specSat}" result="displaced_sat" />
-            <feImage href="${specUrl}" x="0" y="0" width="${w}" height="${h}" result="spec_layer" />
-            <feComposite in="displaced_sat" in2="spec_layer" operator="in" result="spec_masked" />
-            <feComponentTransfer in="spec_layer" result="spec_faded">
-              <feFuncA type="linear" slope="${specOpacity}" />
-            </feComponentTransfer>
-            <feBlend in="spec_masked" in2="displaced" mode="normal" result="with_sat" />
-            <feBlend in="spec_faded" in2="with_sat" mode="normal" />
-          `;
+          filter.setAttribute('x', '-20%'); filter.setAttribute('y', '-20%');
+          filter.setAttribute('width', '140%'); filter.setAttribute('height', '140%');
+          filter.innerHTML = '<feGaussianBlur in="SourceGraphic" stdDeviation="' + blurAmt + '" result="blurred_source" />' +
+            '<feImage href="' + dispUrl + '" x="0" y="0" width="' + w + '" height="' + h + '" result="disp_map" />' +
+            '<feDisplacementMap in="blurred_source" in2="disp_map" scale="' + scale + '" xChannelSelector="R" yChannelSelector="G" result="displaced" />' +
+            '<feColorMatrix in="displaced" type="saturate" values="' + specSat + '" result="displaced_sat" />' +
+            '<feImage href="' + specUrl + '" x="0" y="0" width="' + w + '" height="' + h + '" result="spec_layer" />' +
+            '<feComposite in="displaced_sat" in2="spec_layer" operator="in" result="spec_masked" />' +
+            '<feComponentTransfer in="spec_layer" result="spec_faded"><feFuncA type="linear" slope="' + specOpacity + '" /></feComponentTransfer>' +
+            '<feBlend in="spec_masked" in2="displaced" mode="normal" result="with_sat" />' +
+            '<feBlend in="spec_faded" in2="with_sat" mode="normal" />';
           defs.appendChild(filter);
-
-          const panel = card.querySelector('.glass-panel');
-          panel.style.backdropFilter = `url(#${filterId})`;
-          panel.style.webkitBackdropFilter = `url(#${filterId})`;
+          panel.style.backdropFilter = 'url(#' + filterId + ')';
+          panel.style.webkitBackdropFilter = 'url(#' + filterId + ')';
+          void panel.offsetHeight;
         });
       });
+      setTimeout(() => {
+        cards.forEach(card => { const p = card.querySelector('.glass-panel'); if (p) { p.style.visibility = 'hidden'; void p.offsetHeight; p.style.visibility = ''; } });
+      }, 100);
     }
 
-    // State
-    let opencodeKeys = [];
-    let opencommandKeys = [];
+    let allKeys = [];
     let config = {};
     let models = [];
-    let enableOpenCommand = false;
 
-    const CACHE_KEY_OPENCODE = 'gc2xy_opencode_keys';
-    const CACHE_KEY_OPENCOMMAND = 'gc2xy_opencommand_keys';
-    function loadKeyCache() {
-      try {
-        const opencodeRaw = localStorage.getItem(CACHE_KEY_OPENCODE);
-        const opencommandRaw = localStorage.getItem(CACHE_KEY_OPENCOMMAND);
-        return {
-          opencode: opencodeRaw ? JSON.parse(opencodeRaw) : [],
-          opencommand: opencommandRaw ? JSON.parse(opencommandRaw) : []
-        };
-      } catch (e) { return { opencode: [], opencommand: [] }; }
-    }
-    function saveKeyCache(keys) {
-      try {
-        localStorage.setItem(CACHE_KEY_OPENCODE, JSON.stringify(keys.opencode || []));
-        localStorage.setItem(CACHE_KEY_OPENCOMMAND, JSON.stringify(keys.opencommand || []));
-      } catch (e) {}
+    function fetchJson(url, opts) { return fetch(url, opts).then(r => r.json()); }
+    function escapeHtml(t) { const d = document.createElement('div'); d.textContent = t; return d.innerHTML; }
+    function maskKey(key) { if (!key || key.length < 20) return '****'; return key.substring(0, 5) + '...' + key.substring(key.length - 4); }
+    function maskToken(key) { if (!key || key.length < 20) return '(empty)'; return key.substring(0, 10) + '...' + key.substring(key.length - 4); }
+    function maskSession(s) { if (!s) return '(none)'; return s.substring(0, 8) + '...'; }
+    function formatCount(n) { if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M'; if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'K'; return String(n); }
+
+    function showToast(message, type) {
+      type = type || 'info';
+      const t = document.createElement('div');
+      t.className = 'toast align-items-center text-white bg-' + type + ' border-0 show';
+      t.innerHTML = '<div class="d-flex"><div class="toast-body">' + message + '</div><button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button></div>';
+      document.getElementById('toastContainer').appendChild(t);
+      setTimeout(() => t.remove(), 3000);
     }
 
-    // Initialize
+    function getProvider() { return document.querySelector('.btn-check[name="provider"]:checked')?.value || 'opencode'; }
+
+    function setStatusOnline() { document.getElementById('statusIndicator').className = 'status-indicator status-online'; document.getElementById('statusText').textContent = 'Online'; }
+    function setStatusReconnecting() { document.getElementById('statusIndicator').className = 'status-indicator status-reconnecting'; document.getElementById('statusText').textContent = 'Reconnecting...'; }
+    function setStatusOffline() { document.getElementById('statusIndicator').className = 'status-indicator status-offline'; document.getElementById('statusText').textContent = 'Offline'; }
+
+    function onProviderChange() {
+      const prov = getProvider();
+      fetchJson('/api/provider', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider: prov }) }).catch(() => {});
+      document.getElementById('providerDisplay').textContent = prov;
+      if (prov === 'zen') {
+        document.getElementById('keysSectionTitle').textContent = 'ZEN Token Pool';
+        document.getElementById('addKeyBtnText').textContent = 'Manage';
+        document.getElementById('addKeyBtn').onclick = function(e){ e.stopPropagation(); addCurrentProviderKey(); };
+        document.getElementById('zenithLoginRow').style.display = '';
+        fetchZenithRequests();
+      } else {
+        document.getElementById('keysSectionTitle').textContent = 'API Key';
+        document.getElementById('addKeyBtnText').textContent = 'Manage';
+        document.getElementById('addKeyBtn').onclick = function(e){ e.stopPropagation(); addCurrentProviderKey(); };
+        document.getElementById('zenithLoginRow').style.display = 'none';
+      }
+      renderApiKeys();
+      setTimeout(() => initLiquidGlass(), 100);
+    }
+
     document.addEventListener('DOMContentLoaded', () => {
-      initLiquidGlass();
+      fetchBingWallpaper();
+      document.getElementById('providerGroup').addEventListener('change', function(e) {
+        if (e.target.matches('.btn-check')) onProviderChange();
+      });
+      document.getElementById('modeGroup').addEventListener('change', function(e) {
+        if (e.target.matches('.btn-check')) {
+          const val = e.target.value;
+          fetchJson('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: val }) }).catch(() => {});
+        }
+      });
       loadConfiguration();
-      checkHealth();
-      updateEnvironmentInfo();
-      setInterval(() => checkHealth(true), 5000);
-    });
-
-    function showToast(message, type = 'info') {
-      const toast = document.createElement('div');
-      toast.className = `toast align-items-center text-white bg-${type} border-0 show`;
-      toast.innerHTML = `
-        <div class="d-flex">
-          <div class="toast-body">${message}</div>
-          <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
-        </div>
-      `;
-      document.getElementById('toastContainer').appendChild(toast);
-      setTimeout(() => toast.remove(), 3000);
-    }
+      refreshStatus();
+      setInterval(() => { refreshStatus(); checkHealth(true); }, 5000);
+    setInterval(() => fetchZenithRequests(), 60000);
+  });
 
     async function loadConfiguration() {
       try {
-        const healthResponse = await fetch('/health');
-        const healthData = await healthResponse.json();
-        config = {
-          status: healthData.status,
-          version: healthData.version,
-        };
-        document.getElementById('versionText').textContent = `v${healthData.version || '3.0'}`;
-        
-        const configResponse = await fetch('/api/config');
-        const configData = await configResponse.json();
-        if (configData) {
-          config = { ...config, ...configData };
-          document.getElementById('proxyMode').value = configData.mode || 'mock';
-          document.getElementById('httpPortInput').value = configData.httpPort || 80;
-          document.getElementById('iisProxy').checked = configData.iisProxy || false;
-          enableOpenCommand = configData.enableOpenCommand || false;
-          document.getElementById('enableOpenCommand').checked = enableOpenCommand;
-          if (configData.opencodeKeys) opencodeKeys = configData.opencodeKeys;
-          if (configData.opencommandKeys) opencommandKeys = configData.opencommandKeys;
-          if (configData.models) models = configData.models;
-        }
-
-        const cached = loadKeyCache();
-        if (cached.opencode && cached.opencode.length > 0) {
-          opencodeKeys = opencodeKeys.map((k, i) => {
-            const c = cached.opencode.find(x => x.value === k.value);
-            return c ? { ...k, quota: c.quota, usage: c.usage, info: c.info, loading: true } : { ...k, loading: true };
-          });
-        } else {
-          opencodeKeys.forEach(k => k.loading = true);
-        }
-        if (cached.opencommand && cached.opencommand.length > 0) {
-          opencommandKeys = opencommandKeys.map((k, i) => {
-            const c = cached.opencommand.find(x => x.value === k.value);
-            return c ? { ...k, quota: c.quota, usage: c.usage, info: c.info, loading: true } : { ...k, loading: true };
-          });
-        } else {
-          opencommandKeys.forEach(k => k.loading = true);
+        const h = await fetch('/health');
+        const hd = await h.json();
+        config.status = hd.status;
+        config.version = hd.version;
+        document.getElementById('versionText').textContent = 'v' + (hd.version || '3.0');
+        if (hd.status === 'ok') setStatusOnline();
+        else if (hd.status === 'degraded') setStatusOnline();
+        else setStatusOffline();
+        document.getElementById('workDir').textContent = hd.cwd || '-';
+        document.getElementById('platform').textContent = hd.platform || '-';
+        document.getElementById('nodeVersion').textContent = hd.runtime || '-';
+        const cr = await fetch('/api/config');
+        const cd = await cr.json();
+        if (cd) {
+          config = { ...config, ...cd };
+          if (cd.keys) allKeys = cd.keys;
+          if (cd.models) models = cd.models;
+          const modeRadio = document.querySelector('.btn-check[name="proxyMode"][value="' + (cd.mode || 'mock') + '"]');
+          if (modeRadio) modeRadio.checked = true;
+          const provRadio = document.querySelector('.btn-check[name="provider"][value="' + (cd.provider || 'opencode') + '"]');
+          if (provRadio) provRadio.checked = true;
         }
         renderApiKeys();
         renderModels();
         updateStats();
-        validateAllKeys();
-      } catch (error) {
-        console.error('Failed to load config:', error);
-        showToast('Failed to load configuration', 'danger');
-      }
+        if (getProvider() === 'opencode') validateAllKeys();
+      } catch (e) { console.error('Failed to load config:', e); }
     }
 
-    function renderApiKeys() {
+    async function refreshStatus() {
+      try {
+        const data = await fetchJson('/api/status');
+        document.getElementById('modeDisplay').textContent = data.mode;
+        document.getElementById('modeDisplay').className = 'mode-' + data.mode.toLowerCase();
+        document.getElementById('reqDisplay').textContent = data.requests;
+        document.getElementById('tpsDisplay').textContent = data.tps.toFixed(1);
+        if (data.provider) document.getElementById('providerDisplay').textContent = data.provider;
+        models = data.models || [];
+        renderModels();
+      } catch (e) {}
+    }
+
+    async function renderApiKeys() {
       const container = document.getElementById('apiKeysContainer');
-      const hasOpencode = opencodeKeys.length > 0;
-      const hasOpencommand = opencommandKeys.length > 0 && enableOpenCommand;
-
-      if (!hasOpencode && !hasOpencommand) {
-        container.innerHTML = `
-          <div class="text-center text-muted py-4">
-            <i class="bi bi-key" style="font-size: 2rem;"></i>
-            <p class="mt-2">No API keys configured</p>
-            <button class="btn btn-sm btn-white-bg me-2" onclick="addApiKey('opencode')">Add OpenCode Key</button>
-            <button class="btn btn-sm btn-white-bg" onclick="addApiKey('opencommand')">Add OpenCommand Key</button>
-          </div>
-        `;
-        return;
-      }
-
-      let html = '';
-      
-      if (hasOpencode) {
-        html += `<div class="provider-section"><div class="provider-header"><span class="provider-title"><i class="bi bi-cloud-fill me-2"></i>OpenCode Keys</span></div>`;
-        html += opencodeKeys.map((key, index) => renderKeyRow(key, index, 'opencode')).join('');
-        html += `</div>`;
-      }
-
-      if (hasOpencommand) {
-        html += `<div class="provider-section"><div class="provider-header"><span class="provider-title"><i class="bi bi-command-palette me-2"></i>OpenCommand Keys</span></div>`;
-        html += opencommandKeys.map((key, index) => renderKeyRow(key, index, 'opencommand')).join('');
-        html += `</div>`;
-      }
-
-      container.innerHTML = html;
-      updateStats();
-    }
-
-    function renderKeyRow(key, index, provider) {
-      let balance = 0;
-      const credits = key.quota?.credits;
-      if (typeof credits === 'number') {
-        balance = credits;
-      } else if (credits && typeof credits === 'object') {
-        balance = Number(credits.monthlyCredits ?? credits.purchasedCredits ?? credits.freeCredits ?? 0);
-      }
-      const pctOf10 = Math.min((balance / 10) * 100, 100).toFixed(1);
-      const quota = key.quota ? `
-        <div class="mt-2 p-2 bg-light rounded">
-          <div class="d-flex justify-content-between align-items-center">
-            <small class="text-muted">
-              <i class="bi bi-wallet2 me-1"></i>
-              Balance: <strong class="text-success">$${balance.toFixed(2)}</strong> <span style="font-size:0.75em;color:rgba(255,255,255,0.5)">(${pctOf10}% of $10)</span>
-            </small>
-            ${key.usage?.valid ? `
-              <small class="text-muted">
-                <i class="bi bi-graph-up me-1"></i>
-                ${(key.usage.totalTokens || 0).toLocaleString()} tokens
-              </small>
-            ` : ''}
-            ${key.info ? `
-              <small class="text-muted" title="${escapeHtml(key.info.raw?.user?.email || key.info.email || '')}">
-                <i class="bi bi-person-circle me-1"></i>
-                User: ${escapeHtml(key.info.raw?.user?.name || key.info.raw?.user?.userName || key.info.email || 'Unknown')}
-              </small>
-            ` : ''}
-          </div>
-        </div>
-      ` : '';
-      
-      const loading = key.loading ? `
-        <div class="text-center py-2">
-          <div class="spinner-border spinner-border-sm text-primary me-2" role="status">
-            <span class="visually-hidden">Loading...</span>
-          </div>
-          <small class="text-muted">Checking...</small>
-        </div>
-      ` : '';
-
-      return `
-        <div class="credential-row ${key.status === 'inactive' ? 'expired' : ''}">
-          <div class="d-flex justify-content-between align-items-start">
-            <div class="flex-grow-1">
-              <div class="d-flex align-items-center mb-2">
-                <span class="badge ${key.status === 'active' ? 'bg-success' : 'bg-secondary'} me-2">
-                  ${key.status.toUpperCase()}
-                </span>
-                <strong>${escapeHtml(key.name)}</strong>
-                ${key.quota?.valid ? '<i class="bi bi-patch-check-fill text-success ms-2"></i>' : ''}
-                ${key.quota?.error ? '<i class="bi bi-exclamation-triangle-fill text-warning ms-2" title="' + escapeHtml(key.quota.error) + '"></i>' : ''}
-              </div>
-              <div class="font-monospace text-muted small">
-                ${maskKey(key.value)}
-              </div>
-              ${loading}
-              ${quota}
-            </div>
-            <div>
-              <button class="btn btn-sm btn-outline-action me-1 mb-1" onclick="checkKeyQuota(${index}, '${provider}')" title="Check Quota">
-                <i class="bi bi-arrow-clockwise"></i>
-              </button>
-              <button class="btn btn-sm btn-outline-action me-1 mb-1" onclick="editApiKey(${index}, '${provider}')">
-                <i class="bi bi-pencil"></i>
-              </button>
-              <button class="btn btn-sm btn-outline-action mb-1" onclick="deleteApiKey(${index}, '${provider}')">
-                <i class="bi bi-trash"></i>
-              </button>
-            </div>
-          </div>
-        </div>
-      `;
+      const provider = getProvider();
+      try {
+        const [kr, vr] = await Promise.all([
+          fetch('/api/keys'),
+          provider === 'opencode' ? fetch('/api/keys/validate', { method: 'POST' }) : null,
+        ]);
+        const data = await kr.json();
+        const keys = data.keys || [];
+        allKeys = data.allKeys || [];
+        document.getElementById('keysCountBadge').textContent = keys.length;
+        if (keys.length === 0) {
+          container.innerHTML = '<div class="text-center py-4"><i class="bi bi-key" style="font-size:2rem;color:rgba(255,255,255,0.4)"></i><p class="mt-2 text-muted">No ' + (provider === 'zen' ? 'ZEN' : '') + ' keys</p></div>';
+          updateStats(); return;
+        }
+        const validity = {};
+        if (vr) {
+          const vd = await vr.json();
+          if (vd.keys) vd.keys.forEach((kv) => { if (kv.provider === 'opencode') validity[kv.token] = kv.valid; });
+        }
+        container.innerHTML = keys.map(k => {
+          const hasSession = !!k.session;
+          const isZen = provider === 'zen';
+          const valid = isZen ? hasSession : validity[k.token];
+          const statusClass = valid ? 'status-online' : 'status-offline';
+          const statusText = isZen ? (hasSession ? 'Active' : 'No Session') : (valid ? 'VALID' : 'UNKNOWN');
+          return '<div class="pool-card"><div class="pool-header"><div class="pool-name">' + escapeHtml(k.name) + '</div><div class="pool-status ' + statusClass + '">' + statusText + '</div></div><div style="font-size:0.8rem;color:rgba(255,255,255,0.7)"><div>Token: ' + maskToken(k.token) + '</div>' + (isZen ? '<div>Session: ' + maskSession(k.session) + '</div>' : '') + '</div></div>';
+        }).join('');
+        updateStats();
+      } catch (e) { container.innerHTML = '<div class="text-center text-muted py-3">Failed to load keys</div>'; }
     }
 
     function renderModels() {
       const container = document.getElementById('modelsContainer');
       if (models.length === 0) {
-        container.innerHTML = `<div class="text-center text-muted py-4"><i class="bi bi-cpu" style="font-size: 2rem;"></i><p class="mt-2">No models loaded</p><button class="btn btn-sm btn-white-bg" onclick="refreshModels()">Refresh Models</button></div>`;
-        return;
+        container.innerHTML = '<div class="text-center text-muted py-4"><i class="bi bi-cpu" style="font-size:2rem"></i><p class="mt-2">No models loaded</p></div>';
+        updateStats(); return;
       }
-      
-      // Group by provider
-      const opencodeModels = models.filter(m => !m.id.startsWith('oc/'));
-      const opencommandModels = models.filter(m => m.id.startsWith('oc/'));
-      
-      let html = '';
-      if (opencodeModels.length > 0) {
-        html += `<div class="provider-section"><div class="provider-header"><span class="provider-title"><i class="bi bi-cloud-fill me-2"></i>OpenCode Models (${opencodeModels.filter(m => m.enabled).length}/${opencodeModels.length})</span></div>`;
-        html += opencodeModels.map(model => renderModelRow(model)).join('');
-        html += `</div>`;
-      }
-      if (opencommandModels.length > 0 && enableOpenCommand) {
-        html += `<div class="provider-section"><div class="provider-header"><span class="provider-title"><i class="bi bi-command-palette me-2"></i>OpenCommand Models (${opencommandModels.filter(m => m.enabled).length}/${opencommandModels.length})</span></div>`;
-        html += opencommandModels.map(model => renderModelRow(model)).join('');
-        html += `</div>`;
-      }
-      
-      container.innerHTML = html;
+      document.getElementById('modelCountBadge').textContent = models.length;
+      const groups = {};
+      models.forEach((m, idx) => {
+        const family = m.family || m.id.split('/')[0] || 'other';
+        if (!groups[family]) groups[family] = [];
+        groups[family].push({ model: m, idx });
+      });
+      container.innerHTML = Object.keys(groups).sort().map(family => {
+        const items = groups[family];
+        return '<div class="model-family-group"><div class="model-family-header">' + escapeHtml(family) + ' <span class="badge bg-secondary">' + items.length + '</span></div><div style="display:flex;flex-wrap:wrap;gap:3px">' +
+          items.map(({ model, idx }) => {
+            const name = model.name || model.id.split('/').pop() || model.id;
+            const code = model.id, ena = model.enabled !== false, locked = model.locked === true;
+            if (locked) return '<div class="model-tag" style="cursor:not-allowed;opacity:0.3" title="' + escapeHtml(code) + '"><i class="bi bi-lock-fill" style="font-size:9px;color:rgba(255,255,255,0.3)"></i><div><div class="model-tag-name">' + escapeHtml(name) + '</div></div></div>';
+            return '<div class="model-tag' + (ena ? ' enabled' : '') + '" onclick="toggleModel(\'' + escapeHtml(code) + '\')" title="' + escapeHtml(code) + '"><input type="checkbox" class="form-check-input"' + (ena ? ' checked' : '') + '><div><div class="model-tag-name">' + escapeHtml(name) + '</div><div class="model-tag-id">' + escapeHtml(code) + '</div></div></div>';
+          }).join('') + '</div></div>';
+      }).join('');
+      updateStats();
     }
 
-    function renderModelRow(model) {
-      const displayName = model.id.replace(/^oc\//, '');
-      return `
-        <div class="d-flex justify-content-between align-items-center mb-2 p-2 rounded ${model.enabled ? 'bg-success bg-opacity-10' : 'bg-danger bg-opacity-10'}">
-          <div>
-            <span class="fw-medium">${escapeHtml(displayName)}</span>
-            <div class="small text-muted">${escapeHtml(model.id)}</div>
-          </div>
-          <div class="form-check form-switch">
-            <input class="form-check-input" type="checkbox" 
-                   ${model.enabled ? 'checked' : ''} 
-                   onchange="toggleModel('${escapeHtml(model.id)}')">
-          </div>
-        </div>
-      `;
-    }
+    function addCurrentProviderKey() { openKeysModal(); }
 
-    function addApiKey(provider) {
-      document.getElementById('editKeyIndex').value = '-1';
-      document.getElementById('keyProvider').value = provider;
-      document.getElementById('keyName').value = '';
-      document.getElementById('keyValue').value = '';
-      document.getElementById('keyStatus').value = 'active';
-      new bootstrap.Modal(document.getElementById('apiKeyModal')).show();
-    }
-
-    function editApiKey(index, provider) {
-      const keys = provider === 'opencode' ? opencodeKeys : opencommandKeys;
-      const key = keys[index];
-      document.getElementById('editKeyIndex').value = index;
-      document.getElementById('keyProvider').value = provider;
-      document.getElementById('keyName').value = key.name;
-      document.getElementById('keyValue').value = key.value;
-      document.getElementById('keyStatus').value = key.status;
-      new bootstrap.Modal(document.getElementById('apiKeyModal')).show();
-    }
-
-    async function saveApiKey() {
-      const index = parseInt(document.getElementById('editKeyIndex').value);
-      const provider = document.getElementById('keyProvider').value;
-      const name = document.getElementById('keyName').value.trim();
-      const value = document.getElementById('keyValue').value.trim();
-      const status = document.getElementById('keyStatus').value;
-
-      if (!name || !value) {
-        showToast('Please fill in all fields', 'warning');
-        return;
-      }
-
+    async function openKeysModal() {
       try {
-        const keys = provider === 'opencode' ? opencodeKeys : opencommandKeys;
-        if (index === -1) {
-          keys.push({ name, value, status, provider });
-          const newKeys = provider === 'opencode' ? opencodeKeys : opencommandKeys;
-          showToast('API key added successfully', 'success');
-        } else {
-          keys[index] = { name, value, status, provider };
-          showToast('API key updated successfully', 'success');
+        const r = await fetch('/api/keys');
+        const data = await r.json();
+        const provider = getProvider();
+        document.getElementById('keysModalTitle').textContent = provider === 'zen' ? 'ZEN Keys' : 'OpenCode Keys';
+        const sessionRow = document.getElementById('newKeySession');
+        sessionRow.style.display = provider === 'zen' ? '' : 'none';
+        sessionRow.placeholder = 'Session cookie (zs=...)';
+        document.getElementById('newKeyToken').placeholder = provider === 'zen' ? 'API token (sk-zenith-...)' : 'API key (sk-...)';
+        editingIndex = -1; deleteIndex = -1;
+        renderKeysList(data.keys);
+        const modal = new bootstrap.Modal(document.getElementById('keysModal'));
+        modal.show();
+      } catch (e) { showToast('Failed to load keys', 'danger'); }
+    }
+
+    function renderKeysList(keys) {
+      const container = document.getElementById('keysList');
+      if (!keys || keys.length === 0) { container.innerHTML = '<p class="text-muted text-center py-3">No keys configured</p>'; return; }
+      const isZen = getProvider() === 'zen';
+      container.innerHTML = keys.map((k, i) => {
+        if (editingIndex === i) {
+          return '<div class="pool-card"><div class="mb-2"><label class="form-label" style="font-size:10px">Name</label><input type="text" class="form-control form-control-sm" id="editKeyName" value="' + escapeHtml(k.name || '') + '"></div><div class="mb-2"><label class="form-label" style="font-size:10px">Token</label><input type="text" class="form-control form-control-sm" id="editKeyToken" value="' + escapeHtml(k.token || '') + '"></div>' + (isZen ? '<div class="mb-2"><label class="form-label" style="font-size:10px">Session</label><input type="text" class="form-control form-control-sm" id="editKeySession" value="' + escapeHtml(k.session || '') + '"></div>' : '') + '<div class="d-flex gap-2"><button class="btn btn-sm btn-success" onclick="saveEditKey(' + i + ')"><i class="bi bi-check me-1"></i>Save</button><button class="btn btn-sm btn-secondary" onclick="cancelEditKey()"><i class="bi bi-x me-1"></i>Cancel</button></div></div>';
         }
-        bootstrap.Modal.getInstance(document.getElementById('apiKeyModal')).hide();
-        renderApiKeys();
-      } catch (error) {
-        showToast('Failed to save API key: ' + error.message, 'danger');
-      }
+        const maskedToken = maskToken(k.token);
+        const maskedSession = maskSession(k.session);
+        const isDeleting = deleteIndex === i;
+        return '<div class="pool-card"><div class="pool-header"><div class="pool-name">' + escapeHtml(k.name || 'Unnamed') + '</div><div><button class="btn btn-sm btn-outline-action me-1" onclick="startEditKey(' + i + ')" title="Edit"><i class="bi bi-pencil"></i></button><button class="btn btn-sm" style="background:rgba(220,53,69,0.2);color:#dc3545;border:none" onclick="startDeleteKey(' + i + ')" title="Delete"><i class="bi bi-trash"></i></button></div></div><div style="font-size:0.8rem;color:rgba(255,255,255,0.7)"><div>Token: ' + maskedToken + '</div>' + (isZen ? '<div>Session: ' + maskedSession + '</div>' : '') + '</div>' + (isDeleting ? '<div class="mt-2 d-flex gap-2 align-items-center" style="font-size:0.85rem;color:#dc3545"><i class="bi bi-exclamation-triangle"></i> Delete this key?</div><div class="d-flex gap-2 mt-1"><button class="btn btn-sm" style="background:#dc3545;color:white;border:none" onclick="confirmDeleteKey(' + i + ')"><i class="bi bi-trash me-1"></i>Delete</button><button class="btn btn-sm btn-secondary" onclick="cancelDeleteKey()">Cancel</button></div>' : '') + '</div>';
+      }).join('');
     }
 
-    function deleteApiKey(index, provider) {
-      if (confirm('Are you sure you want to delete this API key?')) {
-        const keys = provider === 'opencode' ? opencodeKeys : opencommandKeys;
-        keys.splice(index, 1);
-        showToast('API key deleted', 'info');
-        renderApiKeys();
-      }
-    }
-
-    function toggleModel(modelId) {
-      const model = models.find(m => m.id === modelId);
-      if (model) {
-        model.enabled = !model.enabled;
-        renderModels();
-        updateStats();
-        showToast(`${model.id.replace(/^oc\//, '')} ${model.enabled ? 'enabled' : 'disabled'}`, 'info');
-      }
-    }
-
-    async function checkKeyQuota(index, provider) {
-      const keys = provider === 'opencode' ? opencodeKeys : opencommandKeys;
-      const key = keys[index];
-      key.loading = true;
-      renderApiKeys();
-      
-      // For now, just mark as valid without actual API call
-      // In production, this would call the actual API
-      setTimeout(() => {
-        key.quota = { valid: true, credits: 10, currency: 'USD' };
-        key.usage = { valid: true, totalTokens: 0 };
-        key.loading = false;
-        renderApiKeys();
-        showToast('Quota updated', 'success');
-      }, 500);
+    async function toggleModel(modelId) {
+      const m = models.find(x => x.id === modelId);
+      if (!m || m.locked) return;
+      m.enabled = !m.enabled;
+      renderModels();
+      try { await fetchJson('/api/models', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ modelId, enabled: m.enabled }) }); } catch (e) {}
+      showToast(modelId.split('/').pop() + (m.enabled ? ' enabled' : ' disabled'), 'info');
     }
 
     async function validateAllKeys() {
-      showToast('Checking all API keys...', 'info');
-      
-      opencodeKeys.forEach(k => k.loading = true);
-      opencommandKeys.forEach(k => k.loading = true);
-      renderApiKeys();
-      
-      setTimeout(() => {
-        opencodeKeys.forEach(k => {
-          k.quota = { valid: true, credits: 10, currency: 'USD' };
-          k.usage = { valid: true, totalTokens: 0 };
-          k.loading = false;
-        });
-        opencommandKeys.forEach(k => {
-          k.quota = { valid: true, credits: 10, currency: 'USD' };
-          k.usage = { valid: true, totalTokens: 0 };
-          k.loading = false;
-        });
-        saveKeyCache({ opencode: opencodeKeys, opencommand: opencommandKeys });
+      try {
+        const data = await fetchJson('/api/keys/validate', { method: 'POST' });
         renderApiKeys();
-        showToast(`Validated ${opencodeKeys.length + opencommandKeys.length} keys`, 'success');
-      }, 1000);
+        refreshStatus();
+        renderModels();
+      } catch (e) { renderApiKeys(); }
     }
 
-    async function checkHealth(silent = false) {
+    async function addKey() {
+      const provider = getProvider();
+      const name = document.getElementById('newKeyName').value.trim() || ('Key ' + (document.querySelectorAll('#keysList .pool-card').length + 1));
+      const token = document.getElementById('newKeyToken').value.trim();
+      const session = document.getElementById('newKeySession').value.trim();
+      if (!token) { showToast('Token is required', 'warning'); return; }
       try {
-        const response = await fetch('/health');
-        const data = await response.json();
-        
-        if (data.status === 'ok') {
-          document.getElementById('statusIndicator').className = 'status-indicator status-online';
-          document.getElementById('statusText').textContent = 'Online';
-          if (!silent) showToast('Proxy is healthy', 'success');
-        } else {
-          throw new Error('Unhealthy status');
-        }
-      } catch (error) {
-        document.getElementById('statusIndicator').className = 'status-indicator status-offline';
-        document.getElementById('statusText').textContent = 'Offline';
-        if (!silent) showToast('Proxy health check failed', 'danger');
+        const r = await fetch('/api/keys', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'add', name, token, session, provider }) });
+        const data = await r.json();
+        if (data.success) { document.getElementById('newKeyName').value = ''; document.getElementById('newKeyToken').value = ''; document.getElementById('newKeySession').value = ''; renderKeysList(data.keys); showToast('Key added', 'success'); renderApiKeys(); if (provider === 'zen') fetchZenithRequests(); }
+        else showToast('Failed: ' + data.error, 'danger');
+      } catch (e) { showToast('Failed to add key', 'danger'); }
+    }
+    function startEditKey(index) { editingIndex = index; deleteIndex = -1; refreshKeysList(); }
+    function cancelEditKey() { editingIndex = -1; refreshKeysList(); }
+    async function saveEditKey(index) {
+      const name = document.getElementById('editKeyName').value.trim();
+      const token = document.getElementById('editKeyToken').value.trim();
+      const session = document.getElementById('editKeySession') ? document.getElementById('editKeySession').value.trim() : '';
+      try {
+        const r = await fetch('/api/keys', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'update', index, name, token, session }) });
+        const data = await r.json();
+        if (data.success) { editingIndex = -1; renderKeysList(data.keys); showToast('Key updated', 'success'); renderApiKeys(); if (getProvider() === 'zen') fetchZenithRequests(); }
+        else showToast('Failed: ' + data.error, 'danger');
+      } catch (e) { showToast('Failed to update key', 'danger'); }
+    }
+    function startDeleteKey(index) { deleteIndex = index; editingIndex = -1; refreshKeysList(); }
+    function cancelDeleteKey() { deleteIndex = -1; refreshKeysList(); }
+    async function confirmDeleteKey(index) {
+      try {
+        const r = await fetch('/api/keys', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'delete', index }) });
+        const data = await r.json();
+        if (data.success) { deleteIndex = -1; renderKeysList(data.keys); showToast('Key deleted', 'success'); renderApiKeys(); if (getProvider() === 'zen') fetchZenithRequests(); }
+        else showToast('Failed: ' + data.error, 'danger');
+      } catch (e) { showToast('Failed to delete key', 'danger'); }
+    }
+    function refreshKeysList() { fetch('/api/keys').then(d => d.json()).then(data => renderKeysList(data.keys)); }
+
+    async function checkHealth(silent) {
+      try {
+        const r = await fetch('/health'); const d = await r.json();
+        if (d.status === 'ok') { setStatusOnline(); if (!silent) showToast('Proxy healthy', 'success'); }
+        else if (d.status === 'degraded') { setStatusOnline(); }
+        else throw Error('bad');
+      } catch (e) {
+        if (document.getElementById('statusText').textContent !== 'Reconnecting...') setStatusOffline();
+        if (!silent) showToast('Health check failed', 'danger');
       }
     }
 
-    function refreshModels() {
-      renderModels();
-      showToast('Models refreshed', 'info');
-    }
+    function refreshModels() { loadConfiguration(); showToast('Models refreshed', 'info'); }
 
     async function saveConfiguration() {
-      const newConfig = {
-        mode: document.getElementById('proxyMode').value,
-        httpPort: parseInt(document.getElementById('httpPortInput').value),
-        iisProxy: document.getElementById('iisProxy').checked,
-        enableOpenCommand: document.getElementById('enableOpenCommand').checked,
-        opencodeKeys: opencodeKeys,
-        opencommandKeys: opencommandKeys,
-        models: models
-      };
-      
+      const provider = getProvider();
+      const mode = document.querySelector('.btn-check[name="proxyMode"]:checked')?.value || 'mock';
+      const c = { mode, provider, keys: allKeys, models };
       try {
-        const response = await fetch('/api/config', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(newConfig)
-        });
-        const data = await response.json();
-        if (data.success) {
-          showToast('Configuration saved successfully', 'success');
-          config = data.config;
-          enableOpenCommand = newConfig.enableOpenCommand;
-        } else {
-          showToast('Failed to save: ' + data.error, 'danger');
-        }
-      } catch (error) {
-        showToast('Failed to save configuration', 'danger');
-      }
+        const r = await fetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(c) });
+        const d = await r.json();
+        if (d.success) { config = d.config; renderModels(); refreshStatus(); showToast('Configuration saved', 'success'); }
+        else showToast('Failed to save: ' + d.error, 'danger');
+      } catch (e) { showToast('Failed to save configuration', 'danger'); }
     }
 
     function updateStats() {
-      const total = opencodeKeys.length + opencommandKeys.length;
-      const active = opencodeKeys.filter(k => k.status === 'active').length + opencommandKeys.filter(k => k.status === 'active').length;
-      const enabledModels = models.filter(m => m.enabled).length;
-      document.getElementById('totalKeys').textContent = total;
-      document.getElementById('activeKeys').textContent = active;
-      document.getElementById('totalModels').textContent = enabledModels;
-    }
-
-    async function updateEnvironmentInfo() {
-      try {
-        const r = await fetch('/health');
-        const data = await r.json();
-        document.getElementById('workDir').textContent = data.cwd || '-';
-        document.getElementById('platform').textContent = data.platform || '-';
-        document.getElementById('nodeVersion').textContent = data.runtime || '-';
-      } catch (e) {
-        document.getElementById('workDir').textContent = '-';
-        document.getElementById('platform').textContent = '-';
-        document.getElementById('nodeVersion').textContent = '-';
-      }
+      const poolCards = document.querySelectorAll('#apiKeysContainer .pool-card');
+      document.getElementById('activeKeysBlock').textContent = poolCards.length;
+      const enabled = models.filter(m => m.enabled !== false).length;
+      document.getElementById('totalModels').textContent = enabled + ' / ' + models.length;
     }
 
     function toggleSection(name) {
       const body = document.getElementById('section-' + name);
-      const card = body.closest('[data-section]');
-      const icon = card.querySelector('.toggle-icon');
+      const icon = body.closest('[data-section]').querySelector('.toggle-icon');
       body.classList.toggle('collapsed');
       icon.classList.toggle('collapsed');
       setTimeout(() => initLiquidGlass(), 50);
     }
 
-    function maskKey(key) {
-      if (!key || key.length < 20) return '****';
-      return `${key.substring(0, 10)}...${key.substring(key.length - 8)}`;
+    async function restartProxy() {
+      if (!confirm('Restart the proxy?')) return;
+      const btn = document.getElementById('restartBtn');
+      btn.disabled = true; btn.innerHTML = '<i class="bi bi-arrow-counterclockwise me-2"></i>Restarting...';
+      setStatusReconnecting();
+      try { await fetchJson('/api/restart', { method: 'POST' }); } catch (e) {}
+      let attempts = 0, found = false;
+      const iv = setInterval(async () => {
+        attempts++;
+        try { await fetchJson('/api/status'); if (!found) { found = true; return; } setStatusOnline(); btn.disabled = false; btn.innerHTML = '<i class="bi bi-arrow-counterclockwise me-2"></i>Restart'; showToast('Proxy is back online!', 'success'); clearInterval(iv); }
+        catch (e) { if (attempts >= 60) { setStatusOffline(); btn.disabled = false; btn.innerHTML = '<i class="bi bi-arrow-counterclockwise me-2"></i>Restart'; showToast('Proxy did not come back', 'danger'); clearInterval(iv); } }
+      }, 2000);
     }
 
-    function escapeHtml(text) {
-      const div = document.createElement('div');
-      div.textContent = text;
-      return div.innerHTML;
+    async function fetchBingWallpaper() { try { const r = await fetch('/api/bg'); const d = await r.json(); if (d.url) { document.body.style.background = 'url("' + d.url + '") center/cover no-repeat fixed'; document.body.style.backgroundSize = 'cover'; } } catch (e) {} }
+
+    async function fetchZenithRequests() {
+      try {
+        const r = await fetch('/api/zenith/requests');
+        if (!r.ok) return;
+        const data = await r.json();
+        const loggedIn = data.loggedIn !== false;
+        const loginRow = document.getElementById('zenithLoginRow');
+        const show = getProvider() === 'zen';
+        loginRow.style.display = (show && !loggedIn) ? '' : 'none';
+        loginRow.classList.toggle('d-flex', show && !loggedIn);
+        if (loggedIn) {
+          document.getElementById('requestsDisplay').textContent = formatCount(data.requests ?? 0);
+          document.getElementById('tokensDisplay').textContent = formatCount(data.tokens ?? 0);
+          const costVal = data.cost ?? 0, balanceVal = data.balance ?? 0;
+          const totalReal = costVal + balanceVal;
+          const remainPct = totalReal > 0 ? Math.min(100, (costVal / totalReal) * 100) : 0;
+          const usedEl = document.getElementById('usedDisplay');
+          usedEl.textContent = remainPct.toFixed(1) + '%';
+          usedEl.title = 'Used: $' + costVal.toFixed(2) + ' | Balance: $' + balanceVal.toFixed(2);
+        } else {
+          document.getElementById('requestsDisplay').textContent = '—';
+          document.getElementById('tokensDisplay').textContent = '—';
+          const usedEl = document.getElementById('usedDisplay');
+          usedEl.textContent = loggedIn === false ? '—' : 'Loading...';
+          usedEl.title = '';
+        }
+      } catch (e) {}
     }
+
+    async function saveZenSession() {
+      const val = document.getElementById('sessionCookieInput').value.trim();
+      let cookie = val;
+      if (cookie.startsWith('zs=')) cookie = cookie.substring(3);
+      if (!cookie) return;
+      const r = await fetch('/api/zen/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionCookie: cookie }) });
+      const data = await r.json();
+      if (data.success) { document.getElementById('sessionCookieInput').value = ''; showToast('ZEN session saved', 'success'); fetchZenithRequests(); }
+    }
+
+    async function logoutZenith() { await fetch('/api/zen/login', { method: 'DELETE' }); fetchZenithRequests(); }
+
+    Promise.all([loadConfiguration().then(() => fetchBingWallpaper()), checkHealth(), fetchZenithRequests()]).then(() => {
+      initLiquidGlass();
+      setTimeout(() => window.dispatchEvent(new Event('resize')), 1000);
+      setTimeout(() => window.dispatchEvent(new Event('resize')), 3000);
+    });
+    setInterval(() => checkHealth(true), 15000);
+    let resizeTimer;
+    window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(initLiquidGlass, 150); });
   </script>
 </body>
 </html>
