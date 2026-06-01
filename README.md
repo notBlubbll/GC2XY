@@ -99,6 +99,7 @@ sc failure w3svc reset= 86400 actions= restart/5000/restart/10000/restart/30000
 | `OPENCODE_API_KEY` | — | Single opencode.ai API key (alternative) |
 | `ZENITH_API_KEY` | — | ZEN API key (`sk-zenith-...`) from zenllm.org |
 | `ZENITH_SESSION` | — | ZEN session cookie (`zs=...`) for dashboard stats |
+| `OPENCODE_SESSION` | — | OpenCode `auth` cookie for workspace usage tracking |
 | `gc2xy_MODE` | `mock` | Mode display label |
 | `FAKE_DEVICE_LOGIN` | `"0"` (enabled) | Set to `"1"` to DISABLE the emulator |
 | `INTERCEPT_MODE` | `hosts` | `hosts` for system-wide or `proxy` for HTTP_PROXY mode |

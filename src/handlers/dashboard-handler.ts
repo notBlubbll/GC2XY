@@ -1,20 +1,249 @@
 // Dashboard handler — serves web dashboard HTML + JSON API endpoints
 // Always intercepted (even in proxy mode) at /dashboard and /api/* paths
+// Status/data pushes to WebSocket clients on change only (delta-based)
 
 import { readFileSync, existsSync, writeFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
+import { createServer as createHttpServer } from "node:http";
+import { WebSocketServer, WebSocket } from "ws";
 import { HandlerInput, HandlerResult, jsonResponse, getProjectRoot, getMode, setMode } from "../shared.ts";
 import { getModelIds, getModelFamily, getModelDisplayName } from "./opencode-client.ts";
 import { getTps, restoreTerminal } from "../split-console.ts";
-import { getUsageData, getPercentages, setZenStats } from "../usage-tracker.ts";
+import { getWorkspaceDataForKey, KeyWorkspaceData } from "../opencode-workspace.ts";
+
+// ── WebSocket Server (dedicated http.Server — handles upgrades natively) ──
+export const WS_PORT = parseInt(process.env.gc2xy_WS_PORT || "3441");
+let _wss: WebSocketServer | null = null;
+let _wsClients = new Set<WebSocket>();
+
+export function createWsServer() {
+  if (_wss) return _wss;
+  const srv = createHttpServer((_req, res) => {
+    res.writeHead(400);
+    res.end("WS only");
+  });
+  _wss = new WebSocketServer({ server: srv, path: "/ws" });
+  _wss.on("connection", (ws) => {
+    _wsClients.add(ws);
+    pushStatusToWs(ws);
+    ws.on("close", () => _wsClients.delete(ws));
+    ws.on("message", (raw) => {
+      try { const msg = JSON.parse(raw.toString()); handleWsMessage(ws, msg).catch(() => {}); } catch {}
+    });
+    ws.on("error", () => _wsClients.delete(ws));
+  });
+  srv.listen(WS_PORT, "127.0.0.1");
+  return _wss;
+}
+
+// ── Snapshot / Diff System ──
+let _lastSnapshot: Record<string, any> = {};
+
+function takeSnapshot(): Record<string, any> {
+  const provider = _config?.provider || defaultProvider();
+  const models = provider === "zen" ? getZenModels() : getOcModels();
+  const zenKeys = _keys.filter(k => k.provider === "zen");
+  const ocKeys = _keys.filter(k => k.provider === "opencode");
+  return {
+    status: {
+      mode: getMode().toUpperCase(),
+      requests: _requestCount,
+      tps: getTps(),
+      provider,
+      hasValidKey: _hasValidKey,
+      modelCount: models.length,
+      enabledModelCount: models.filter((m: any) => m.enabled !== false).length,
+    },
+    models: models.map(m => ({ id: m.id, name: m.name, family: m.family, enabled: m.enabled !== false, free: !!m.free, locked: !!m.locked, provider: m.provider })),
+    keys: {
+      zen: zenKeys.map(k => ({ name: k.name, token: k.token, session: k.session ? k.session.slice(0, 8) + "..." : "" })),
+      opencode: ocKeys.map(k => ({ name: k.name, token: k.token, session: !!k.session, valid: _validKeys.has(k.token) })),
+    },
+    health: { status: _hasValidKey ? "ok" : "degraded", runtime: getRuntime(), platform: process.platform },
+  };
+}
+
+function diffSnapshots(oldSnap: Record<string, any>, newSnap: Record<string, any>): Record<string, any> {
+  const changes: Record<string, any> = {};
+  for (const key of Object.keys(newSnap)) {
+    const o = JSON.stringify(oldSnap[key]);
+    const n = JSON.stringify(newSnap[key]);
+    if (o !== n) changes[key] = newSnap[key];
+  }
+  return changes;
+}
+
+function pushStatusToWs(ws?: WebSocket) {
+  const newSnap = takeSnapshot();
+  const clients = ws ? [ws] : [..._wsClients];
+  if (ws) {
+    ws.send(JSON.stringify({ type: "snapshot", data: newSnap }));
+  } else {
+    const changes = diffSnapshots(_lastSnapshot, newSnap);
+    _lastSnapshot = newSnap;
+    if (Object.keys(changes).length === 0) return;
+    for (const client of clients) {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(JSON.stringify({ type: "patch", data: changes }));
+      }
+    }
+  }
+}
+
+// Push every 2s to check for changes (throttled delta detection)
+let _pushTimer: ReturnType<typeof setInterval> | null = null;
+export function startWsPushLoop() { if (!_pushTimer) _pushTimer = setInterval(() => pushStatusToWs(), 2000); }
+export function stopWsPushLoop() { if (_pushTimer) { clearInterval(_pushTimer); _pushTimer = null; } }
+
+async function handleWsMessage(ws: WebSocket, msg: any) {
+  const { action, payload } = msg;
+  switch (action) {
+    case "setProvider": {
+      if (payload?.provider) { _config = { ...(_config || {}), provider: payload.provider }; saveZenConfig(); }
+      pushStatusToWs();
+      break;
+    }
+    case "setMode": {
+      if (payload?.mode) setMode(payload.mode.toLowerCase());
+      pushStatusToWs();
+      break;
+    }
+    case "toggleModel": {
+      if (payload?.modelId && payload?.enabled !== undefined) _modelStates[payload.modelId] = payload.enabled;
+      pushStatusToWs();
+      break;
+    }
+    case "batchModelStates": {
+      if (payload?.states) _modelStates = { ..._modelStates, ...payload.states };
+      pushStatusToWs();
+      break;
+    }
+    case "addKey": {
+      const prov = payload?.provider || _config?.provider || defaultProvider();
+      _keys.push({ name: payload?.name || `Key ${_keys.length + 1}`, token: payload?.token || "", session: payload?.session || "", provider: prov });
+      saveZenConfig();
+      validateOpencodeKeys().catch(() => {});
+      pushStatusToWs();
+      break;
+    }
+    case "updateKey": {
+      if (typeof payload?.index === "number" && _keys[payload.index]) {
+        if (payload.name !== undefined) _keys[payload.index].name = payload.name;
+        if (payload.token !== undefined) _keys[payload.index].token = payload.token;
+        if (payload.session !== undefined) _keys[payload.index].session = payload.session;
+        saveZenConfig();
+      }
+      validateOpencodeKeys().catch(() => {});
+      pushStatusToWs();
+      break;
+    }
+    case "deleteKey": {
+      if (typeof payload?.index === "number" && _keys[payload.index]) { _keys.splice(payload.index, 1); saveZenConfig(); }
+      validateOpencodeKeys().catch(() => {});
+      pushStatusToWs();
+      break;
+    }
+    case "setZenSession": {
+      if (payload?.sessionCookie) {
+        _zenSessionCookie = payload.sessionCookie;
+        for (const k of _keys) { if (k.provider === "zen" && !k.session) k.session = payload.sessionCookie; }
+        saveZenConfig();
+      }
+      pushStatusToWs();
+      break;
+    }
+    case "clearZenSession": {
+      _zenSessionCookie = "";
+      saveZenConfig();
+      pushStatusToWs();
+      break;
+    }
+    case "setOcSession": {
+      if (payload?.sessionCookie) {
+        _ocSessionCookie = payload.sessionCookie;
+        for (const k of _keys) { if (k.provider === "opencode" && !k.session) k.session = payload.sessionCookie; }
+        saveZenConfig();
+        _workspaceCache = [];
+      }
+      pushStatusToWs();
+      break;
+    }
+    case "clearOcSession": {
+      _ocSessionCookie = "";
+      saveZenConfig();
+      _workspaceCache = [];
+      pushStatusToWs();
+      break;
+    }
+    case "validateKeys": {
+      await validateOpencodeKeys();
+      pushStatusToWs();
+      break;
+    }
+    case "getZenStats": {
+      try {
+        const stats = await fetchZenithStats();
+        ws.send(JSON.stringify({ type: "zenStats", data: stats }));
+      } catch { ws.send(JSON.stringify({ type: "zenStats", data: { loggedIn: false } })); }
+      break;
+    }
+    case "getWorkspaceUsage": {
+      try {
+        const wsData = await getWorkspaceUsage();
+        ws.send(JSON.stringify({ type: "workspaceUsage", data: wsData }));
+      } catch { ws.send(JSON.stringify({ type: "workspaceUsage", data: { cached: false, data: [] } })); }
+      break;
+    }
+    case "getBingBg": {
+      try {
+        const resp = await fetch("https://www.bing.com/HPImageArchive.aspx?format=js&idx=0&n=1", { headers: { "User-Agent": "gc2xy/3.0" } });
+        const d = await resp.json();
+        const url = d?.images?.[0]?.url;
+        ws.send(JSON.stringify({ type: "bingBg", data: url ? { url: "https://www.bing.com" + url } : { error: "not found" } }));
+      } catch {}
+      break;
+    }
+    case "restart": {
+      ws.send(JSON.stringify({ type: "restarting", data: { success: true } }));
+      setTimeout(() => {
+        try { restoreTerminal(); } catch {}
+        try { unlinkSync(join(getProjectRoot(), ".cache", "proxy-host-pid")); } catch {}
+        process.exit(42);
+      }, 500);
+      break;
+    }
+    case "saveConfig": {
+      if (payload) {
+        const { keys: _, ...safeBody } = payload;
+        _dashboardConfig = { ..._dashboardConfig, ...safeBody };
+        if (payload.mode) setMode(payload.mode.toLowerCase());
+        if (payload.models) for (const m of payload.models) _modelStates[m.id] = m.enabled !== false;
+        if (payload.provider) { _config = { ...(_config || {}), provider: payload.provider }; saveZenConfig(); }
+        validateOpencodeKeys().catch(() => {});
+      }
+      pushStatusToWs();
+      break;
+    }
+  }
+}
+
+// Load .env file so env vars are available to top-level code
+try {
+  const envPath = join(getProjectRoot(), ".config", ".env");
+  if (existsSync(envPath)) {
+    const raw = readFileSync(envPath, "utf-8");
+    for (const line of raw.split("\n")) {
+      const m = line.match(/^\s*(\w+)\s*=\s*(.+)/);
+      if (m) {
+        let val = m[2].replace(/^["']|["']$/g, "").trim();
+        if (val && !process.env[m[1]]) process.env[m[1]] = val;
+      }
+    }
+  }
+} catch (e) {}
 
 let _requestCount = 0;
 let _config: any = {};
-
-const PROVIDER_OPTIONS = [
-  { id: "opencode", name: "OpenCode" },
-  { id: "zen", name: "ZEN" },
-];
 
 let _modelStates: Record<string, boolean> = {};
 let _validKeys = new Set<string>();
@@ -26,6 +255,7 @@ let _keys: { name: string; token: string; session: string; provider: string }[] 
 let _zenSessionCookie = "";
 let _zenEmail = "";
 let _zenPassword = "";
+let _ocSessionCookie = "";
 let _zenModels: string[] = [];
 let _zenModelsLoaded = false;
 let _dashboardCache: any = {};
@@ -74,6 +304,10 @@ try {
   if (zs && zs.length > 5) {
     _zenSessionCookie = zs;
   }
+  const os = process.env.OPENCODE_SESSION;
+  if (os && os.length > 5) {
+    _ocSessionCookie = os;
+  }
 } catch (e) {}
 
 // Load persisted keys from .config/config.json on startup
@@ -104,6 +338,7 @@ function loadZenConfig() {
         const now = Math.floor(Date.now() / 1000);
         if (exp > now && !_zenSessionCookie) _zenSessionCookie = c.ZENITH_SESSION;
       }
+      if (c.OPENCODE_SESSION) _ocSessionCookie = c.OPENCODE_SESSION;
       if (c.ZENITH_EMAIL) _zenEmail = c.ZENITH_EMAIL;
       if (c.ZENITH_PASSWORD) _zenPassword = c.ZENITH_PASSWORD;
       if (c.TOKENS && Array.isArray(c.TOKENS)) {
@@ -134,6 +369,7 @@ function saveZenConfig() {
     const p = join(dir, "config.json");
     const existing = existsSync(p) ? JSON.parse(readFileSync(p, "utf-8")) : {};
     existing.ZENITH_SESSION = _zenSessionCookie;
+    existing.OPENCODE_SESSION = _ocSessionCookie;
     existing.ZENITH_EMAIL = _zenEmail;
     existing.ZENITH_PASSWORD = _zenPassword;
     existing.TOKENS = _keys;
@@ -312,25 +548,6 @@ function getOcModels(): any[] {
   });
 }
 
-function getStatusJson(): Record<string, any> {
-  const mode = getMode().toUpperCase();
-  const provider = _config?.provider || defaultProvider();
-  const models = provider === "zen" ? getZenModels() : getOcModels();
-  return {
-    status: "ok", mode,
-    requests: _requestCount, tps: getTps(),
-    runtime: getRuntime(),
-    port: process.env.gc2xy_HTTP_PORT || "80",
-    target: process.env.TARGET_HOST || "github.com",
-    cacheHits: 0,
-    modelCount: models.length,
-    enabledModelCount: models.filter((m: any) => m.enabled !== false).length,
-    provider,
-    hasValidKey: provider === "zen" ? _keys.filter(k => k.provider === "zen").length > 0 : _hasValidKey,
-    models,
-  };
-}
-
 function getPathname(url: string): string {
   const idx = url.indexOf("?");
   return idx === -1 ? url : url.slice(0, idx);
@@ -340,7 +557,7 @@ export async function handleDashboard(req: HandlerInput): Promise<HandlerResult>
   const pathname = getPathname(req.url);
   const method = req.method.toUpperCase();
 
-  // Serve dashboard HTML
+  // Serve dashboard HTML — always available
   if (pathname === "/dashboard" || pathname === "/") {
     const html = getDashboardHtml();
     return {
@@ -353,203 +570,92 @@ export async function handleDashboard(req: HandlerInput): Promise<HandlerResult>
     };
   }
 
-  // API: Status
-  if (pathname === "/api/status") {
+  // Single initial-load endpoint — returns full config + status snapshot
+  if (pathname === "/api/init" && method === "GET") {
     if (_validKeys.size === 0 && _keys.some(k => k.provider === "opencode")) {
-      validateOpencodeKeys().catch(() => {});
+      await validateOpencodeKeys().catch(() => {});
     }
-    return { handled: true, response: jsonResponse(getStatusJson()) };
-  }
-
-  // API: Provider
-  if (pathname === "/api/provider") {
-    if (method === "GET") {
-      return { handled: true, response: jsonResponse({ provider: _config?.provider || defaultProvider(), providers: PROVIDER_OPTIONS }) };
-    }
-    if (method === "POST") {
-      try {
-        const bodyStr = req.body ? Buffer.from(req.body).toString("utf-8") : "{}";
-        const body = JSON.parse(bodyStr);
-        if (body.provider) {
-          _config = { ...(_config || {}), provider: body.provider };
-          saveZenConfig();
-        }
-        return { handled: true, response: jsonResponse({ success: true, provider: _config?.provider || defaultProvider() }) };
-      } catch (e: any) { return { handled: true, response: jsonResponse({ error: e.message }, 400) }; }
-    }
-  }
-
-  // API: Models toggle
-  if (pathname === "/api/models") {
-    if (method === "GET") {
-      return { handled: true, response: jsonResponse({ models: getStatusJson().models }) };
-    }
-    if (method === "POST") {
-      try {
-        const bodyStr = req.body ? Buffer.from(req.body).toString("utf-8") : "{}";
-        const body = JSON.parse(bodyStr);
-        if (body.modelId && body.enabled !== undefined) _modelStates[body.modelId] = body.enabled;
-        if (body.states) _modelStates = { ..._modelStates, ...body.states };
-        return { handled: true, response: jsonResponse({ success: true, modelStates: _modelStates }) };
-      } catch (e: any) { return { handled: true, response: jsonResponse({ error: e.message }, 400) }; }
-    }
-  }
-
-  // Health
-  if (pathname === "/health") {
-    return { handled: true, response: jsonResponse({
-      status: _hasValidKey ? "ok" : "degraded", version: "3.0", cwd: process.cwd(),
-      platform: process.platform, runtime: getRuntime(), hasValidKey: _hasValidKey,
-    })};
-  }
-
-  // API: Config
-  if (pathname === "/api/config") {
-    if (method === "GET") {
-      const provider = _config?.provider || defaultProvider();
-      const models = provider === "zen" ? getZenModels() : getOcModels();
-      return { handled: true, response: jsonResponse({
-        ..._dashboardConfig, keys: _keys, zenSessionCookie: !!_zenSessionCookie,
-        mode: getMode(), hasValidKey: _hasValidKey, validKeyCount: _validKeys.size,
-        provider, models, zenLoggedIn: !!_zenSessionCookie,
-      })};
-    }
-    if (method === "POST") {
-      try {
-        const bodyStr = req.body ? Buffer.from(req.body).toString("utf-8") : "{}";
-        const body = JSON.parse(bodyStr);
-        const { keys: _, ...safeBody } = body;
-        _dashboardConfig = { ..._dashboardConfig, ...safeBody };
-        if (body.mode && typeof body.mode === "string") {
-          const newMode = body.mode.toLowerCase();
-          if (newMode !== getMode()) setMode(newMode as any);
-        }
-        if (body.models) for (const m of body.models) _modelStates[m.id] = m.enabled !== false;
-        if (body.provider) {
-          _config = { ...(_config || {}), provider: body.provider };
-          saveZenConfig();
-        }
-        validateOpencodeKeys().catch(() => {});
-        return { handled: true, response: jsonResponse({ success: true, config: _dashboardConfig }) };
-      } catch (e: any) { return { handled: true, response: jsonResponse({ error: e.message }, 400) }; }
-    }
-  }
-
-  // API: Restart
-  if (pathname === "/api/restart" && method === "POST") {
-    setTimeout(() => {
-      try { restoreTerminal(); } catch {}
-      try { unlinkSync(join(getProjectRoot(), ".cache", "proxy-host-pid")); } catch {}
-      process.exit(42);
-    }, 500);
-    return { handled: true, response: jsonResponse({ success: true, message: "Restarting..." }) };
-  }
-
-  // API: Bing Background
-  if (pathname === "/api/bg") {
-    try {
-      const resp = await fetch("https://www.bing.com/HPImageArchive.aspx?format=js&idx=0&n=1", { headers: { "User-Agent": "gc2xy/3.0" } });
-      const data = await resp.json();
-      const url = data?.images?.[0]?.url;
-      if (url) return { handled: true, response: jsonResponse({ url: "https://www.bing.com" + url }) };
-      return { handled: true, response: jsonResponse({ error: "not found" }, 404) };
-    } catch (e: any) { return { handled: true, response: jsonResponse({ error: e.message }, 500) }; }
-  }
-
-  // API: Validate Keys
-  if (pathname === "/api/keys/validate" && method === "POST") {
-    await validateOpencodeKeys();
-    return { handled: true, response: jsonResponse({
-      success: true, hasValidKey: _hasValidKey,
-      keys: _keys.map(k => ({
-        name: k.name, provider: k.provider,
-        token: k.token, has_token: !!k.token, has_session: !!k.session,
-        valid: k.provider === "opencode" ? _validKeys.has(k.token) : false,
-        balance: k.provider === "opencode" ? (_keyBalances[k.token] || null) : null,
-      })),
-    })};
-  }
-
-  // API: Unified Keys CRUD (provider-agnostic)
-  if (pathname === "/api/keys") {
-    if (method === "GET") {
-      const provider = _config?.provider || defaultProvider();
-      return { handled: true, response: jsonResponse({
-        provider,
-        keys: _keys.filter(k => k.provider === provider),
-        allKeys: _keys,
-      })};
-    }
-    if (method === "POST") {
-      try {
-        const bodyStr = req.body ? Buffer.from(req.body).toString("utf-8") : "{}";
-        const body = JSON.parse(bodyStr);
-        if (body.action === "add") {
-          const provider = body.provider || _config?.provider || defaultProvider();
-          _keys.push({ name: body.name || `Key ${_keys.length + 1}`, token: body.token || "", session: body.session || "", provider });
-          saveZenConfig();
-          return { handled: true, response: jsonResponse({ success: true, keys: _keys.filter(k => k.provider === provider) }) };
-        } else if (body.action === "update") {
-          if (typeof body.index !== "number" || !_keys[body.index]) return { handled: true, response: jsonResponse({ error: "Key not found" }, 404) };
-          if (body.name !== undefined) _keys[body.index].name = body.name;
-          if (body.token !== undefined) _keys[body.index].token = body.token;
-          if (body.session !== undefined) _keys[body.index].session = body.session;
-          saveZenConfig();
-          const provider = _keys[body.index].provider;
-          return { handled: true, response: jsonResponse({ success: true, keys: _keys.filter(k => k.provider === provider) }) };
-        } else if (body.action === "delete") {
-          if (typeof body.index !== "number" || !_keys[body.index]) return { handled: true, response: jsonResponse({ error: "Key not found" }, 404) };
-          const provider = _keys[body.index].provider;
-          _keys.splice(body.index, 1);
-          saveZenConfig();
-          return { handled: true, response: jsonResponse({ success: true, keys: _keys.filter(k => k.provider === provider) }) };
-        }
-        return { handled: true, response: jsonResponse({ error: "Unknown action" }, 400) };
-      } catch (e: any) { return { handled: true, response: jsonResponse({ error: e.message }, 400) }; }
-    }
-  }
-
-  // API: ZEN Login
-  if (pathname === "/api/zen/login") {
-    if (method === "POST") {
-      try {
-        const bodyStr = req.body ? Buffer.from(req.body).toString("utf-8") : "{}";
-        const body = JSON.parse(bodyStr);
-        if (body.sessionCookie) {
-          _zenSessionCookie = body.sessionCookie;
-          for (const k of _keys) { if (k.provider === "zen" && !k.session) k.session = body.sessionCookie; }
-          saveZenConfig();
-          return { handled: true, response: jsonResponse({ success: true }) };
-        }
-        return { handled: true, response: jsonResponse({ error: "Provide sessionCookie" }, 400) };
-      } catch (e: any) { return { handled: true, response: jsonResponse({ error: e.message }, 400) }; }
-    }
-    if (method === "DELETE") { _zenSessionCookie = ""; saveZenConfig(); return { handled: true, response: jsonResponse({ success: true }) }; }
-    if (method === "GET") {
-      return { handled: true, response: jsonResponse({ loggedIn: !!_zenSessionCookie, oauth: { google: "https://api.zenllm.org/auth/google", discord: "https://api.zenllm.org/auth/discord" } }) };
-    }
-  }
-
-  // API: ZEN Dashboard Stats
-  if (pathname === "/api/zenith/requests") {
-    try {
-      loadZenConfig();
-      const stats = await fetchZenithStats();
-      setZenStats(stats);
-      return { handled: true, response: jsonResponse(stats) };
-    } catch (e) {
-      return { handled: true, response: jsonResponse({ loggedIn: false, requests: 0, tokens: 0, cost: 0, balance: 0 }) };
-    }
-  }
-
-  // API: Usage breakdown by endpoint
-  if (pathname === "/api/usage") {
-    const data = getUsageData();
-    const pcts = getPercentages();
-    return { handled: true, response: jsonResponse({ ...data, percentages: pcts }) };
+    return { handled: true, response: jsonResponse(takeSnapshot()) };
   }
 
   return { handled: false };
 }
 
+export function detectWorkspaceId(input: string): string | null {
+  if (!input) return null;
+  // Full URL pattern: https://opencode.ai/workspace/wrk_...
+  const urlMatch = input.match(/opencode\.ai\/workspace\/(wrk_[a-zA-Z0-9]+)/);
+  if (urlMatch) return urlMatch[1];
+  // Raw ID pattern: wrk_...
+  const rawMatch = input.match(/^(wrk_[a-zA-Z0-9]+)$/);
+  if (rawMatch) return rawMatch[1];
+  return null;
+}
+
+// ── OpenCode Workspace Usage Cache ──
+let _workspaceCache: KeyWorkspaceData[] = [];
+let _workspaceCacheTime = 0;
+const WORKSPACE_CACHE_TTL = 60000;
+
+async function fetchWorkspaceUsageData(): Promise<KeyWorkspaceData[]> {
+  // Try all possible session sources
+  const envSession = (process.env.OPENCODE_SESSION || "").trim();
+  if (envSession && !_ocSessionCookie) _ocSessionCookie = envSession;
+  const globalSession = _ocSessionCookie || _zenSessionCookie || "";
+  const opencodeKeys = _keys.filter(k => k.provider === "opencode");
+  const sessions = new Set<string>();
+  for (const k of opencodeKeys) { const s = k.session || globalSession; if (s) sessions.add(s); }
+  if (globalSession) sessions.add(globalSession);
+  if (sessions.size === 0) return [];
+  const data: KeyWorkspaceData[] = [];
+  for (const session of sessions) {
+    const k = opencodeKeys.find(k => k.session === session);
+    const keyName = k?.name || "Unknown Key";
+    const keyToken = k?.token || "";
+    const keyPrefix = keyToken ? `${keyToken.slice(0, 6)}...${keyToken.slice(-4)}` : "none";
+    const keyId = keyToken ? keyToken.slice(0, 8) : "none";
+    try {
+      const wsData = await getWorkspaceDataForKey(keyToken, keyName, session);
+      wsData.keyToken = keyToken;
+      console.log(`[WS DEBUG] session=${session.slice(0, 10)}... workspaces=${wsData.workspaces.length} error=${wsData.error || "none"}`);
+      data.push(wsData);
+    } catch (e: any) {
+      console.log(`[WS DEBUG] fetch failed: ${e.message}`);
+      data.push({ keyPrefix, keyId, keyName, keyToken, session, error: e.message, workspaces: [] });
+    }
+  }
+  return data;
+}
+
+async function getWorkspaceUsage(): Promise<{ cached: boolean; data: KeyWorkspaceData[] }> {
+  const now = Date.now();
+  if (_workspaceCache.length > 0 && now - _workspaceCacheTime < WORKSPACE_CACHE_TTL) {
+    return { cached: true, data: _workspaceCache };
+  }
+  try {
+    const data = await fetchWorkspaceUsageData();
+    _workspaceCache = data;
+    _workspaceCacheTime = now;
+    return { cached: false, data };
+  } catch {
+    return { cached: true, data: _workspaceCache };
+  }
+}
+
 export function incrementRequests() { _requestCount++; }
+
+// Debug endpoint
+export function getSessionDebugInfo(): Record<string, any> {
+  return {
+    ocSessionCookie: _ocSessionCookie ? `${_ocSessionCookie.slice(0, 16)}...${_ocSessionCookie.slice(-8)}` : "(empty)",
+    ocSessionCookieLen: _ocSessionCookie.length,
+    zenSessionCookie: _zenSessionCookie ? `${_zenSessionCookie.slice(0, 8)}...` : "(empty)",
+    opencodeKeys: _keys.filter(k => k.provider === "opencode").map(k => ({
+      name: k.name,
+      hasSession: !!k.session,
+      sessionPrefix: k.session ? k.session.slice(0, 10) + "..." : "",
+    })),
+    workspaceCacheEntries: _workspaceCache.length,
+    workspaceCacheTime: _workspaceCacheTime,
+  };
+}

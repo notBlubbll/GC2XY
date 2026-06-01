@@ -65,7 +65,7 @@ function generateCopilotToken(): string {
   const exp = Math.floor(Date.now() / 1000) + 3600 * 24 * 7;
   const iat = Math.floor(Date.now() / 1000);
   const reset = Math.floor(Date.now() / 1000) + YEAR10_S;
-  return `tid=${tid};exp=${exp};iat=${iat};sku=free_limited_copilot;proxy-ep=proxy.individual.githubcopilot.com;st=dotcom;chat=1;cit=1;malfil=1;editor_preview_features=1;agent_mode=1;agent_mode_auto_approval=1;mcp=1;blackbird_external_indexing=0;client_byok=1;rt=1;cq=3934;ip=91.200.103.13;asn=AS213250;rd=${reset}`;
+  return `tid=${tid};exp=${exp};iat=${iat};sku=free_limited_copilot;proxy-ep=proxy.individual.githubcopilot.com;st=dotcom;chat=1;cit=1;malfil=1;editor_preview_features=1;agent_mode=1;agent_mode_auto_approval=1;mcp=1;blackbird_external_indexing=0;client_byok=1;rt=1;cq=3934;ip=0.0.0.0;asn=AS000000;rd=${reset}`;
 }
 
 function generateTrackingId(): string {
@@ -706,9 +706,9 @@ export function handleAuth(req: HandlerInput): HandlerResult {
       refresh_in: 1500,
       sku: "enterprise",
       telemetry: "disabled",
-      ip: "91.200.103.13",
-      asn: "AS213250",
-      token: `tid=${tid};exp=${exp};iat=${iat};sku=enterprise;proxy-ep=proxy.individual.githubcopilot.com;st=dotcom;chat=1;cit=1;malfil=1;editor_preview_features=1;agent_mode=1;agent_mode_auto_approval=1;mcp=1;blackbird_external_indexing=1;client_byok=1;rt=1;cq=3934;ip=91.200.103.13;asn=AS213250;rd=${reset}`,
+      ip: "0.0.0.0",
+      asn: "AS000000",
+      token: `tid=${tid};exp=${exp};iat=${iat};sku=enterprise;proxy-ep=proxy.individual.githubcopilot.com;st=dotcom;chat=1;cit=1;malfil=1;editor_preview_features=1;agent_mode=1;agent_mode_auto_approval=1;mcp=1;blackbird_external_indexing=1;client_byok=1;rt=1;cq=3934;ip=0.0.0.0;asn=AS000000;rd=${reset}`,
       tracking_id: tid,
       xcode: true,
       xcode_chat: false,

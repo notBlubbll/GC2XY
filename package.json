@@ -3,6 +3,7 @@
   "dependencies": {
     "llm-bridge": "^2.0.1",
     "node-forge": "^1.4.0",
-    "tsx": "^4.19.0"
+    "tsx": "^4.19.0",
+    "ws": "^8.21.0"
   }
 }

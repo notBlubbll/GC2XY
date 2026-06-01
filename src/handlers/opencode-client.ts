@@ -220,7 +220,7 @@ function tryLoadEnvFile() {
     if (fs.existsSync(p)) {
       const raw = fs.readFileSync(p, "utf-8");
       for (const line of raw.split("\n")) {
-        const m = line.match(/^\s*(OPENCODE_API_KEYS?)\s*=\s*(.+)/);
+        const m = line.match(/^\s*(OPENCODE_API_KEYS?|OPENCODE_SESSION|ZENITH_SESSION|ZENITH_API_KEY)\s*=\s*(.+)/);
         if (m) {
           let val = m[2].replace(/^["']|["']$/g, "").trim();
           if (val && !process.env[m[1]]) {

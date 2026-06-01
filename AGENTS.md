@@ -74,6 +74,7 @@ sc failure w3svc reset= 86400 actions= restart/5000/restart/10000/restart/30000
 | `handlers/auth-handler.ts` | All auth endpoints: device login, OAuth PKCE, user info, copilot user/token, CORS preflight (individual/free responses) |
 | `llm-bridge` (npm) | External library for Anthropic↔OpenAI translation (`anthropicToUniversal`, `universalToOpenAI`, streaming parsers/emitters) |
 | `handlers/opencode-client.ts` | Core LLM forwarding client: API key balancer, model init, tool normalization, **forwards all request params upstream** (no whitelist) |
+| `opencode-workspace.ts` | Workspace usage fetcher: extracts workspace IDs + rolling/weekly/monthly usage from opencode.ai `/go` page HTML `$R` data |
 | `handlers/copilot-handler.ts` | All Copilot API routes: sessions, messages, MCP, models, completions, embeddings, tokenize (non-VS/non-GHCP) |
 | `handlers/vs/handler.ts` | Visual Studio chat endpoints: `/v1/messages`, `/responses`, `/chat/completions` |
 | `handlers/vs/auth.ts` | Visual Studio enterprise auth: copilot user, token, content exclusion |
@@ -92,7 +93,8 @@ sc failure w3svc reset= 86400 actions= restart/5000/restart/10000/restart/30000
 | `certs/` | Auto-generated CA key/cert and unified multi-SAN intercept cert |
 | `.proxy-logs/` | Daily traffic log files with JSON entries + `bodyPreview` (first 1000 chars) |
 | `.cache/` | Auto-populated cache files from proxy mode, keyed by `<method>_<host>_<path>.json` |
-| `.config/config.json` | ZEN token pool persistence (tokens, session cookies, credentials) |
+| `.config/config.json` | ZEN token pool + OpenCode session persistence (tokens, session cookies, credentials) |
+| `opencode-workspace.ts` | Workspace usage tracker: fetches workspaces + per-workspace rolling/weekly/monthly Go quota from opencode.ai `/go` page |
 | `prototype/` | Analysis artifacts, extracted response structures, User-Agent breakdowns |
 
 ## Architecture: Interceptor Flow
@@ -351,7 +353,7 @@ A web-based dashboard is available at `http://github.com/dashboard` (or `http://
 - **Right (col-lg-4)**: API Key / ZEN Token Pool (pool cards with status badge), Quick Actions, Environment, Proxy Configuration
 
 ### Status Header
-Replicates the TUI status bar with real-time values: mode (MOCK/HYBRID/PROXY), LReq (local proxy request count), TPS, active keys (active/total), models (enabled/total), Requests (ZEN dashboard), Tokens (ZEN), Used (ZEN % + $ cost, remaining balance on hover), provider. All inline in the header card with a dark `card-header` background. ZEN columns show `n/a` when provider is OpenCode, `Loading...` when ZEN is selected but not logged in. Updates every 5 seconds.
+Replicates the TUI status bar with real-time values: mode (MOCK/HYBRID/PROXY), LReq (local proxy request count), TPS, active keys (active/total), models (enabled/total), **Quota** (combined workspace usage % for OpenCode / cost% for ZEN), provider. All inline in the header card with a dark `card-header` background. In OpenCode mode, Quota shows the max rolling usage % across all workspaces. In ZEN mode, Quota shows cost/(cost+balance) %. Updates every 5 seconds.
 
 ### Provider Selector
 Horizontal radio button group:
@@ -412,12 +414,16 @@ Fetches daily Bing wallpaper via `https://www.bing.com/HPImageArchive.aspx` at s
 | `/api/restart` | POST | Trigger restart (exit code 42, picks up code changes) |
 | `/api/bg` | GET | Fetch Bing daily wallpaper URL |
 | `/health` | GET | Health check (status, version, cwd, platform, runtime, hasValidKey) |
+| `/api/opencode/workspace-usage` | GET | Per-key OpenCode workspace usage (rolling/weekly/monthly %) |
+| `/api/opencode/debug` | GET | Debug session state (cookie prefixes, key sessions, cache state) |
+| `/api/oc/login` | GET/POST/DELETE | OpenCode session cookie management |
 
 ### Files
 | File | Purpose |
 |------|---------|
 | `dashboard.html` | Web dashboard HTML (project root) |
-| `src/handlers/dashboard-handler.ts` | Dashboard handler: serves HTML + JSON API endpoints. OpenCode key validation, ZEN key CRUD, session login, stats aggregation, Bearer/cookie two-tier ZEN auth, ZEN model list fetched from `opencode.ai/zen/go/v1/models` with `ZENITH_FALLBACK` fallback |
+| `src/handlers/dashboard-handler.ts` | Dashboard handler: serves HTML + JSON API endpoints. OpenCode key validation, ZEN key CRUD, session login, stats aggregation, Bearer/cookie two-tier ZEN auth, ZEN model list, OpenCode workspace usage |
+| `src/opencode-workspace.ts` | Workspace usage fetcher: extracts workspace IDs + rolling/weekly/monthly usage from opencode.ai `/go` page `$R` data |
 | `src/mitm-proxy.ts` | Routes `/dashboard` and `/api/*` in all modes (mock/hybrid/proxy) |
 
 ### Keyboard Reference
@@ -590,6 +596,7 @@ See `skills.md` → **Interceptor Development** for detailed handler chain prior
 | `OPENCODE_API_KEY` | unset | Single opencode.ai API key (alternative to array) |
 | `ZENITH_API_KEY` | unset | ZEN API key (`sk-zenith-...`) from zenllm.org |
 | `ZENITH_SESSION` | unset | ZEN session cookie (`zs=...`) for dashboard stats |
+| `OPENCODE_SESSION` | unset | OpenCode `auth` cookie value for workspace usage tracking in dashboard |
 | `VS_ENABLE_TIME` | `true` | Set to `"0"` to disable prepending `[HH:MM:SS]` to VS agent responses |
 | `ENFORCE_NODE` | `0` | Set to `"1"` to force Node.js runtime even if Bun is available. Affects all launchers and the C# service wrapper. |
 | `ENFORCE_CMD` | `0` | Set to `"1"` to force plain cmd.exe and skip Windows Terminal auto-detect. Affects all batch launchers, `.dist/start-*.cmd`, the C# service wrapper, and proxy status bar detection. |

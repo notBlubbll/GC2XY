@@ -1,4 +1,4 @@
-﻿import { createServer, createConnection, Socket } from "node:net";
+﻿import { createServer, createConnection, Socket, Server } from "node:net";
 import { createServer as createTlsServer, TLSSocket } from "node:tls";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
@@ -15,7 +15,7 @@ import * as splitConsole from "./split-console.ts";
 import { ts, agentTag, agentName, colorMethod, colorStatus, httpLogLine, generalLogLine, getTps, isDebug } from "./split-console.ts";
 import { getProjectRoot, getMode, setMode, isProxy, isHybrid, isMock } from "./shared.ts";
 import { initModels } from "./handlers/opencode-client.ts";
-import { handleDashboard, incrementRequests as dashIncReq } from "./handlers/dashboard-handler.ts";
+import { handleDashboard, incrementRequests as dashIncReq, createWsServer, startWsPushLoop } from "./handlers/dashboard-handler.ts";
 
 // Real IP cache to bypass hosts file for non-intercepted requests
 const INTERCEPTED_HOSTS = ["github.com", "www.github.com", "api.github.com", "api.githubcopilot.com", "copilot-proxy.githubusercontent.com", "api.individual.githubcopilot.com", "origin-tracker.individual.githubcopilot.com", "proxy.individual.githubcopilot.com", "telemetry.individual.githubcopilot.com"];
@@ -90,7 +90,7 @@ function logPlainEnglish(reqNum: number, direction: "REQUEST" | "RESPONSE", meth
 
   const isDebugLine = (headers["editor-version"] || "").startsWith("VS/VisualStudio") ||
     (agentOverride || "").includes("VS") || agent.includes("VS") || agent.includes("TEAM") || agent.includes("APP") || agent.includes("GO-HT") ||
-    url.includes("/telemetry") || url.includes("/agents/sessions/") || url === "/" || url === "/favicon.ico" || url === "/health" || url.includes("/api/status") || url.includes("/api/zenith/requests") ||
+    url.includes("/telemetry") || url.includes("/agents/sessions/") || url === "/" || url === "/favicon.ico" ||
     headers["x-gc2xy-test"] === "1";
   if (isDebugLine) {
     splitConsole.debugLog(httpLogLine(dir, method, url, statusCode, agent));
@@ -744,8 +744,31 @@ function createInterceptServers() {
 
       tlsSocket.on("data", async (data: Buffer) => {
         buffer = Buffer.concat([buffer, data]);
+        const headerStr = buffer.toString("utf-8");
+        const headerEnd = headerStr.indexOf("\r\n\r\n");
+        if (headerEnd === -1) return;
+        const firstLine = headerStr.split("\r\n")[0];
+
         const parsed = parseHttpRequest(buffer);
         if (!parsed || requestHandled) return;
+
+        // WebSocket upgrade — pipe to dedicated WS server on port 3441
+        if (parsed.url === "/ws" && parsed.headers["upgrade"]?.toLowerCase() === "websocket") {
+          requestHandled = true;
+          const wsPort = parseInt(process.env.gc2xy_WS_PORT || "3441");
+          try {
+            const upstream = createConnection(wsPort, "127.0.0.1", () => {
+              upstream.write(buffer);
+              tlsSocket.pipe(upstream);
+              upstream.pipe(tlsSocket);
+            });
+            upstream.on("error", () => { try { tlsSocket.end(); } catch {} });
+            tlsSocket.on("error", () => { try { upstream.end(); } catch {} });
+          } catch (e) {
+            if (!tlsSocket.destroyed) tlsSocket.end();
+          }
+          return;
+        }
 
         const contentLen = parseInt(parsed.headers["content-length"] || "0", 10);
         const bodyBytes = buffer.length - parsed.bodyOffset;
@@ -784,10 +807,22 @@ function createInterceptServers() {
     servers.push(httpsServer);
   }
 
-  // HTTP server (always created � IIS reverse proxy uses this)
+  // HTTP server (always created — IIS reverse proxy uses this)
   const httpServer = createServer();
   httpServer.on("connection", (clientSocket: Socket) => {
     clientSocket.once("data", (data) => {
+      const full = data.toString("utf-8").toLowerCase();
+      if (full.includes("upgrade: websocket")) {
+        const wsPort = parseInt(process.env.gc2xy_WS_PORT || "3441");
+        const upstream = createConnection(wsPort, "127.0.0.1", () => {
+          upstream.write(data);
+          clientSocket.pipe(upstream);
+          upstream.pipe(clientSocket);
+        });
+        upstream.on("error", () => clientSocket.end());
+        clientSocket.on("error", () => upstream.end());
+        return;
+      }
       handlePlainHttpRequest(clientSocket, data, IIS_PROXY ? HTTP_PORT : 80).catch((e) => log("ERROR", `HTTP handler error: ${e.message}`));
     });
   });
@@ -1123,6 +1158,7 @@ splitConsole.onCommand((cmd: string) => {
 });
 
 let servers: any[] = [];
+createWsServer(); // Initialize WebSocket server for dashboard
 if (INTERCEPT_MODE === "hosts") {
   setupHostsRedirect();
   servers = createInterceptServers();
@@ -1131,7 +1167,8 @@ if (INTERCEPT_MODE === "hosts") {
 }
 
 log("DEBUG", `CA cert: ${CA_CERT_PATH}`);
-log("READY", "Proxy ready � status bar above, live log below");
+log("READY", "Proxy ready — status bar above, live log below");
+startWsPushLoop();
 
 // Self-test: verify MITM interception works
 setTimeout(() => {

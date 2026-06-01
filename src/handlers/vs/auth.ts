@@ -107,7 +107,7 @@ export function handleVSToken(req: HandlerInput): HandlerResult | null {
   const resetDate = new Date("2120-01-01T00:00:00Z");
   const resetTs = Math.floor(resetDate.getTime() / 1000);
   const q = getRemainingQuota();
-  const token = `tid=${tid};exp=${exp};iat=${iat};sku=enterprise;proxy-ep=proxy.individual.githubcopilot.com;st=dotcom;chat=1;cit=1;malfil=1;editor_preview_features=1;agent_mode=1;agent_mode_auto_approval=1;mcp=1;blackbird_external_indexing=1;client_byok=0;rt=1;ip=91.200.103.13;asn=AS213250;cq=3934;rd=${resetTs}`;
+  const token = `tid=${tid};exp=${exp};iat=${iat};sku=enterprise;proxy-ep=proxy.individual.githubcopilot.com;st=dotcom;chat=1;cit=1;malfil=1;editor_preview_features=1;agent_mode=1;agent_mode_auto_approval=1;mcp=1;blackbird_external_indexing=1;client_byok=0;rt=1;ip=0.0.0.0;asn=AS000000;cq=3934;rd=${resetTs}`;
   return { handled: true, response: jsonResponse({
     agent_mode_auto_approval: true,
     annotations_enabled: true,
