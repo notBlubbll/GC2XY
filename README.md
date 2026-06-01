@@ -146,7 +146,8 @@ Available at `http://github.com/dashboard`. Built with **Bootstrap 5.3** + liqui
 - **Right column (col-lg-4)**: API Key token pool (OpenCode keys with VALID badge / ZEN pool with session status), Quick Actions, Environment, Proxy Configuration (mode + provider radio buttons)
 - **ZEN integration**: Requests, Tokens, Used inline in top bar (formatted K/M), fetched from `api.zenllm.org/api/dashboard` via two-tier auth — session cookie (`zs=<jwt>`) first, Bearer token (`Authorization: Bearer sk-zenith-...`) fallback. Shows `n/a` when provider is OpenCode, `Loading...` when ZEN selected but not logged in. ZEN token pool with inline CRUD management modal (add/edit/delete keys, session cookies). `sk-zenith-*` tokens auto-detected as ZEN provider regardless of saved `provider` field.
 - **Provider selector**: Radio button group — OpenCode (routes through opencode.ai) or ZEN (routes through zenllm.org). Switching provider changes the key management section and model list.
-- **Collapsible cards**, restart with reconnecting polling, Bing daily wallpaper background
+- **Collapsible cards**, restart with reconnecting polling
+- **Wallpaper switcher** in Proxy Configuration: None / Bing (daily wallpaper, cached to `.cache/wallpaper-bing.jpg`) / Wallhaven (random SFW from monthly top list, cached to `.cache/wallpaper-haven.jpg`). Wallhaven uses the API at `https://wallhaven.cc/api/v1/search?categories=100&purity=100&topRange=1M&sorting=toplist&order=desc&page=3`. Both cache for 1 hour. Selection persisted in `localStorage` and `.config/config.json`.
 
 ## Console Dashboard
 

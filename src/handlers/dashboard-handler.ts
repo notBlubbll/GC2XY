@@ -2,7 +2,7 @@
 // Always intercepted (even in proxy mode) at /dashboard and /api/* paths
 // Status/data pushes to WebSocket clients on change only (delta-based)
 
-import { readFileSync, existsSync, writeFileSync, unlinkSync } from "node:fs";
+import { readFileSync, existsSync, writeFileSync, unlinkSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { createServer as createHttpServer } from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
@@ -60,6 +60,13 @@ function takeSnapshot(): Record<string, any> {
       opencode: ocKeys.map(k => ({ name: k.name, token: k.token, session: !!k.session, valid: _validKeys.has(k.token) })),
     },
     health: { status: _hasValidKey ? "ok" : "degraded", runtime: getRuntime(), platform: process.platform },
+    wallpaper: _wallpaperSource,
+    sessionCookie: {
+      opencode: _ocSessionCookie ? `${_ocSessionCookie.slice(0, 12)}...${_ocSessionCookie.slice(-4)}` : "",
+      zen: _zenSessionCookie ? `${_zenSessionCookie.slice(0, 12)}...${_zenSessionCookie.slice(-4)}` : "",
+      opencodeFull: _ocSessionCookie || "",
+      zenFull: _zenSessionCookie || "",
+    },
   };
 }
 
@@ -194,13 +201,19 @@ async function handleWsMessage(ws: WebSocket, msg: any) {
       } catch { ws.send(JSON.stringify({ type: "workspaceUsage", data: { cached: false, data: [] } })); }
       break;
     }
+    case "setWallpaper": {
+      if (payload?.source) {
+        _wallpaperSource = payload.source;
+        saveZenConfig();
+        await ensureWallpaperCached(_wallpaperSource);
+        ws.send(JSON.stringify({ type: "wallpaperUrl", data: { source: _wallpaperSource } }));
+      }
+      break;
+    }
     case "getBingBg": {
-      try {
-        const resp = await fetch("https://www.bing.com/HPImageArchive.aspx?format=js&idx=0&n=1", { headers: { "User-Agent": "gc2xy/3.0" } });
-        const d = await resp.json();
-        const url = d?.images?.[0]?.url;
-        ws.send(JSON.stringify({ type: "bingBg", data: url ? { url: "https://www.bing.com" + url } : { error: "not found" } }));
-      } catch {}
+      if (payload?.source) _wallpaperSource = payload.source;
+      await ensureWallpaperCached(_wallpaperSource);
+      ws.send(JSON.stringify({ type: "wallpaperUrl", data: { source: _wallpaperSource } }));
       break;
     }
     case "restart": {
@@ -262,13 +275,71 @@ let _dashboardCache: any = {};
 let _dashboardCacheTime = 0;
 const DASHBOARD_CACHE_TTL = 30000;
 
+let _wallpaperSource = "none";
+
 let _dashboardConfig: Record<string, any> = {
   mode: "mock",
   httpPort: 80,
   iisProxy: false,
   keys: [],
   models: [],
+  wallpaper: "none",
 };
+
+// ── Wallpaper source and caching ──
+function getCacheDir(): string {
+  const d = join(getProjectRoot(), ".cache");
+  if (!existsSync(d)) try { writeFileSync(join(d, ".gitkeep"), ""); } catch {}
+  return d;
+}
+
+async function fetchBingWallpaper(): Promise<boolean> {
+  const cachePath = join(getCacheDir(), "wallpaper-bing.jpg");
+  const oneHour = 60 * 60 * 1000;
+  if (existsSync(cachePath) && Date.now() - statSync(cachePath).mtimeMs < oneHour) return true;
+  try {
+    const resp = await fetch("https://www.bing.com/HPImageArchive.aspx?format=js&idx=0&n=1", { headers: { "User-Agent": "gc2xy/3.0" } });
+    if (!resp.ok) return false;
+    const d: any = await resp.json();
+    const urlPart = d?.images?.[0]?.url;
+    if (!urlPart) return false;
+    const imgResp = await fetch("https://www.bing.com" + urlPart, { headers: { "User-Agent": "gc2xy/3.0" } });
+    if (!imgResp.ok) return false;
+    const buf = Buffer.from(await imgResp.arrayBuffer());
+    writeFileSync(cachePath, buf);
+    return true;
+  } catch { return false; }
+}
+
+async function fetchWallhavenWallpaper(): Promise<boolean> {
+  const cachePath = join(getCacheDir(), "wallpaper-haven.jpg");
+  const oneHour = 60 * 60 * 1000;
+  if (existsSync(cachePath) && Date.now() - statSync(cachePath).mtimeMs < oneHour) return true;
+  try {
+    const apiUrl = "https://wallhaven.cc/api/v1/search?categories=100&purity=100&topRange=1M&sorting=toplist&order=desc&page=3";
+    const resp = await fetch(apiUrl, { headers: { "User-Agent": "gc2xy/3.0" } });
+    if (!resp.ok) return false;
+    const d: any = await resp.json();
+    const data = d?.data;
+    if (!Array.isArray(data) || data.length === 0) return false;
+    const pick = data[Math.floor(Math.random() * data.length)];
+    const imgUrl = pick?.path;
+    if (!imgUrl) return false;
+    const imgResp = await fetch(imgUrl, { headers: { "User-Agent": "gc2xy/3.0" } });
+    if (!imgResp.ok) return false;
+    const buf = Buffer.from(await imgResp.arrayBuffer());
+    writeFileSync(cachePath, buf);
+    return true;
+  } catch { return false; }
+}
+
+async function ensureWallpaperCached(source: string): Promise<boolean> {
+  if (source === "bing") return fetchBingWallpaper();
+  if (source === "wallhaven") return fetchWallhavenWallpaper();
+  return false;
+}
+
+export function getWallpaperSource(): string { return _wallpaperSource; }
 
 // ZEN model fallback when API fetch fails
 const ZENITH_FALLBACK = [
@@ -358,6 +429,7 @@ function loadZenConfig() {
       if (c.provider) {
         _config = { ...(_config || {}), provider: c.provider };
       }
+      if (c.wallpaper) _wallpaperSource = c.wallpaper;
     }
   } catch {}
 }
@@ -374,6 +446,7 @@ function saveZenConfig() {
     existing.ZENITH_PASSWORD = _zenPassword;
     existing.TOKENS = _keys;
     if (_config?.provider) existing.provider = _config.provider;
+    existing.wallpaper = _wallpaperSource;
     writeFileSync(p, JSON.stringify(existing, null, 2));
   } catch {}
 }
@@ -568,6 +641,16 @@ export async function handleDashboard(req: HandlerInput): Promise<HandlerResult>
         body: Buffer.from(html),
       },
     };
+  }
+
+  // Serve cached wallpaper image
+  if (pathname === "/api/wallpaper" && method === "GET") {
+    const cachePath = join(getCacheDir(), _wallpaperSource === "bing" ? "wallpaper-bing.jpg" : _wallpaperSource === "wallhaven" ? "wallpaper-haven.jpg" : "");
+    if (cachePath && existsSync(cachePath)) {
+      const buf = readFileSync(cachePath);
+      return { handled: true, response: { statusCode: 200, headers: { "content-type": "image/jpeg", "cache-control": "public, max-age=3600", "connection": "close" }, body: buf } };
+    }
+    return { handled: true, response: { statusCode: 204, headers: { "connection": "close" }, body: Buffer.alloc(0) } };
   }
 
   // Single initial-load endpoint — returns full config + status snapshot

@@ -31,15 +31,24 @@ const WORKSPACE_FN = "def39973159c7f0483d8793a822b8dbb10d067e12c65455fcb4608459b
 function fullCookie(raw: string): string {
   if (!raw.includes("=")) return `oc_locale=en; auth=${raw}`;
   if (raw.includes(";")) return raw;
-  // Already has auth= prefix but no oc_locale
   if (raw.startsWith("auth=")) return `oc_locale=en; ${raw}`;
   return raw;
 }
 
 async function checkSession(text: string): Promise<void> {
-  if (text.includes("not associated with an account") || text.includes("auth/authorize") || text.includes("sign in")) {
+  if (text.includes("not associated with an account") || text.includes("/auth/authorize")) {
     throw new Error("session expired");
   }
+}
+
+function extractAllScripts(html: string): string {
+  const scripts: string[] = [];
+  const scriptRe = /<script[^>]*>([\s\S]*?)<\/script>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = scriptRe.exec(html)) !== null) {
+    scripts.push(match[1]);
+  }
+  return scripts.join("\n");
 }
 
 function extractWorkspacesFromServer(text: string): { id: string; name: string }[] {
@@ -50,35 +59,36 @@ function extractWorkspacesFromServer(text: string): { id: string; name: string }
     const b = block[0];
     const idMatch = b.match(/id\s*:\s*"(wrk_[^"]+)"/);
     const nameMatch = b.match(/name\s*:\s*"([^"]+)"/);
-    if (idMatch && nameMatch) names.set(idMatch[1], nameMatch[1]);
+    if (idMatch && nameMatch && !names.has(idMatch[1])) {
+      names.set(idMatch[1], nameMatch[1]);
+    }
   }
   return [...names.entries()].map(([id, name]) => ({ id, name }));
 }
 
-function extractUsageFromHtml(html: string): WorkspaceUsage {
+function extractUsageFromScripts(scripts: string): WorkspaceUsage {
   const result: WorkspaceUsage = { rollingUsage: null, weeklyUsage: null };
   const rRollRe = /rollingUsage:\$R\[\d+\]=\{status:"[^"]*",resetInSec:(\d+),usagePercent:([0-9.]+)\}/;
   const rWeekRe = /weeklyUsage:\$R\[\d+\]=\{status:"[^"]*",resetInSec:(\d+),usagePercent:([0-9.]+)\}/;
   const rMonthRe = /monthlyUsage:\$R\[\d+\]=\{status:"[^"]*",resetInSec:(\d+),usagePercent:([0-9.]+)\}/;
 
   let m: RegExpExecArray | null;
-  m = rRollRe.exec(html);
+  m = rRollRe.exec(scripts);
   if (m) result.rollingUsage = { usagePercent: parseFloat(m[2]), resetInSec: parseInt(m[1]) };
-  m = rWeekRe.exec(html);
+  m = rWeekRe.exec(scripts);
   if (m) result.weeklyUsage = { usagePercent: parseFloat(m[2]), resetInSec: parseInt(m[1]) };
-  m = rMonthRe.exec(html);
+  m = rMonthRe.exec(scripts);
   if (m) result.monthlyUsage = { usagePercent: parseFloat(m[2]), resetInSec: parseInt(m[1]) };
   return result;
 }
 
 export async function fetchWorkspaces(cookie: string): Promise<{ id: string; name: string }[]> {
-  const instanceId = `oc-ws-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const resp = await fetch("https://opencode.ai/_server?id=" + encodeURIComponent(WORKSPACE_FN), {
     method: "GET",
     headers: {
       Cookie: fullCookie(cookie),
       "X-Server-Id": WORKSPACE_FN,
-      "X-Server-Instance": instanceId,
+      "X-Server-Instance": `oc-ws-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       "User-Agent": UA,
       Origin: "https://opencode.ai",
       Referer: "https://opencode.ai/",
@@ -87,7 +97,24 @@ export async function fetchWorkspaces(cookie: string): Promise<{ id: string; nam
   });
   const text = await resp.text();
   await checkSession(text);
-  return extractWorkspacesFromServer(text);
+  const ws = extractWorkspacesFromServer(text);
+  if (ws.length > 0) {
+    console.log(`[WS] fetched ${ws.length} workspaces from _server`);
+    return ws;
+  }
+  const rootResp = await fetch("https://opencode.ai/", {
+    method: "GET",
+    headers: {
+      Cookie: fullCookie(cookie),
+      "User-Agent": UA,
+      Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    },
+  });
+  const rootText = await rootResp.text();
+  await checkSession(rootText);
+  const rootWs = extractWorkspacesFromServer(extractAllScripts(rootText));
+  console.log(`[WS] _server returned 0, root page returned ${rootWs.length}`);
+  return rootWs;
 }
 
 export async function fetchWorkspaceUsage(cookie: string, workspaceId: string): Promise<WorkspaceUsage> {
@@ -100,7 +127,15 @@ export async function fetchWorkspaceUsage(cookie: string, workspaceId: string): 
   });
   const text = await resp.text();
   await checkSession(text);
-  return extractUsageFromHtml(text);
+  const scripts = extractAllScripts(text);
+  const usage = extractUsageFromScripts(scripts);
+  const hasData = usage.rollingUsage !== null || usage.weeklyUsage !== null || usage.monthlyUsage !== null;
+  console.log(`[WS USAGE] ${workspaceId}: ${hasData ? `roll=${usage.rollingUsage?.usagePercent}% week=${usage.weeklyUsage?.usagePercent}% month=${usage.monthlyUsage?.usagePercent}%` : "no data found"}`);
+  if (hasData) return usage;
+  const rawUsage = extractUsageFromScripts(text);
+  const hasRaw = rawUsage.rollingUsage !== null || rawUsage.weeklyUsage !== null || rawUsage.monthlyUsage !== null;
+  console.log(`[WS USAGE] ${workspaceId} fallback raw: ${hasRaw ? "found" : "none"}`);
+  return rawUsage;
 }
 
 export async function getWorkspaceDataForKey(key: string, keyName: string, cookie: string): Promise<KeyWorkspaceData> {
@@ -113,7 +148,7 @@ export async function getWorkspaceDataForKey(key: string, keyName: string, cooki
     if (!workspaces || workspaces.length === 0) { data.error = "no workspaces found"; return data; }
     data.workspaces = await Promise.all(workspaces.map(async (ws) => {
       let usage: WorkspaceUsage;
-      try { usage = await fetchWorkspaceUsage(cookie, ws.id); } catch { usage = { rollingUsage: null, weeklyUsage: null }; }
+      try { usage = await fetchWorkspaceUsage(cookie, ws.id); } catch (e: any) { usage = { rollingUsage: null, weeklyUsage: null }; }
       return { ...ws, usage, fetchedAt: Date.now() };
     }));
   } catch (e: any) { data.error = e?.message || "unknown error"; }

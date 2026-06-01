@@ -275,6 +275,17 @@
                   <label class="btn btn-outline-action" for="prov-zen">ZEN</label>
                 </div>
               </div>
+              <div class="mb-3">
+                <label class="form-label">Wallpaper</label>
+                <div class="btn-group w-100" role="group" id="wallpaperGroup">
+                  <input type="radio" class="btn-check" name="wallpaper" id="wp-none" value="none" autocomplete="off" checked>
+                  <label class="btn btn-outline-action" for="wp-none">None</label>
+                  <input type="radio" class="btn-check" name="wallpaper" id="wp-bing" value="bing" autocomplete="off">
+                  <label class="btn btn-outline-action" for="wp-bing">Bing</label>
+                  <input type="radio" class="btn-check" name="wallpaper" id="wp-wallhaven" value="wallhaven" autocomplete="off">
+                  <label class="btn btn-outline-action" for="wp-wallhaven">Wallhaven</label>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -295,6 +306,15 @@
           <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
         </div>
         <div class="modal-body">
+          <div class="mb-3" id="providerCookieRow">
+            <label class="form-label">Provider Cookie <span id="providerCookieLabel" style="font-size:10px;color:rgba(255,255,255,0.5)">(opencode)</span></label>
+            <div class="d-flex gap-2">
+              <input type="text" class="form-control form-control-sm" id="providerCookieInput" placeholder="auth=Fe26.2*...">
+              <button class="btn btn-sm btn-outline-action" onclick="saveProviderCookie()" style="font-size:11px;white-space:nowrap">Save</button>
+              <button class="btn btn-sm btn-outline-action" onclick="clearProviderCookie()" style="font-size:11px;white-space:nowrap">Clear</button>
+            </div>
+          </div>
+          <hr style="border-color:rgba(255,255,255,0.1)">
           <div id="keysList"></div>
           <hr style="border-color:rgba(255,255,255,0.1)">
           <div class="mb-3">
@@ -471,7 +491,11 @@
       ws.onopen = () => {
         setStatusOnline();
         if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
-        wsSend('getBingBg');
+        const wallpaper = localStorage.getItem('gc2xy_wallpaper') || 'none';
+        wsSend('getBingBg', { source: wallpaper });
+        const prov = getProvider();
+        if (prov === 'zen') wsSend('getZenStats');
+        else wsSend('getWorkspaceUsage');
       };
 
       ws.onmessage = (event) => {
@@ -508,9 +532,11 @@
             renderWorkspaceUsage(_lastWsUsageData);
           }
           break;
-        case 'bingBg':
-          if (msg.data.url) {
-            document.body.style.background = 'url("' + msg.data.url + '") center/cover no-repeat fixed';
+        case 'wallpaperUrl':
+          if (msg.data.source === 'none') {
+            document.body.style.background = 'black';
+          } else {
+            document.body.style.background = 'url("/api/wallpaper?t=' + Date.now() + '") center/cover no-repeat fixed';
             document.body.style.backgroundSize = 'cover';
           }
           break;
@@ -526,6 +552,8 @@
       if (data.models) { models = data.models; renderModels(); }
       if (data.keys) applyKeys(data.keys);
       if (data.health) applyHealth(data.health);
+      if (data.sessionCookie) _sessionCookies = data.sessionCookie;
+      if (data.wallpaper) { applyWallpaper(data.wallpaper); }
     }
 
     function applyPatch(data) {
@@ -533,6 +561,14 @@
       if (data.models) { models = data.models; renderModels(); }
       if (data.keys) applyKeys(data.keys);
       if (data.health) applyHealth(data.health);
+      if (data.sessionCookie) Object.assign(_sessionCookies, data.sessionCookie);
+      if (data.wallpaper) { applyWallpaper(data.wallpaper); }
+    }
+
+    function applyWallpaper(source) {
+      const radio = document.querySelector('.btn-check[name="wallpaper"][value="' + source + '"]');
+      if (radio) radio.checked = true;
+      localStorage.setItem('gc2xy_wallpaper', source);
     }
 
     function applyStatus(s) {
@@ -645,9 +681,46 @@
     // ── Keys Management ──
     function addCurrentProviderKey() { openKeysModal(); }
 
+    let _providerCookie = '';
+    let _sessionCookies = { opencode: '', zen: '', opencodeFull: '', zenFull: '' };
+
+    function saveProviderCookie() {
+      const val = document.getElementById('providerCookieInput').value.trim();
+      if (!val) return;
+      _providerCookie = val;
+      const provider = getProvider();
+      if (provider === 'zen') {
+        let cookie = val;
+        if (cookie.startsWith('zs=')) cookie = cookie.substring(3);
+        wsSend('setZenSession', { sessionCookie: cookie });
+      } else {
+        let cookie = val;
+        if (cookie.startsWith('auth=')) cookie = cookie.substring(5);
+        if (cookie.startsWith('__session=')) cookie = cookie.substring(10);
+        wsSend('setOcSession', { sessionCookie: cookie });
+        setTimeout(() => wsSend('getWorkspaceUsage'), 500);
+      }
+      document.getElementById('providerCookieInput').value = '';
+      showToast('Provider cookie saved', 'success');
+    }
+
+    function clearProviderCookie() {
+      _providerCookie = '';
+      const provider = getProvider();
+      if (provider === 'zen') wsSend('clearZenSession', {});
+      else { wsSend('clearOcSession', {}); }
+      document.getElementById('providerCookieInput').value = '';
+      showToast('Provider cookie cleared', 'success');
+    }
+
     async function openKeysModal() {
       const provider = getProvider();
       document.getElementById('keysModalTitle').textContent = provider === 'zen' ? 'ZEN Keys' : 'OpenCode Keys';
+      document.getElementById('providerCookieLabel').textContent = '(' + provider + ')';
+      const existingCookie = provider === 'zen' ? _sessionCookies.zenFull : _sessionCookies.opencodeFull;
+      const input = document.getElementById('providerCookieInput');
+      input.placeholder = provider === 'zen' ? 'zs=...' : 'auth=Fe26.2*...';
+      input.value = existingCookie || '';
       const sessionRow = document.getElementById('newKeySession');
       sessionRow.style.display = '';
       sessionRow.placeholder = provider === 'zen' ? 'Session cookie (zs=...)' : 'OpenCode session cookie';
@@ -746,9 +819,12 @@
     function renderWorkspaceUsage(data) {
       const container = document.getElementById('workspaceUsageContainer');
       const countBadge = document.getElementById('wsUsageCount');
+      const qEl = document.getElementById('quotaDisplay');
       if (!data || data.length === 0) {
         container.innerHTML = '<div class="text-center py-4"><i class="bi bi-bar-chart" style="font-size:2rem;color:rgba(255,255,255,0.4)"></i><p class="mt-2 text-muted">No workspace data.</p></div>';
         countBadge.textContent = '0 keys';
+        qEl.textContent = 'n/a';
+        qEl.title = '';
         return;
       }
       const totalWorkspaces = data.reduce((s, k) => s + (k.workspaces?.length || 0), 0);
@@ -778,6 +854,24 @@
         if (!wsHtml) return '';
         return '<div class="pool-card"><div class="pool-header"><div class="pool-name">' + escapeHtml(kd.keyName || kd.keyPrefix || 'Key') + '</div><div class="pool-status' + (kd.error ? ' status-offline' : ' status-online') + '">' + (kd.error ? 'Error' : 'Connected') + '</div></div><div style="font-size:9px;color:rgba(255,255,255,0.4);margin-bottom:4px">' + escapeHtml(kd.keyPrefix || '') + (kd.error ? ' \u00b7 <span style="color:#dc3545">' + escapeHtml(kd.error) + '</span>' : '') + '</div>' + wsHtml + '</div>';
       }).filter(h => h).join('');
+      let sumUsage = 0, totalWs = 0;
+      for (const kd of data) {
+        for (const ws of (kd.workspaces || [])) {
+          const mPct = (ws.usage?.monthlyUsage?.usagePercent);
+          if (mPct !== null && mPct !== undefined) {
+            sumUsage += mPct;
+            totalWs++;
+          }
+        }
+      }
+      if (totalWs > 0) {
+        const remainingPct = Math.max(0, 100 - sumUsage / totalWs);
+        qEl.textContent = remainingPct.toFixed(0) + '%';
+        qEl.title = remainingPct.toFixed(1) + '% remaining \u00b7 avg ' + (sumUsage / totalWs).toFixed(0) + '% used across ' + totalWs + ' workspaces';
+      } else {
+        qEl.textContent = '0%';
+        qEl.title = '';
+      }
     }
 
     function usageBarColor(pct) {
@@ -856,7 +950,12 @@
       loadInitialData().then(() => {
         connectWs();
         initLiquidGlass();
-        setTimeout(() => window.dispatchEvent(new Event('resize')), 1000);
+        setTimeout(() => {
+          const prov = getProvider();
+          if (prov === 'zen') wsSend('getZenStats');
+          else wsSend('getWorkspaceUsage');
+          window.dispatchEvent(new Event('resize'));
+        }, 500);
         setTimeout(() => window.dispatchEvent(new Event('resize')), 3000);
       });
 
@@ -867,6 +966,14 @@
       document.getElementById('modeGroup').addEventListener('change', function(e) {
         if (e.target.matches('.btn-check')) {
           wsSend('setMode', { mode: e.target.value });
+        }
+      });
+
+      document.getElementById('wallpaperGroup').addEventListener('change', function(e) {
+        if (e.target.matches('.btn-check')) {
+          const source = e.target.value;
+          localStorage.setItem('gc2xy_wallpaper', source);
+          wsSend('setWallpaper', { source });
         }
       });
 

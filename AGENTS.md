@@ -74,7 +74,7 @@ sc failure w3svc reset= 86400 actions= restart/5000/restart/10000/restart/30000
 | `handlers/auth-handler.ts` | All auth endpoints: device login, OAuth PKCE, user info, copilot user/token, CORS preflight (individual/free responses) |
 | `llm-bridge` (npm) | External library for Anthropic↔OpenAI translation (`anthropicToUniversal`, `universalToOpenAI`, streaming parsers/emitters) |
 | `handlers/opencode-client.ts` | Core LLM forwarding client: API key balancer, model init, tool normalization, **forwards all request params upstream** (no whitelist) |
-| `opencode-workspace.ts` | Workspace usage fetcher: extracts workspace IDs + rolling/weekly/monthly usage from opencode.ai `/go` page HTML `$R` data |
+| `opencode-workspace.ts` | Workspace usage fetcher: fetches root page `/` and each workspace `/go` page, parses ALL `<script>` blocks for `$R` embedded data (workspace IDs + rolling/weekly/monthly usage). Falls back to `_server` RPC API if root page extraction fails. |
 | `handlers/copilot-handler.ts` | All Copilot API routes: sessions, messages, MCP, models, completions, embeddings, tokenize (non-VS/non-GHCP) |
 | `handlers/vs/handler.ts` | Visual Studio chat endpoints: `/v1/messages`, `/responses`, `/chat/completions` |
 | `handlers/vs/auth.ts` | Visual Studio enterprise auth: copilot user, token, content exclusion |
@@ -94,7 +94,7 @@ sc failure w3svc reset= 86400 actions= restart/5000/restart/10000/restart/30000
 | `.proxy-logs/` | Daily traffic log files with JSON entries + `bodyPreview` (first 1000 chars) |
 | `.cache/` | Auto-populated cache files from proxy mode, keyed by `<method>_<host>_<path>.json` |
 | `.config/config.json` | ZEN token pool + OpenCode session persistence (tokens, session cookies, credentials) |
-| `opencode-workspace.ts` | Workspace usage tracker: fetches workspaces + per-workspace rolling/weekly/monthly Go quota from opencode.ai `/go` page |
+| `opencode-workspace.ts` | Workspace usage fetcher: fetches root page `/` and each workspace `/go`/`/workspace/{id}` page, extracts ALL `<script>` blocks for embedded `$R` workspace IDs + rolling/weekly/monthly usage. Falls back to `_server` RPC API. |
 | `prototype/` | Analysis artifacts, extracted response structures, User-Agent breakdowns |
 
 ## Architecture: Interceptor Flow
@@ -353,7 +353,7 @@ A web-based dashboard is available at `http://github.com/dashboard` (or `http://
 - **Right (col-lg-4)**: API Key / ZEN Token Pool (pool cards with status badge), Quick Actions, Environment, Proxy Configuration
 
 ### Status Header
-Replicates the TUI status bar with real-time values: mode (MOCK/HYBRID/PROXY), LReq (local proxy request count), TPS, active keys (active/total), models (enabled/total), **Quota** (combined workspace usage % for OpenCode / cost% for ZEN), provider. All inline in the header card with a dark `card-header` background. In OpenCode mode, Quota shows the max rolling usage % across all workspaces. In ZEN mode, Quota shows cost/(cost+balance) %. Updates every 5 seconds.
+Replicates the TUI status bar with real-time values: mode (MOCK/HYBRID/PROXY), LReq (local proxy request count), TPS, active keys (active/total), models (enabled/total), **Quota** (combined workspace usage % for OpenCode / cost% for ZEN), provider. All inline in the header card with a dark `card-header` background. In OpenCode mode, Quota shows **remaining** monthly capacity as a percentage (100 - avg(usage%) across all workspaces). In ZEN mode, Quota shows cost/(cost+balance) %. Updates every 2s via WS.
 
 ### Provider Selector
 Horizontal radio button group:
@@ -396,8 +396,21 @@ All cards (keys, config, models, actions, env) collapse with chevron toggle icon
 ### Restart
 Shows yellow pulsing "Reconnecting..." while polling `/api/status` every 2s. Requires two consecutive successful responses before declaring online (prevents premature "Online" during initialization).
 
-### Bing Background
-Fetches daily Bing wallpaper via `https://www.bing.com/HPImageArchive.aspx` at startup.
+### Wallpaper Switcher
+
+The dashboard Proxy Configuration section includes a **Wallpaper** radio group with three options:
+- **None** — plain black background
+- **Bing** — daily Bing wallpaper, cached to `.cache/wallpaper-bing.jpg`
+- **Wallhaven** — random SFW wallpaper from Wallhaven's monthly top list (page 3), cached to `.cache/wallpaper-haven.jpg`
+
+Wallpapers are fetched on-demand when the WebSocket connects and cached for **1 hour**. The client uses `/api/wallpaper` HTTP endpoint to serve the cached image. Wallhaven uses the API at `https://wallhaven.cc/api/v1/search?categories=100&purity=100&topRange=1M&sorting=toplist&order=desc&page=3` and picks a random result.
+
+The wallpaper source is stored in `localStorage` (`gc2xy_wallpaper`) and in `.config/config.json` (`wallpaper` field). On initial snapshot load, the radio button is auto-selected.
+
+| WS Action | Purpose |
+|-----------|---------|
+| `setWallpaper` | Set wallpaper source, cache the image, push URL to client |
+| `getBingBg` | Get current wallpaper (legacy name, works for all sources) |
 
 ### API Endpoints
 
@@ -412,7 +425,7 @@ Fetches daily Bing wallpaper via `https://www.bing.com/HPImageArchive.aspx` at s
 | `/api/zen/login` | GET/POST/DELETE | ZEN session cookie management + OAuth URLs |
 | `/api/zenith/requests` | GET | ZEN dashboard aggregate stats (requests, tokens, cost, balance) |
 | `/api/restart` | POST | Trigger restart (exit code 42, picks up code changes) |
-| `/api/bg` | GET | Fetch Bing daily wallpaper URL |
+| `/api/wallpaper` | GET | Serve cached wallpaper image (Bing or Wallhaven) |
 | `/health` | GET | Health check (status, version, cwd, platform, runtime, hasValidKey) |
 | `/api/opencode/workspace-usage` | GET | Per-key OpenCode workspace usage (rolling/weekly/monthly %) |
 | `/api/opencode/debug` | GET | Debug session state (cookie prefixes, key sessions, cache state) |
