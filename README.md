@@ -1,6 +1,6 @@
 # gc2xy — MITM Debug Proxy with Copilot Auth Bypass + ZEN
 
-System-wide HTTPS interception proxy for `github.com` and Copilot subdomains. Decrypts traffic, fakes GitHub/Copilot API responses to bypass authentication. Supports **dual upstream providers**: [opencode.ai](https://opencode.ai) and [ZEN (zenllm.org)](https://zenllm.org).
+System-wide HTTPS interception proxy for `github.com` and Copilot subdomains. Decrypts traffic, fakes GitHub/Copilot API responses to bypass authentication. Supports **4 upstream model providers**: [opencode.ai](https://opencode.ai), [Pollinations](https://pollinations.ai), [FREE-BUFF-PROXY](https://github.com/notBlubbll/FREE-BUFF-PROXY), and [Agnes AI](https://agnes-ai.com).
 
 ## Quick Start
 
@@ -39,7 +39,7 @@ start.cmd                   # Shorthand — prompts for mode then calls !ACTIVAT
 2. **TLS server on port 443** (or **IIS reverse proxy** on port 3080 when IIS detected): Intercepts HTTPS
 3. **HTTP server on port 80** (or configurable HTTP port): Intercepts plain HTTP
 4. **Interceptor chain**: Dashboard → Cache → VSAuth → Auth → Repo → GHCP → VS → Copilot → Catch-all → Upstream proxy
-5. **Chat completions** forward to **opencode.ai** or **ZEN (zenllm.org)** models via the LLM client, depending on selected provider
+5. **Chat completions** forward to one of 5 upstream providers via the LLM client, based on model ID prefix and active provider toggles
 
 ## Operation Modes
 
@@ -95,6 +95,7 @@ sc failure w3svc reset= 86400 actions= restart/5000/restart/10000/restart/30000
 | `IIS_PROXY` | — | Set to `"1"` to enable IIS reverse proxy mode (HTTP only, no TLS server). Auto-set when W3SVC detected. |
 | `gc2xy_HTTP_PORT` | `3080` (IIS) / `80` | Port for HTTP intercept server. |
 | `gc2xy_HTTPS_PORT` | `443` | Port for HTTPS/TLS intercept server. |
+| `gc2xy_WS_PORT` | `3441` | Port for dashboard WebSocket server. |
 | `OPENCODE_API_KEYS` | — | JSON array of opencode.ai API keys |
 | `OPENCODE_API_KEY` | — | Single opencode.ai API key (alternative) |
 | `ZENITH_API_KEY` | — | ZEN API key (`sk-zenith-...`) from zenllm.org |
@@ -137,17 +138,32 @@ sc failure w3svc reset= 86400 actions= restart/5000/restart/10000/restart/30000
 | **VS Team Explorer** | `user-agent: VSTeamExplorer-GitHub/*` | Enterprise |
 | **Browser** | `accept: text/html` | Individual/Free |
 
+## VS Model List
+
+The proxy serves a fake model list at `/models` for Visual Studio's Copilot Chat, matching the real GitHub API format:
+
+- **Billing**: Premium models use `multiplier` (derived from context length). Free models (poll, freebuff, agnes) use `token_prices` with zero prices matching GitHub's real format.
+- **`model_picker_price_category`**: Top-level field with values `"high"` (premium), `"medium"` (mid-tier), `"low"` (free). Visual Studio uses this for pricing tier display in the model picker.
+- **`policy.state`**: All fake models return `"enabled"` so VS doesn't grey them out.
+- **Category separators**: Fake `cat_*` model entries are inserted between provider groups (OpenCode Go, Pollinations.ai, FreeBuff, AgnesAI) to visually separate the picker dropdown. These are structural clones of real models (same `vendor`, `version`, `capabilities`, `billing`) — only `id` and `name` differ. When selected, VS returns "This is a [name] category. Please choose a model from it."
+- **Config filtering**: Model lists in `vs/models.ts` and `copilot-handler.ts` both read `.config/config.json` to filter by active `providers` and `disabledModels`. Inactive providers' models and manually-disabled models are excluded from the response.
+- **Endpoints**: `/models`, `/v1/models` (GET). The handler checks `isVisualStudio` via `editor-version` header before serving the VS-specific list.
+
 ## Web Dashboard
 
-Available at `http://github.com/dashboard`. Built with **Bootstrap 5.3** + liquid glass UI (SVG displacement maps, Snell's law refraction).
+Available at `http://github.com/dashboard`. Built with **Bootstrap 5.3** + liquid glass UI (SVG displacement maps, Snell's law refraction). All data pushes via **WebSocket** to `ws://127.0.0.1:3441/ws` (piped through `wss://host/ws` from TLS handler) — no polling, changes delivered as deltas only.
 
-- **Header bar**: Mode (Mock/Hybrid/Proxy), LReq (local proxy requests), TPS, Keys, Models (enabled/total), Requests (ZEN), Tokens (ZEN), Used (ZEN — % + $ cost, remaining balance on hover), Provider (OpenCode/ZEN)
+- **Header bar**: Mode (Mock/Hybrid/Proxy), LReq (local proxy requests), TPS, Keys, Models (enabled/total), Quota (OpenCode workspace % / ZEN cost%), Provider — all via WebSocket push, updates only on change
 - **Left column (col-lg-8)**: Model tiles grouped by normalized family from `models.dev/api.json` (e.g. `deepseek`, `minimax`, `qwen`, `mimo`), 💡 prefix + ID display
-- **Right column (col-lg-4)**: API Key token pool (OpenCode keys with VALID badge / ZEN pool with session status), Quick Actions, Environment, Proxy Configuration (mode + provider radio buttons)
+- **Right column (col-lg-4)**: API Key token pool (OpenCode keys with VALID badge / ZEN pool with session status), Quick Actions, Environment, Proxy Configuration (mode + provider toggles)
 - **ZEN integration**: Requests, Tokens, Used inline in top bar (formatted K/M), fetched from `api.zenllm.org/api/dashboard` via two-tier auth — session cookie (`zs=<jwt>`) first, Bearer token (`Authorization: Bearer sk-zenith-...`) fallback. Shows `n/a` when provider is OpenCode, `Loading...` when ZEN selected but not logged in. ZEN token pool with inline CRUD management modal (add/edit/delete keys, session cookies). `sk-zenith-*` tokens auto-detected as ZEN provider regardless of saved `provider` field.
-- **Provider selector**: Radio button group — OpenCode (routes through opencode.ai) or ZEN (routes through zenllm.org). Switching provider changes the key management section and model list.
-- **Collapsible cards**, restart with reconnecting polling
-- **Wallpaper switcher** in Proxy Configuration: None / Bing (daily wallpaper, cached to `.cache/wallpaper-bing.jpg`) / Wallhaven (random SFW from monthly top list, cached to `.cache/wallpaper-haven.jpg`). Wallhaven uses the API at `https://wallhaven.cc/api/v1/search?categories=100&purity=100&topRange=1M&sorting=toplist&order=desc&page=3`. Both cache for 1 hour. Selection persisted in `localStorage` and `.config/config.json`.
+- **Provider toggles**: Checkbox toggles for each provider (OC-GO, FREEBUFF, AGNES). Multiple providers can be active simultaneously. Selecting FREEBUFF reveals URL/API key config rows. Active providers persisted to `.config/config.json` as an array. **AGNES auto-activates** when a key is saved — no need to manually check the AGNES checkbox.
+- **Collapsible cards**, reconnect on WS disconnection
+- **Wallpaper switcher** in Proxy Configuration: None / Bing (daily wallpaper) / Wallhaven (random SFW from monthly top list) / AI (Agnes image generation, requires Agnes API key). All cached for 1 hour. Selection persisted in `localStorage` and `.config/config.json` (`wallpaper` field).
+  - **AI wallpaper** calls `https://apihub.agnes-ai.com/v1/images/generations` with `model: agnes-image-2.1-flash` and the saved prompt, then downloads the returned image from `platform-outputs.agnes-ai.space`.
+  - The Agnes CDN uses a self-signed cert, so the download uses `node:https` with `rejectUnauthorized: false`.
+  - **Bing fallback**: if the CDN download fails for any reason (corporate proxy block, Cloudflare WAF 403, cert error, network), the proxy automatically fetches the daily Bing wallpaper and copies it to the `ai-paper.jpg` slot, then pushes a `wallpaperFallback` WS message that the client shows as a warning toast ("Agnes CDN blocked, using Bing wallpaper"). The user still gets a wallpaper even when the Agnes CDN is unreachable.
+  - **Real Agnes errors** (auth, rate limit, no key) still show a red error toast and no wallpaper — those are not silently replaced.
 
 ## Console Dashboard
 

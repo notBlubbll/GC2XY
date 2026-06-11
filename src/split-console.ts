@@ -75,6 +75,7 @@ let _debugOn = false;
 let _recording = false;
 let _showModels = true;
 let _modelIds: string[] = [];
+let _enabledModelIds: Set<string> = new Set();
 let _cmdHandler: ((cmd: string) => void) | null = null;
 let _origLog: typeof console.log | null = null;
 
@@ -242,10 +243,9 @@ export function reqLog(opts: {
     const completedMsg = `${prefix}${trail} ${G}→${R} [${elapsed}ms]`;
     if (bufIdx < _buffer.length) {
       _buffer[bufIdx] = { text: completedMsg, debug: false, ts: ts() };
-      _redraw();
-    } else {
-      _pushLog(completedMsg, false);
     }
+    _scrollOffset = 0;
+    _redraw();
   };
 }
 
@@ -340,14 +340,30 @@ function buildStatusLines(width: number): string[] {
   const blankLeft = " ".repeat(logoPad);
   let modelRows: string[] = [];
   if (_modelIds.length > 0) {
-    const gray = (s: string) => `${LG}${s}${R}`;
-    const free = _modelIds.filter(m => m.startsWith("pol/")).map(gray);
-    const premium = _modelIds.filter(m => !m.startsWith("pol/")).map(gray);
-    const freeRows = _wrapList(free, rightWidth, ", ");
+    const colorModel = (s: string) => _enabledModelIds.has(s) ? `${LIME}${s}${R}` : `${LG}${s}${R}`;
+    const isOther = (m: string) => m.startsWith("codestral/") || m.startsWith("bitnet/") || m === "bitnet-demo";
+    const poll = _modelIds.filter(m => m.startsWith("pol/")).map(colorModel);
+    const freebuff = _modelIds.filter(m => m.startsWith("freebuff/")).map(colorModel);
+    const featherless = _modelIds.filter(m => m.startsWith("featherless/") && _enabledModelIds.has(m)).map(colorModel);
+    const other = _modelIds.filter(m => isOther(m)).map(colorModel);
+    const premium = _modelIds.filter(m => !m.startsWith("pol/") && !m.startsWith("freebuff/") && !m.startsWith("featherless/") && !isOther(m)).map(colorModel);
+    const pollRows = _wrapList(poll, rightWidth, ", ");
+    const fbRows = _wrapList(freebuff, rightWidth, ", ");
+    const flRows = _wrapList(featherless, rightWidth, ", ");
+    const otherRows = _wrapList(other, rightWidth, ", ");
     const premRows = _wrapList(premium, rightWidth, ", ");
-    modelRows = freeRows.map((r, i) => i === 0 ? `${Y}Free:${R}${LG} ${r}${R}` : `${LG}${r}${R}`);
+    modelRows = pollRows.map((r, i) => i === 0 ? `${Y}POLL:${R}${LG} ${r}${R}` : `${LG}${r}${R}`);
+    if (fbRows.length > 0) {
+      modelRows = modelRows.concat(fbRows.map((r, i) => i === 0 ? `${Y}FREEBUFF:${R}${LG} ${r}${R}` : `${LG}${r}${R}`));
+    }
+    if (flRows.length > 0) {
+      modelRows = modelRows.concat(flRows.map((r, i) => i === 0 ? `${M}FEATHERLESS:${R}${LG} ${r}${R}` : `${LG}${r}${R}`));
+    }
     if (premRows.length > 0) {
-      modelRows = modelRows.concat(premRows.map((r, i) => i === 0 ? `${M}Premium:${R}${LG} ${r}${R}` : `${LG}${r}${R}`));
+      modelRows = modelRows.concat(premRows.map((r, i) => i === 0 ? `${M}OC-GO:${R}${LG} ${r}${R}` : `${LG}${r}${R}`));
+    }
+    if (otherRows.length > 0) {
+      modelRows = modelRows.concat(otherRows.map((r, i) => i === 0 ? `${M}OTHER:${R}${LG} ${r}${R}` : `${LG}${r}${R}`));
     }
   } else {
     modelRows = ["", `${LG}loading models...${R}`, ""];
@@ -447,6 +463,18 @@ export function setRecording(on: boolean): void {
 export function setModelsList(ids: string[]): void {
   _modelIds = ids;
   if (_initialized) _redraw();
+}
+
+export function setEnabledModelIds(ids: Set<string>): void {
+  if (_setsEqual(_enabledModelIds, ids)) return;
+  _enabledModelIds = ids;
+  if (_initialized) _redraw();
+}
+
+function _setsEqual(a: Set<string>, b: Set<string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const x of a) if (!b.has(x)) return false;
+  return true;
 }
 
 export function onCommand(fn: (cmd: string) => void): void {
@@ -563,7 +591,7 @@ function _onKey(buf: Buffer): void {
   // 3 = switch to PROXY mode
   if (s === "3") {
     _pushLog(`${M}SWITCH${R} → PROXY mode`, false);
-    _emitCmd("switch:PROXY");
+    _emitCmd("switch:proxy");
     return;
   }
   // M = model refresh

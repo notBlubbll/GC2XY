@@ -2,7 +2,7 @@
 import { createServer as createTlsServer, TLSSocket } from "node:tls";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
-import { generateKeyPairSync, createPrivateKey, createPublicKey } from "node:crypto";
+import { generateKeyPairSync, createPrivateKey, createPublicKey, createHash } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, createWriteStream, appendFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
@@ -13,8 +13,8 @@ import * as deviceLogin from "./handlers/device-login-emulator.ts";
 import * as offlineStore from "./offline-store.ts";
 import * as splitConsole from "./split-console.ts";
 import { ts, agentTag, agentName, colorMethod, colorStatus, httpLogLine, generalLogLine, getTps, isDebug } from "./split-console.ts";
-import { getProjectRoot, getMode, setMode, isProxy, isHybrid, isMock } from "./shared.ts";
-import { initModels } from "./handlers/opencode-client.ts";
+import { getProjectRoot, getMode, setMode, isProxy, isHybrid, isMock, killPortProcess } from "./shared.ts";
+import { addModels } from "./models.ts";
 import { handleDashboard, incrementRequests as dashIncReq, createWsServer, startWsPushLoop } from "./handlers/dashboard-handler.ts";
 
 // Real IP cache to bypass hosts file for non-intercepted requests
@@ -229,6 +229,60 @@ function initCA() {
   }
 
   installCACert();
+
+  // IIS mode: bind our intercept cert to http.sys port 443
+  if (IIS_PROXY) {
+    try {
+      const certInfo = getInterceptCert();
+      const cert = forge.pki.certificateFromPem(certInfo.cert.toString());
+      const thumbprint = getCertThumbprint(cert);
+
+      // Export to PFX with cert + key (no CA chain — netsh binding needs clean PFX)
+      const pfxPath = join(CERT_DIR, "intercept.pfx");
+      const key = forge.pki.privateKeyFromPem(certInfo.key.toString());
+      const p12Asn1 = forge.pkcs12.toPkcs12Asn1(key, [cert], "", { algorithm: "3des" });
+      writeFileSync(pfxPath, Buffer.from(forge.asn1.toDer(p12Asn1).getBytes(), "binary"));
+      log("INFO", `Intercept cert thumbprint: ${thumbprint}`);
+
+      // Import PFX to LocalMachine\My via PowerShell (certutil defaults to CurrentUser)
+      const psImport = `$pfx=[IO.File]::ReadAllBytes('${pfxPath.replace(/\\/g, "\\\\")}');` +
+        `$p=New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($pfx,'',[System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]0);` +
+        `$s=New-Object System.Security.Cryptography.X509Certificates.X509Store('My','LocalMachine');` +
+        `$s.Open('ReadWrite');$s.Add($p);$s.Close();Write-Host "imported $($p.Thumbprint)"`;
+      const imp = spawnSync("powershell", ["-NoProfile", "-Command", psImport], { encoding: "utf8", timeout: 15000 });
+      const impOut = (imp.stdout || "").trim();
+      log("INFO", `PS import: status=${imp.status} ${impOut}`);
+      if (!impOut.includes(thumbprint)) {
+        const impErr = (imp.stderr || "").trim();
+        log("WARN", `PS import failed: ${impErr}`);
+      }
+
+      // Delete stale hostname-specific SSL bindings (from old iis-setup.cmd)
+      for (const h of ["github.com", "www.github.com", "api.github.com", "api.githubcopilot.com",
+        "copilot-proxy.githubusercontent.com", "api.individual.githubcopilot.com",
+        "origin-tracker.individual.githubcopilot.com", "proxy.individual.githubcopilot.com",
+        "telemetry.individual.githubcopilot.com"]) {
+        spawnSync("netsh", ["http", "delete", "sslcert", `hostnameport=${h}:443`], { stdio: "ignore", timeout: 3000 });
+      }
+      // Delete any IP-based bindings
+      spawnSync("netsh", ["http", "delete", "sslcert", "ipport=0.0.0.0:443"], { stdio: "ignore", timeout: 5000 });
+      spawnSync("netsh", ["http", "delete", "sslcert", "ipport=[::]:443"], { stdio: "ignore", timeout: 5000 });
+
+      // Bind to both IPv4 and IPv6 port 443
+      const r4 = spawnSync("netsh", ["http", "add", "sslcert", "ipport=0.0.0.0:443", `certhash=${thumbprint}`, "certstorename=MY", "appid={4dc3e181-e14b-4a21-b022-59fc669b0914}"], { encoding: "utf8", timeout: 10000 });
+      log("INFO", `netsh 0.0.0.0:443: ${r4.status === 0 ? "OK" : (r4.stderr || r4.stdout || "").trim()}`);
+
+      const r6 = spawnSync("netsh", ["http", "add", "sslcert", "ipport=[::]:443", `certhash=${thumbprint}`, "certstorename=MY", "appid={4dc3e181-e14b-4a21-b022-59fc669b0914}"], { encoding: "utf8", timeout: 10000 });
+      log("INFO", `netsh [::]:443: ${r6.status === 0 ? "OK" : (r6.stderr || r6.stdout || "").trim()}`);
+
+      // Verify binding
+      const verify = spawnSync("netsh", ["http", "show", "sslcert"], { encoding: "utf8", timeout: 5000 });
+      const hasBind = (verify.stdout || "").includes(thumbprint);
+      log("INFO", `Binding verified: ${hasBind ? "YES" : "NO - binding not found!"}`);
+    } catch (e) {
+      log("WARN", `IIS cert binding error: ${(e as Error).message}`);
+    }
+  }
 }
 
 // Cert cache
@@ -369,6 +423,23 @@ function getInterceptCert() {
   return ctx;
 }
 
+// Serialize response headers, emitting one line per value for array headers
+// (Set-Cookie comes from Node as string[] and must NOT be joined with commas —
+// expires=... values contain commas, which corrupts the header.)
+function serializeHeaders(headers: Record<string, any>, skip?: string[]): string {
+  let out = "";
+  const skipSet = skip ? new Set(skip.map(s => s.toLowerCase())) : null;
+  for (const [key, value] of Object.entries(headers)) {
+    if (skipSet && skipSet.has(key.toLowerCase())) continue;
+    if (Array.isArray(value)) {
+      for (const v of value) out += `${key}: ${v}\r\n`;
+    } else if (value !== undefined && value !== null) {
+      out += `${key}: ${value}\r\n`;
+    }
+  }
+  return out;
+}
+
 // Parse HTTP request
 function parseHttpRequest(buffer: Buffer) {
   const headerEnd = buffer.indexOf("\r\n\r\n");
@@ -451,8 +522,8 @@ addRequestInterceptor(async (req) => {
     // Dashboard/API routes — loopback only
     const remoteAddr = req.clientSocket?.remoteAddress || "";
     const isLoopback = remoteAddr.startsWith("127.") || remoteAddr.startsWith("::1") || remoteAddr === "::ffff:127.0.0.1";
-    if (isLoopback && (urlPath === "/dashboard" || urlPath === "/" || urlPath === "/health" ||
-        urlPath.startsWith("/api/"))) {
+    const isDashboardPath = urlPath === "/dashboard" || urlPath === "/health" || urlPath.startsWith("/api/");
+    if (isLoopback && isDashboardPath) {
       const dashResult = await handleDashboard(handlerInput);
       if (dashResult.handled && dashResult.response) {
         dashIncReq();
@@ -470,17 +541,19 @@ addRequestInterceptor(async (req) => {
       }
     }
 
-    const result = await deviceLogin.handleDeviceLogin(handlerInput);
-    if (result.handled && result.response) {
-      if (result.response._streamed) {
-        req._responseSent = true;
-      } else {
-        req.response = {
-          statusCode: result.response.statusCode,
-          statusMessage: result.response.statusMessage || "OK",
-          headers: result.response.headers,
-          body: result.response.body,
-        };
+    if (!isProxy()) {
+      const result = await deviceLogin.handleDeviceLogin(handlerInput);
+      if (result.handled && result.response) {
+        if (result.response._streamed) {
+          req._responseSent = true;
+        } else {
+          req.response = {
+            statusCode: result.response.statusCode,
+            statusMessage: result.response.statusMessage || "OK",
+            headers: result.response.headers,
+            body: result.response.body,
+          };
+        }
       }
     }
   } catch (e) {
@@ -554,8 +627,14 @@ async function forwardWithInterceptor(client: TLSSocket | Socket, method: string
     if (isDebug()) console.log(generalLogLine("INFO", _vsMsg));
   }
 
+  // The unified intercept cert covers all intercepted hosts, so SNI is not
+  // reliable for routing. Prefer the HTTP Host header (which the client set
+  // based on the URL it requested) so api.github.com/user/orgs routes to
+  // api.github.com and not the default github.com.
+  const httpHost = (headers["host"] || "").split(":")[0].toLowerCase();
+  const targetHost = httpHost || host;
   let interceptedReq: InterceptedRequest = {
-    method, url, headers: { ...headers }, body: reqBody, hostname: host, port, blocked: false,
+    method, url, headers: { ...headers }, body: reqBody, hostname: targetHost, port, blocked: false,
     clientSocket: client,
   };
 
@@ -586,13 +665,9 @@ async function forwardWithInterceptor(client: TLSSocket | Socket, method: string
     }
     let respHeader = `HTTP/1.1 ${statusCode} ${statusMessage}\r\n`;
     let isSSE = false;
-    for (const [key, value] of Object.entries(resHeaders)) {
-      const lk = key.toLowerCase();
-      if (lk === "content-type" && value.includes("text/event-stream")) isSSE = true;
-      if (!["transfer-encoding", "connection", "keep-alive", "content-length"].includes(lk)) {
-        respHeader += `${key}: ${value}\r\n`;
-      }
-    }
+    const ctVal = Object.entries(resHeaders).find(([k]) => k.toLowerCase() === "content-type")?.[1];
+    if (typeof ctVal === "string" && ctVal.includes("text/event-stream")) isSSE = true;
+    respHeader += serializeHeaders(resHeaders, ["transfer-encoding", "connection", "keep-alive", "content-length"]);
     if (isSSE) {
       respHeader += `Content-Length: ${resBody.length}\r\nConnection: close\r\n\r\n`;
       client.write(respHeader);
@@ -619,9 +694,7 @@ async function forwardWithInterceptor(client: TLSSocket | Socket, method: string
       const respBody = replayed.body ? Buffer.from(replayed.body) : Buffer.alloc(0);
       logPlainEnglish(reqNum, "RESPONSE", finalMethod, finalUrl, finalHost, replayed.statusCode, replayed.headers, replayed.body, agentTag(finalHeaders));
       let respHeader = `HTTP/1.1 ${replayed.statusCode} ${replayed.statusMessage}\r\n`;
-      for (const [key, value] of Object.entries(replayed.headers)) {
-        respHeader += `${key}: ${value}\r\n`;
-      }
+      respHeader += serializeHeaders(replayed.headers, ["transfer-encoding", "connection", "keep-alive", "content-length"]);
       respHeader += `Content-Length: ${respBody.length}\r\nConnection: close\r\n\r\n`;
       client.write(respHeader);
       if (respBody.length > 0) client.write(respBody);
@@ -692,12 +765,7 @@ async function forwardWithInterceptor(client: TLSSocket | Socket, method: string
       const responseBody = resBody ?? Buffer.alloc(0);
 
       let respHeader = `HTTP/1.1 ${statusCode} ${statusMessage}\r\n`;
-      for (const [key, value] of Object.entries(resHeaders)) {
-        const lk = key.toLowerCase();
-        if (!["transfer-encoding", "connection", "keep-alive", "content-length"].includes(lk)) {
-          respHeader += `${key}: ${value}\r\n`;
-        }
-      }
+      respHeader += serializeHeaders(resHeaders, ["transfer-encoding", "connection", "keep-alive", "content-length"]);
       if (responseBody.length > 0) {
         respHeader += `Content-Length: ${responseBody.length}\r\n`;
       }
@@ -752,20 +820,38 @@ function createInterceptServers() {
         const parsed = parseHttpRequest(buffer);
         if (!parsed || requestHandled) return;
 
-        // WebSocket upgrade — pipe to dedicated WS server on port 3441
+        // WebSocket upgrade
         if (parsed.url === "/ws" && parsed.headers["upgrade"]?.toLowerCase() === "websocket") {
           requestHandled = true;
-          const wsPort = parseInt(process.env.gc2xy_WS_PORT || "3441");
-          try {
-            const upstream = createConnection(wsPort, "127.0.0.1", () => {
-              upstream.write(buffer);
-              tlsSocket.pipe(upstream);
-              upstream.pipe(tlsSocket);
-            });
-            upstream.on("error", () => { try { tlsSocket.end(); } catch {} });
-            tlsSocket.on("error", () => { try { upstream.end(); } catch {} });
-          } catch (e) {
-            if (!tlsSocket.destroyed) tlsSocket.end();
+          // Check if this is a Visual Studio sync WS connection
+          const editorVersion = (parsed.headers["editor-version"] || "").toLowerCase();
+          const isVS = editorVersion.startsWith("vs/visualstudio") || /^vs\/\d/.test(editorVersion);
+          if (isVS) {
+            // Accept VS WebSocket and keep alive with ping frames
+            const key = parsed.headers["sec-websocket-key"] || "";
+            if (key) {
+              const accept = createHash("sha1").update(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64");
+              tlsSocket.write("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + accept + "\r\n\r\n");
+              const pingInterval = setInterval(() => {
+                try { if (!tlsSocket.destroyed) tlsSocket.write(Buffer.from([0x89, 0x00])); } catch {}
+              }, 30000);
+              tlsSocket.on("close", () => clearInterval(pingInterval));
+              tlsSocket.on("error", () => clearInterval(pingInterval));
+            }
+          } else {
+            // Pipe to dashboard WS server
+            const wsPort = parseInt(process.env.gc2xy_WS_PORT || "3441");
+            try {
+              const upstream = createConnection(wsPort, "127.0.0.1", () => {
+                upstream.write(buffer);
+                tlsSocket.pipe(upstream);
+                upstream.pipe(tlsSocket);
+              });
+              upstream.on("error", () => { try { tlsSocket.end(); } catch {} });
+              tlsSocket.on("error", () => { try { upstream.end(); } catch {} });
+            } catch (e) {
+              if (!tlsSocket.destroyed) tlsSocket.end();
+            }
           }
           return;
         }
@@ -791,13 +877,26 @@ function createInterceptServers() {
         }
       });
 
-      tlsSocket.on("error", (err: Error) => log("ERROR", `TLS error for ${host}: ${err.message}`));
+      tlsSocket.on("error", (err: Error) => {
+        // ECONNRESET / EPIPE / ECONNABORTED after a response was already sent
+        // are normal HTTP/1.1 keep-alive cleanup (client navigated away, idle
+        // socket closed, etc.) — demote to DEBUG so the console doesn't get
+        // spammed with red ERROR lines that aren't actually errors.
+        const benign = ["ECONNRESET", "EPIPE", "ECONNABORTED"];
+        const level = requestHandled && benign.some(b => err.message.includes(b)) ? "DEBUG" : "ERROR";
+        log(level, `TLS error for ${host}: ${err.message}`);
+      });
     });
 
     httpsServer.on("tlsClientError", (err: Error) => {
-      log("ERROR", `TLS client error: ${err.message}`);
+      // Same demotion: most tlsClientError events are pre-handshake
+      // client-side aborts (browser cancelled navigation, scanner probing).
+      const benign = ["ECONNRESET", "EPIPE", "ECONNABORTED"];
+      const level = benign.some(b => err.message.includes(b)) ? "DEBUG" : "ERROR";
+      log(level, `TLS client error: ${err.message}`);
     });
 
+    killPortProcess(HTTPS_PORT);
     httpsServer.listen(HTTPS_PORT, "127.0.0.1", () => {
       log("INFO", `HTTPS intercept server on 127.0.0.1:${HTTPS_PORT}`);
     });
@@ -813,20 +912,40 @@ function createInterceptServers() {
     clientSocket.once("data", (data) => {
       const full = data.toString("utf-8").toLowerCase();
       if (full.includes("upgrade: websocket")) {
-        const wsPort = parseInt(process.env.gc2xy_WS_PORT || "3441");
-        const upstream = createConnection(wsPort, "127.0.0.1", () => {
-          upstream.write(data);
-          clientSocket.pipe(upstream);
-          upstream.pipe(clientSocket);
-        });
-        upstream.on("error", () => clientSocket.end());
-        clientSocket.on("error", () => upstream.end());
+        // Check if this is a Visual Studio sync WS connection
+        const raw = data.toString("utf-8");
+        const editorVersionMatch = raw.match(/editor-version:\s*([^\r\n]+)/i);
+        const editorVersion = editorVersionMatch ? editorVersionMatch[1].toLowerCase() : "";
+        const isVS = editorVersion.startsWith("vs/visualstudio") || /^vs\/\d/.test(editorVersion);
+        if (isVS) {
+          const keyMatch = raw.match(/sec-websocket-key:\s*([^\r\n]+)/i);
+          const key = keyMatch ? keyMatch[1].trim() : "";
+          if (key) {
+            const accept = createHash("sha1").update(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64");
+            clientSocket.write("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + accept + "\r\n\r\n");
+            const pingInterval = setInterval(() => {
+              try { if (!clientSocket.destroyed) clientSocket.write(Buffer.from([0x89, 0x00])); } catch {}
+            }, 30000);
+            clientSocket.on("close", () => clearInterval(pingInterval));
+            clientSocket.on("error", () => clearInterval(pingInterval));
+          }
+        } else {
+          const wsPort = parseInt(process.env.gc2xy_WS_PORT || "3441");
+          const upstream = createConnection(wsPort, "127.0.0.1", () => {
+            upstream.write(data);
+            clientSocket.pipe(upstream);
+            upstream.pipe(clientSocket);
+          });
+          upstream.on("error", () => clientSocket.end());
+          clientSocket.on("error", () => upstream.end());
+        }
         return;
       }
       handlePlainHttpRequest(clientSocket, data, IIS_PROXY ? HTTP_PORT : 80).catch((e) => log("ERROR", `HTTP handler error: ${e.message}`));
     });
   });
 
+  killPortProcess(HTTP_PORT);
   httpServer.listen(HTTP_PORT, "127.0.0.1", () => {
     log("INFO", `HTTP intercept server on 127.0.0.1:${HTTP_PORT}`);
   });
@@ -870,6 +989,7 @@ function createProxyServer() {
     clientSocket.on("error", (err) => log("ERROR", `Client error: ${err.message}`));
   });
 
+  killPortProcess(PROXY_PORT);
   proxyServer.listen(PROXY_PORT, "127.0.0.1", () => {
     log("INFO", `Proxy server on 127.0.0.1:${PROXY_PORT}`);
   });
@@ -909,7 +1029,13 @@ function handleProxyMitm(clientSocket: Socket, host: string, port: number) {
     }
   });
 
-  tlsSocket.on("error", (err: Error) => log("ERROR", `TLS error for ${host}: ${err.message}`));
+  tlsSocket.on("error", (err: Error) => {
+    // See note in createInterceptServers — benign close-after-response errors
+    // should not pollute the log with red ERROR lines.
+    const benign = ["ECONNRESET", "EPIPE", "ECONNABORTED"];
+    const level = benign.some(b => err.message.includes(b)) ? "DEBUG" : "ERROR";
+    log(level, `TLS error for ${host}: ${err.message}`);
+  });
 }
 
 function handleBlindTunnel(clientSocket: Socket, host: string, port: number) {
@@ -949,10 +1075,23 @@ async function handlePlainHttpRequest(clientSocket: Socket, data: Buffer, port: 
     return;
   }
 
+  const headers: Record<string, string> = {};
+  for (const [key, value] of Object.entries(allHeaders)) {
+    if (!["host", "proxy-connection", "connection"].includes(key)) {
+      headers[key] = value;
+    }
+  }
+
+  const contentLen = parseInt(allHeaders["content-length"] || "0", 10);
+  const body = contentLen > 0 && bodyOffset + contentLen <= data.length
+    ? data.slice(bodyOffset, bodyOffset + contentLen)
+    : null;
+
   // Dashboard route — always intercepted (even in proxy mode), loopback only
   const remoteAddr = clientSocket.remoteAddress || "";
   const isLoopback = remoteAddr.startsWith("127.") || remoteAddr.startsWith("::1") || remoteAddr === "::ffff:127.0.0.1";
-  if (isLoopback && (url === "/dashboard" || url.startsWith("/dashboard?") || url === "/" || url === "/health" || url.startsWith("/api/"))) {
+  const isDashboardPath = url === "/dashboard" || url.startsWith("/dashboard?") || url === "/health" || url.startsWith("/api/");
+  if (isLoopback && isDashboardPath) {
     try {
       const dashReq = { method, url, headers, body, hostname: host, port, clientSocket: clientSocket as any };
       const result = await handleDashboard(dashReq);
@@ -960,9 +1099,7 @@ async function handlePlainHttpRequest(clientSocket: Socket, data: Buffer, port: 
         dashIncReq();
         const { statusCode, statusMessage, headers: respHeaders, body: respBody } = result.response;
         let resp = `HTTP/1.1 ${statusCode} ${statusMessage || "OK"}\r\n`;
-        for (const [k, v] of Object.entries(respHeaders)) {
-          resp += `${k}: ${v}\r\n`;
-        }
+        resp += serializeHeaders(respHeaders, ["connection", "content-length", "transfer-encoding", "keep-alive"]);
         resp += `Connection: close\r\nContent-Length: ${respBody.length}\r\n\r\n`;
         clientSocket.write(resp);
         clientSocket.write(respBody);
@@ -974,19 +1111,6 @@ async function handlePlainHttpRequest(clientSocket: Socket, data: Buffer, port: 
     }
   }
 
-  const headers: Record<string, string> = {};
-  for (const [key, value] of Object.entries(allHeaders)) {
-    if (!["host", "proxy-connection", "connection"].includes(key)) {
-      headers[key] = value;
-    }
-  }
-
-  // Extract body from buffer
-  const contentLen = parseInt(allHeaders["content-length"] || "0", 10);
-  const body = contentLen > 0 && bodyOffset + contentLen <= data.length
-    ? data.slice(bodyOffset, bodyOffset + contentLen)
-    : null;
-
   // Run interceptor chain (same as TLS path)
   try {
     const interceptedReq: InterceptedRequest = {
@@ -997,9 +1121,7 @@ async function handlePlainHttpRequest(clientSocket: Socket, data: Buffer, port: 
     if (interceptedReq.response && !(interceptedReq as any)._responseSent) {
       const { statusCode, statusMessage, headers: respHeaders, body: respBody } = interceptedReq.response;
       let resp = `HTTP/1.1 ${statusCode} ${statusMessage || "OK"}\r\n`;
-      for (const [k, v] of Object.entries(respHeaders)) {
-        resp += `${k}: ${v}\r\n`;
-      }
+      resp += serializeHeaders(respHeaders, ["connection", "content-length", "transfer-encoding", "keep-alive"]);
       resp += `Connection: close\r\nContent-Length: ${respBody.length}\r\n\r\n`;
       clientSocket.write(resp);
       clientSocket.write(respBody);
@@ -1028,9 +1150,7 @@ async function handlePlainHttpRequest(clientSocket: Socket, data: Buffer, port: 
       logPlainEnglish(++requestCounter, "REQUEST", method, url, host, null, headers, null);
       logPlainEnglish(requestCounter, "RESPONSE", method, url, host, res.statusCode || 0, res.headers, body.toString());
       let respHeader = `HTTP/1.1 ${res.statusCode} ${res.statusMessage}\r\n`;
-      for (const [key, value] of Object.entries(res.headers)) {
-        respHeader += `${key}: ${value}\r\n`;
-      }
+      respHeader += serializeHeaders(res.headers as Record<string, any>);
       respHeader += "\r\n";
       clientSocket.write(respHeader);
       clientSocket.write(body);
@@ -1104,7 +1224,7 @@ try {
 } catch {}
 
 // Preload models at startup so the model list (?) is populated
-initModels().catch(() => {});
+addModels().catch(() => {});
 splitConsole.drawStatusBar({
   mode: getMode().toUpperCase(),
   requests: 0,
@@ -1132,7 +1252,7 @@ splitConsole.onCommand((cmd: string) => {
     const newMode = validModes[targetMode] || "mock";
     setMode(newMode);
     log("INFO", `Switched to ${newMode.toUpperCase()} mode`);
-    initModels().catch(() => {});
+    addModels().catch(() => {});
     splitConsole.drawStatusBar({
       mode: getMode().toUpperCase(),
       requests: requestCounter,
@@ -1153,7 +1273,7 @@ splitConsole.onCommand((cmd: string) => {
     }
   } else if (cmd === "refresh") {
     log("INFO", "Refreshing model list...");
-    initModels().catch(() => {});
+    addModels().catch(() => {});
   }
 });
 

@@ -1,7 +1,8 @@
-import { jsonResponse, HandlerInput, HandlerResult } from "../shared.ts";
+import { jsonResponse, HandlerInput, HandlerResult, getGithubUsername } from "../shared.ts";
 
 export function handleRepo(req: HandlerInput): HandlerResult {
   const { method, url, body } = req;
+  const ghUser = getGithubUsername();
 
   // POST /repos/*/issues - Create issue (feedback/telemetry)
   if (method === "POST" && url.match(/\/repos\/[^/]+\/[^/]+\/issues$/)) {
@@ -28,7 +29,7 @@ export function handleRepo(req: HandlerInput): HandlerResult {
       labels: [], assignee: null, assignees: [], milestone: null,
       comments: 0, created_at: now, updated_at: now, closed_at: null,
       author_association: "NONE", active_lock_reason: null, draft: false, state_reason: null,
-      user: { login: "fake-copilot-user", id: 99999999, avatar_url: "https://avatars.githubusercontent.com/u/99999999?v=4", type: "User" },
+      user: { login: getGithubUsername(), id: 99999999, avatar_url: "https://avatars.githubusercontent.com/u/99999999?v=4", type: "User" },
       reactions: { url: `https://api.github.com/repos/${owner}/${repo}/issues/1/reactions`, total_count: 0, "+1": 0, "-1": 0, laugh: 0, hooray: 0, confused: 0, heart: 0, rocket: 0, eyes: 0 },
     }, 201)};
   }
@@ -44,7 +45,7 @@ export function handleRepo(req: HandlerInput): HandlerResult {
       html_url: `https://github.com/${owner}/${repo}/issues/1#issuecomment-1`,
       url: `https://api.github.com/repos/${owner}/${repo}/issues/comments/1`,
       created_at: now, updated_at: now, author_association: "NONE",
-      user: { login: "fake-copilot-user", id: 99999999, avatar_url: "https://avatars.githubusercontent.com/u/99999999?v=4", type: "User" },
+      user: { login: getGithubUsername(), id: 99999999, avatar_url: "https://avatars.githubusercontent.com/u/99999999?v=4", type: "User" },
       reactions: { url: `https://api.github.com/repos/${owner}/${repo}/issues/comments/1/reactions`, total_count: 0 },
     }, 201)};
   }
@@ -96,7 +97,7 @@ export function handleRepo(req: HandlerInput): HandlerResult {
         });
       })(),
       body: "Fake release for local dev",
-      author: { login: "fake-copilot-user", id: 99999999, avatar_url: "https://avatars.githubusercontent.com/u/99999999?v=4", type: "User" },
+      author: { login: ghUser, id: 99999999, avatar_url: "https://avatars.githubusercontent.com/u/99999999?v=4", type: "User" },
     })};
   }
 
@@ -173,9 +174,9 @@ export function handleRepo(req: HandlerInput): HandlerResult {
       id: 1, number: 1, state: "open", title: "Fake PR", body: "Fake PR body",
       html_url: "", url: "", diff_url: "", patch_url: "", issue_url: "",
       created_at: now, updated_at: now, closed_at: null, merged_at: null,
-      head: { label: "fake-copilot-user:feature", ref: "feature", sha: "abc123", repo: null },
-      base: { label: "fake-copilot-user:main", ref: "main", sha: "def456", repo: null },
-      user: { login: "fake-copilot-user", id: 99999999, type: "User" },
+      head: { label: `${ghUser}:feature`, ref: "feature", sha: "abc123", repo: null },
+      base: { label: `${ghUser}:main`, ref: "main", sha: "def456", repo: null },
+      user: { login: ghUser, id: 99999999, type: "User" },
       draft: false, merged: false, mergeable: true, rebaseable: true, mergeable_state: "clean",
       merged_by: null, comments: 0, review_comments: 0, commits: 0, additions: 0, deletions: 0, changed_files: 0,
     })};
@@ -193,7 +194,7 @@ export function handleRepo(req: HandlerInput): HandlerResult {
 
   // GET /repos/*/collaborators/*/permission - Permission check
   if (method === "GET" && url.match(/\/repos\/[^/]+\/[^/]+\/collaborators\/[^/]+\/permission/)) {
-    return { handled: true, response: jsonResponse({ permission: "admin", user: { login: "fake-copilot-user", id: 99999999, type: "User" } }) };
+    return { handled: true, response: jsonResponse({ permission: "admin", user: { login: ghUser, id: 99999999, type: "User" } }) };
   }
 
   // GET /repos/*/hooks - Webhooks
@@ -205,9 +206,9 @@ export function handleRepo(req: HandlerInput): HandlerResult {
   if (method === "POST" && url.match(/\/repos\/[^/]+\/[^/]+\/forks/)) {
     const now = new Date().toISOString();
     return { handled: true, response: jsonResponse({
-      id: 99999999, name: "forked-repo", full_name: "fake-copilot-user/forked-repo",
-      private: false, owner: { login: "fake-copilot-user", id: 99999999, type: "User" },
-      html_url: "https://github.com/fake-copilot-user/forked-repo",
+      id: 99999999, name: "forked-repo", full_name: `${ghUser}/forked-repo`,
+      private: false, owner: { login: ghUser, id: 99999999, type: "User" },
+      html_url: `https://github.com/${ghUser}/forked-repo`,
       description: "Forked repo", fork: true,
       created_at: now, updated_at: now, pushed_at: now,
       default_branch: "main", visibility: "public",

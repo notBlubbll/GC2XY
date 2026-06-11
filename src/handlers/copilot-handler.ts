@@ -1,8 +1,20 @@
 import forge from "node-forge";
-import { jsonResponse, HandlerInput, HandlerResult, countConsecutiveNags, stripNagMessages, RECENTLY_COMPLETED, RECENT_BODIES } from "../shared.ts";
-import { chatCompletion as opencodeChat, getKeyStatus, storeReasoning, initModels, getModelIds, getModelCtx, modelHasVision, detectSessionSignal, extractUserPrompt, getModelDisplayName } from "./opencode-client.ts";
+import { readFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import { jsonResponse, HandlerInput, HandlerResult, countConsecutiveNags, stripNagMessages, RECENTLY_COMPLETED, RECENT_BODIES, injectIdentity, getProjectRoot, scrubTaskComplete, compressToolDefinitions, stripCopilotGreeting } from "../shared.ts";
+import { chatCompletion as opencodeChat, getKeyStatus, storeReasoning, getModelCtx, modelHasVision, detectSessionSignal, extractUserPrompt, getModelDisplayName, getModelProviderTag } from "./opencode-client.ts";
+import { addModels } from "../models.ts";
+import { chatCompletion as freebuffChat, getFreebuffModelPremium } from "./freebuff-client.ts";
+import { chatCompletion as pollChat } from "./pollinations-client.ts";
+import { chatCompletion as agnesChat } from "./agnes-client.ts";
+import { chatCompletion as codestralChat, completions as codestralCompletions } from "./codestral-client.ts";
+import { getCompletionsModel } from "./dashboard-handler.ts";
+import { chatCompletion as bitnetChat } from "./bitnet-client.ts";
+import { chatCompletion as featherlessChat } from "./featherless-client.ts";
+import { isSupermavenEnabled, isSupermavenReady, supermavenCodeComplete } from "./supermaven-client.ts";
 import { reqLog, agentTag } from "../split-console.ts";
 import { trackRequest } from "../usage-tracker.ts";
+import { repairToolCalls, detectApologyText, detectToolLoop, bumpSalvageStat } from "../tool-salvager.ts";
 import { anthropicToOpenAIRequest } from "./anthropic-bridge.ts";
 
 const FAKE_MODELS: any[] = [];
@@ -25,6 +37,7 @@ function detectVendor(id: string): string {
   if (l.includes("nemotron")) return "NVIDIA";
   if (l.includes("big-pickle")) return "Opencode";
   if (l.includes("ring")) return "Ring";
+  if (l.includes("codestral") || l.includes("mistral")) return "Mistral AI";
   return "Opencode";
 }
 
@@ -97,7 +110,21 @@ function modelLimits(id: string): any {
 
 async function ensureModels() {
   if (_rebuilding) return;
-  const modelIds = await initModels();
+  let modelIds = await addModels();
+
+  const PROVIDER_MAP: Record<string, string> = { opencode: "go", zen: "zen", freebuff: "freebuff", agnes: "agnes", codestral: "codestral", featherless: "featherless", bitnet: "bitnet", deepseek: "deepseek" };
+  try {
+    const cp = join(getProjectRoot(), ".config", "config.json");
+    if (existsSync(cp)) {
+      const cfg = JSON.parse(readFileSync(cp, "utf-8"));
+      const activeProviders: string[] = cfg.providers || ["opencode"];
+      const activeTags = new Set(activeProviders.map((pr: string) => PROVIDER_MAP[pr] || pr));
+      modelIds = modelIds.filter(id => activeTags.has(getModelProviderTag(id)));
+      const dm: Record<string, string[]> = cfg.disabledModels || {};
+      const disabledSet = new Set(Object.values(dm).flat() as string[]);
+      modelIds = modelIds.filter(id => !disabledSet.has(id));
+    }
+  } catch {}
 
   const changed = modelIds.length !== _lastModelIds.length ||
     modelIds.some((id, i) => id !== _lastModelIds[i]);
@@ -111,9 +138,10 @@ async function ensureModels() {
   const addModel = (id: string) => {
     if (seen.has(id)) return;
     seen.add(id);
-    const baseEmoji = supportsThinkingVariants(id) ? "💡" : "✨";
-    const mediaEmoji = modelHasVision(id) ? "🎞️" : "";
-    const name = `${baseEmoji}${mediaEmoji} ${getModelDisplayName(id)}`;
+    const prefix = id.startsWith("pol/") ? "🐝" : id.startsWith("freebuff/") ? "🇫🇷ᴇᴇ" : id.startsWith("agnes") ? "💜" : id.startsWith("codestral/") ? "🔷" : "✨";
+    let displayName = getModelDisplayName(id);
+    if (displayName.length > 17) displayName = displayName.replace(/\s/g, "");
+    const name = `${prefix}￤${displayName}`;
     const isLightweight = id.includes("mini") || id.includes("nano") || (id.includes("flash") && !id.includes("deepseek")) || id.includes("haiku") || id.includes("free");
     const isPowerful = id.includes("pro") || id.includes("opus") || id.includes("codex") || id.includes("omni") || (id.includes("flash") && id.includes("deepseek"));
     const limits = modelLimits(id);
@@ -124,7 +152,7 @@ async function ensureModels() {
       model_picker_enabled: true,
       is_chat_default: true,
       is_chat_fallback: true,
-      billing: { is_premium: true, multiplier: getModelCtx(id) || limits.max_context_window_tokens, restricted_to: ["pro", "pro_plus", "business", "enterprise", "max"] },
+      billing: { is_premium: true, multiplier: id.startsWith("pol/") ? 1 : (getModelCtx(id) || limits.max_context_window_tokens), restricted_to: ["pro", "pro_plus", "business", "enterprise", "max"] },
       policy: { state: "enabled", terms: `Enable access to the ${id} model. [Learn more](https://opencode.ai)` },
       supported_endpoints: ["/chat/completions", "/v1/messages"],
       capabilities: {
@@ -133,9 +161,69 @@ async function ensureModels() {
       },
     };
     FAKE_MODELS.push(baseModel);
+
+    // Thinking variants with -lo/-md/-hi/-mx suffix
+    const modes: string[] = [];
+    if (id.startsWith("freebuff/")) { /* no thinking modes */ }
+    else if (id.includes("deepseek-v4")) modes.push("LOW", "MEDIUM", "HIGH", "MAXIMUM");
+    else if (id.includes("mimo") && !id.includes("glm") && !id.includes("kimi") && !id.includes("minimax") && !id.includes("qwen") && !id.includes("big-pickle") && !id.includes("hy3") && !id.includes("ring") && !id.includes("nemotron")) modes.push("LOW", "MEDIUM", "HIGH");
+    const LEVEL_SUFFIX: Record<string, string> = { LOW: "lo", MEDIUM: "md", HIGH: "hi", MAXIMUM: "mx" };
+    for (const mode of modes) {
+      const suffix = LEVEL_SUFFIX[mode] || mode.toLowerCase();
+      const taggedId = `${id}-${suffix}`;
+      if (seen.has(taggedId)) continue;
+      seen.add(taggedId);
+      const baseName = displayName.replace(/\s/g, "");
+      const taggedName = `${prefix}￤${baseName}￤${suffix}`;
+      const tagSupports = { ...modelSupports(id), reasoning_effort: [mode.toLowerCase()] };
+      FAKE_MODELS.push({
+        ...baseModel,
+        id: taggedId,
+        name: taggedName,
+        model_picker_enabled: true,
+        is_chat_default: false,
+        is_chat_fallback: false,
+        capabilities: { ...baseModel.capabilities, supports: tagSupports },
+      });
+    }
   };
 
   for (const id of modelIds) addModel(id);
+
+  // Build category banners and header
+  const template = FAKE_MODELS.find((m: any) => !m.id.startsWith("cat_") && !m.id.startsWith("_cat_") && !m.id.includes("-lo") && !m.id.includes("-md") && !m.id.includes("-hi") && !m.id.includes("-mx"));
+  if (template && FAKE_MODELS.length > 0) {
+    const PROVIDER_NAMES: Record<string, string> = {
+      go: "\u200D✨ ⸻ OpenCode Go:", poll: "\u200D\u200D🐝 ⸻ Pollinations.ai:", freebuff: "\u200D\u200D\u200D🇫🇷ᴇᴇ ⸻ FreeBuff:", codestral: "\u200D\u200D\u200D\u200D🔷 ⸻ Codestral:", agnes: "\u200D\u200D\u200D\u200D\u200D💜 ⸻ AgnesAI:", featherless: "\u200D\u200D\u200D\u200D\u200D\u200D✨ ⸻ Featherless:", bitnet: "\u200D\u200D\u200D\u200D\u200D\u200D\u200D✨ ⸻ Bitnet:", deepseek: "\u200D\u200D\u200D\u200D\u200D\u200D\u200D\u200D✨ ⸻ DeepSeek:", openrouter: "\u200D\u200D\u200D\u200D\u200D\u200D\u200D\u200D\u200D✨ ⸻ OpenRouter:", zen: "\u200D\u200D\u200D\u200D\u200D\u200D\u200D\u200D\u200D\u200D⸻ ZEN:",
+    };
+    const SEP_ORDER = ["go", "poll", "freebuff", "codestral", "agnes", "featherless", "bitnet", "deepseek", "openrouter", "zen"];
+    // Header banner at very top
+    FAKE_MODELS.splice(0, 0, {
+      ...template,
+      id: "_cat_header",
+      name: ".⸻ Model (/Category) ⸻ ContextLength",
+      is_chat_default: false,
+      is_chat_fallback: false,
+      billing: { ...template.billing, multiplier: 0 },
+    });
+    const seenTags: string[] = [];
+    for (let i = 0; i < FAKE_MODELS.length; i++) {
+      const tag = getModelProviderTag(FAKE_MODELS[i].id);
+      if (!tag || seenTags.includes(tag)) continue;
+      seenTags.push(tag);
+      const displayName = PROVIDER_NAMES[tag] || tag.toUpperCase();
+      FAKE_MODELS.splice(i, 0, {
+        ...template,
+        id: `cat_${tag}`,
+        name: displayName,
+        is_chat_default: false,
+        is_chat_fallback: false,
+        model_picker_price_category: "high",
+      });
+      i++;
+    }
+  }
+
   console.log(`\n[MODEL CACHE] copilot-handler rebuilt ${FAKE_MODELS.length} models`);
   _rebuilding = false;
 }
@@ -162,9 +250,6 @@ function generateCopilotCompletion(content: string, model: string) {
 
 function generateGPTResponse(content: string, model: string) {
   const lower = content.toLowerCase();
-  if (lower.includes("hello") || lower.includes("hi")) {
-    return "Hello! I'm Copilot. I can help you write code, answer questions, and more. What are you working on?";
-  }
   if (lower.includes("explain") || lower.includes("what does") || lower.includes("how does")) {
     return `Sure! Let me explain that.\n\n\`\`\`\n// This is a mock response from the local proxy\n// The real Copilot API is bypassed entirely\n\`\`\`\n\nThe code above demonstrates the pattern you're asking about. In practice, you'd see a real explanation here based on your actual codebase.\n\nIs there anything specific you'd like me to elaborate on?`;
   }
@@ -276,6 +361,14 @@ function parseThinkingMode(modelName: string): { model: string; thinking: string
     return { model: m[1].trim(), thinking: tag };
   }
 
+  // Suffix format: "deepseek-v4-md", "deepseek-v4-lo", "deepseek-v4-hi", "deepseek-v4-mx"
+  const suffixMatch = clean.match(/^(.+?)-(lo|md|hi|mx)$/i);
+  if (suffixMatch) {
+    const SUFFIX_MAP: Record<string, string> = { LO: "LOW", MD: "MEDIUM", HI: "HIGH", MX: "MAXIMUM" };
+    const raw = suffixMatch[2].toUpperCase();
+    return { model: suffixMatch[1].trim(), thinking: SUFFIX_MAP[raw] };
+  }
+
   return { model: modelName, thinking: null };
 }
 
@@ -360,8 +453,12 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
       model = real?.id || model;
     }
 
-    // ── Nag: drain or nag → task_complete ──
-    if ((RECENTLY_COMPLETED.get(model) ?? 0) && Date.now() - (RECENTLY_COMPLETED.get(model) ?? 0) < 20000 || countConsecutiveNags(messages) > 0) {
+    // ── Nag: drain or nag → task_complete (agentic mode only) ──
+    const _copInitiator = headers["x-initiator"] || "";
+    const _copAgentic = _copInitiator === "agent";
+    const _copNagCount = _copAgentic ? countConsecutiveNags(messages) : 0;
+    const _copDrain = _copAgentic && (RECENT_BODIES.get(model) ?? 0) && Date.now() - (RECENT_BODIES.get(model) ?? 0) < 20000;
+    if (_copDrain || _copNagCount > 0) {
       RECENTLY_COMPLETED.set(model, Date.now());
       stripNagMessages(messages);
       const id = `msg_${forge.util.bytesToHex(forge.random.getBytesSync(8))}`;
@@ -380,7 +477,7 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
       Array.isArray(lastUserMsg.content) ? lastUserMsg.content.filter((c: any) => c.type === "text").map((c: any) => c.text || "").join(" ") : ""
     ) : "";
     const tag = agentTag(headers);
-    const provider = model.startsWith("pol/") ? "poll" : "go";
+    const provider = model.startsWith("pol/") ? "poll" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("featherless/") ? "featherless" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral/") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "go";
     const completeLog = reqLog({ tag, provider, model, preview: queryPreview, body: parsed });
     const startTime = Date.now();
 
@@ -448,7 +545,30 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
 
     try {
       const bridge = anthropicToOpenAIRequest(parsed);
-      const resp = await opencodeChat(bridge.model, bridge.messages, bridge.tools, false, { max_tokens: bridge.max_tokens, ...parsed });
+      injectIdentity(bridge.messages, getModelDisplayName(parsed.model || model), parsed.model || model);
+      const scrubbed1 = scrubTaskComplete(bridge.messages, bridge.tools);
+      bridge.messages = scrubbed1.messages;
+      bridge.tools = scrubbed1.tools;
+      bridge.tools = compressToolDefinitions(bridge.tools);
+      const isFb = bridge.model.startsWith("freebuff/");
+      const isPol = bridge.model.startsWith("pol/");
+      const isFeath = bridge.model.startsWith("featherless/");
+      const isAg = bridge.model.startsWith("agnes");
+      const isCs = bridge.model.startsWith("codestral/");
+      const isBn = bridge.model === "bitnet-demo" || bridge.model.startsWith("bitnet/");
+      const resp = isFb
+        ? await freebuffChat(bridge.model, bridge.messages, bridge.tools, false, { max_tokens: bridge.max_tokens, ...parsed })
+        : isPol
+        ? await pollChat(bridge.model, bridge.messages, bridge.tools, false, { max_tokens: bridge.max_tokens })
+        : isFeath
+        ? await featherlessChat(bridge.model, bridge.messages, bridge.tools, false, { max_tokens: bridge.max_tokens })
+        : isAg
+        ? await agnesChat(bridge.model, bridge.messages, bridge.tools, false, { max_tokens: bridge.max_tokens, ...parsed })
+        : isCs
+        ? await codestralChat(bridge.model, bridge.messages, bridge.tools, false, { max_tokens: bridge.max_tokens })
+        : isBn
+        ? await bitnetChat(bridge.model, bridge.messages, bridge.tools, false, { max_tokens: bridge.max_tokens })
+        : await opencodeChat(bridge.model, bridge.messages, bridge.tools, false, { max_tokens: bridge.max_tokens, ...parsed });
       const ct = resp.headers.get("content-type") || "";
       let content = "";
       let toolCalls: any[] | undefined;
@@ -481,14 +601,57 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
         }
         const keys = Object.keys(toolCallAccum);
         if (keys.length) toolCalls = keys.map((k) => toolCallAccum[+k]);
+        content = stripCopilotGreeting(content);
       } else {
         const data: any = await resp.json();
         const msg = data.choices?.[0]?.message;
-        content = msg?.content || "";
+        content = stripCopilotGreeting(msg?.content || "");
         if (msg?.tool_calls?.length) toolCalls = msg.tool_calls;
       }
       const elapsed = Date.now() - startTime;
       if (completeLog) completeLog(elapsed);
+
+      // ── Tool salvager (non-VS copilot-handler) ──
+      // Repair upstream tool_calls, detect apology text, detect tool loops.
+      // When ALL tool calls are unrecoverable AND we see an apology or loop,
+      // fall back to a clean task_complete tool_use so VS stops waiting.
+      if (toolCalls?.length) {
+        const { repaired, dropped } = repairToolCalls(toolCalls);
+        if (repaired.length || dropped.length) {
+          if (repaired.length !== toolCalls.length || dropped.length) {
+            console.log(`[TOOL SALVAGE] ${bridge.model}: ${repaired.length}/${toolCalls.length} tool_calls repaired, ${dropped.length} dropped`);
+          }
+        }
+        const allDropped = toolCalls.length > 0 && repaired.length === 0;
+        const isApology = detectApologyText(content);
+        const isLoop = repaired.length
+          ? detectToolLoop(bridge.messages, {
+              name: repaired[0].function?.name || "",
+              arguments: repaired[0].function?.arguments || "{}",
+            })
+          : { inLoop: false, count: 0, tool: "", args: "" };
+        if ((isApology && allDropped) || isLoop.inLoop) {
+          bumpSalvageStat(isLoop.inLoop ? "loopInjected" : "apologyInjected");
+          console.log(`[TOOL SALVAGE] ${bridge.model}: ${isLoop.inLoop ? `loop(${isLoop.tool}×${isLoop.count})` : "apology"} → task_complete`);
+          toolCalls = [{
+            id: `call_${forge.util.bytesToHex(forge.random.getBytesSync(6))}`,
+            type: "function",
+            function: { name: "task_complete", arguments: "{}" },
+          }];
+        } else {
+          toolCalls = repaired;
+        }
+      } else if (detectApologyText(content)) {
+        // No tool calls, but the model apologized — also synthesize task_complete
+        // so VS doesn't see a stuck "I can't" text response.
+        bumpSalvageStat("apologyInjected");
+        console.log(`[TOOL SALVAGE] ${bridge.model}: pure apology text → task_complete`);
+        toolCalls = [{
+          id: `call_${forge.util.bytesToHex(forge.random.getBytesSync(6))}`,
+          type: "function",
+          function: { name: "task_complete", arguments: "{}" },
+        }];
+      }
 
       // Convert upstream OpenAI tool_calls → Anthropic tool_use content blocks
       const openAIToCalls = (tc: any) => {
@@ -597,14 +760,61 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
     let parsed: any = {};
     try { parsed = JSON.parse(body?.toString() || "{}"); } catch {}
 
+    // NES ghost text detection: model names like copilot-nes-oct / gpt-41-copilot
+    const rawModel = parsed.model || "";
+    const isGhostText = rawModel.includes("copilot-nes") || rawModel.includes("gpt-41-copilot") || headers["openai-intent"] === "copilot-ghost";
+    if (isGhostText) {
+      const useSupermaven = isSupermavenEnabled() && isSupermavenReady();
+      const tag = agentTag(headers);
+
+      // Extract prompt from NES message format (user message content)
+      let prompt = "";
+      for (const msg of (parsed.messages || [])) {
+        if (msg.role === "user" && typeof msg.content === "string") {
+          prompt = msg.content;
+          break;
+        }
+      }
+      // Look for code_to_edit block with cursor
+      const ceMatch = prompt.match(/<\|code_to_edit\|>([\s\S]*?)<\|cursor\|>/);
+      if (ceMatch) prompt = ceMatch[1].trim();
+
+      let completion = "";
+
+      if (useSupermaven) {
+        console.log(`[SUPERMAVEN] ${tag} ghost text: "${prompt.substring(0, 80)}..."`);
+        try {
+          completion = await supermavenCodeComplete(prompt);
+          console.log(`[SUPERMAVEN] ${tag} result: "${completion.substring(0, 80)}"`);
+        } catch (e: any) {
+          console.log(`[SUPERMAVEN] ${tag} error: ${e.message}`);
+        }
+      }
+
+      if (!completion) {
+        completion = prompt;
+      }
+
+      const id = `chatcmpl-${forge.util.bytesToHex(forge.random.getBytesSync(6))}`;
+      const created = Math.floor(Date.now() / 1000);
+      const sse = `data: {"id":"${id}","object":"chat.completion.chunk","created":${created},"model":"${rawModel}","choices":[{"index":0,"delta":{"content":""},"finish_reason":null}]}\n\ndata: {"id":"${id}","object":"chat.completion.chunk","created":${created},"model":"${rawModel}","choices":[{"index":0,"delta":{"content":${JSON.stringify(completion)}},"finish_reason":null}]}\n\ndata: {"id":"${id}","object":"chat.completion.chunk","created":${created},"model":"${rawModel}","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":0}}\n\ndata: [DONE]\n\n`;
+      const sock = req.clientSocket;
+      if (sock) {
+        sock.write(`HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-store\r\naccess-control-allow-origin: *\r\nconnection: close\r\n\r\n`);
+        sock.write(sse); sock.end();
+        return { handled: true, response: { statusCode: 200, headers: {}, body: Buffer.alloc(0), _streamed: true } };
+      }
+      return { handled: true, response: { statusCode: 200, headers: { "content-type": "text/event-stream", "cache-control": "no-store", "access-control-allow-origin": "*", "connection": "close" }, body: Buffer.from(sse) } };
+    }
+
     await ensureModels();
-    let rawModel = parsed.model || "";
+    let rawModel2 = parsed.model || "";
     const isStream = parsed.stream === true;
     const messages = parsed.messages || [];
     const tools = parsed.tools || [];
 
     // Strip thinking tag from model name and apply reasoningEffort
-    const parsedTag = parseThinkingMode(rawModel);
+    const parsedTag = parseThinkingMode(rawModel2);
     let model = parsedTag.model;
     if (parsedTag.thinking) {
       const params = THINKING_TAG_PARAMS[parsedTag.thinking];
@@ -627,25 +837,31 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
           return !m.id?.startsWith("pol/") && !m.id?.includes("-embedding") && v !== "MiniMax" && v !== "Moonshot AI" && v !== "Zhipu AI" && v !== "Alibaba Cloud";
         });
       model = real?.id || model;
-      console.log(`\n[MODEL] Aliased ${rawModel} → ${model}`);
+      console.log(`\n[MODEL] Aliased ${rawModel2} → ${model}`);
     }
 
     // If still not in model list, pick any non-MiniMax model
-    if (!FAKE_MODELS.find((m: any) => m.id === model)) {
+    if (!FAKE_MODELS.find((m: any) => m.id === model) && model !== "bitnet-demo" && !model.startsWith("bitnet/")) {
       const real = FAKE_MODELS.find((m: any) => m.id.startsWith("deepseek") && !m.id.includes("-embedding"))
         || FAKE_MODELS.find((m: any) => {
           const v = detectVendor(m.id);
           return !m.id?.startsWith("pol/") && !m.id?.includes("-embedding") && v !== "MiniMax" && v !== "Moonshot AI" && v !== "Zhipu AI" && v !== "Alibaba Cloud";
         });
       model = real?.id || (FAKE_MODELS.length > 0 ? FAKE_MODELS[0].id : "big-pickle");
-      console.log(`\n[MODEL] ${rawModel} not found, picked ${model}`);
+      console.log(`\n[MODEL] ${rawModel2} not found, picked ${model}`);
     }
     if (!messages.length) {
       messages.push({ role: "user", content: "Hello" });
     }
 
-    // ── Nag: any nag or retry within 20s → task_complete ──
-    if (countConsecutiveNags(messages) > 0 || (RECENTLY_COMPLETED.get(model) ?? 0) && Date.now() - (RECENTLY_COMPLETED.get(model) ?? 0) < 20000) {
+    injectIdentity(messages, getModelDisplayName(rawModel2), rawModel2);
+
+    // ── Nag: any nag or retry within 20s → task_complete (agentic mode only) ──
+    const _chatCopInitiator = headers["x-initiator"] || "";
+    const _chatCopAgentic = _chatCopInitiator === "agent";
+    const _chatCopNagCount = _chatCopAgentic ? countConsecutiveNags(messages) : 0;
+    const _chatCopDrain = _chatCopAgentic && (RECENTLY_COMPLETED.get(model) ?? 0) && Date.now() - (RECENTLY_COMPLETED.get(model) ?? 0) < 20000;
+    if (_chatCopNagCount > 0 || _chatCopDrain) {
       RECENTLY_COMPLETED.set(model, Date.now());
       stripNagMessages(messages);
       const _callId = `call_${forge.util.bytesToHex(forge.random.getBytesSync(6))}`;
@@ -671,7 +887,7 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
       Array.isArray(lastUserMsg.content) ? lastUserMsg.content.filter((c: any) => c.type === "text").map((c: any) => c.text || "").join(" ") : ""
     ) : "";
     const tag = agentTag(headers);
-    const provider = model.startsWith("pol/") ? "poll" : "go";
+    const provider = model.startsWith("pol/") ? "poll" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("featherless/") ? "featherless" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral/") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "go";
     const completeLog = reqLog({ tag, provider, model, preview: chatPreview, body: parsed });
     const startTime = Date.now();
 
@@ -682,7 +898,29 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
     }
 
     try {
-      const resp = await opencodeChat(model, messages, tools, isStream, parsed, session?.keyIdx);
+      const scrubbed2 = scrubTaskComplete(messages, tools);
+      const cleanMsgs2 = scrubbed2.messages;
+      const cleanTools2 = scrubbed2.tools;
+      const cleanTools2Compressed = compressToolDefinitions(cleanTools2);
+      const isFb2 = model.startsWith("freebuff/");
+      const isPol2 = model.startsWith("pol/");
+      const isFeath2 = model.startsWith("featherless/");
+      const isAg2 = model.startsWith("agnes");
+      const isCs2 = model.startsWith("codestral/");
+      const isBn2 = model === "bitnet-demo" || model.startsWith("bitnet/");
+      const resp = isFb2
+        ? await freebuffChat(model, cleanMsgs2, cleanTools2, isStream, { max_tokens: parsed.max_tokens, temperature: parsed.temperature, top_p: parsed.top_p, ...parsed })
+        : isPol2
+        ? await pollChat(model, cleanMsgs2, cleanTools2, isStream, { max_tokens: parsed.max_tokens, temperature: parsed.temperature, top_p: parsed.top_p })
+        : isFeath2
+        ? await featherlessChat(model, cleanMsgs2, cleanTools2, isStream, { max_tokens: parsed.max_tokens, temperature: parsed.temperature, top_p: parsed.top_p })
+        : isAg2
+        ? await agnesChat(model, cleanMsgs2, cleanTools2, isStream, { ...parsed })
+        : isCs2
+        ? await codestralChat(model, cleanMsgs2, cleanTools2, isStream, { max_tokens: parsed.max_tokens, temperature: parsed.temperature, top_p: parsed.top_p })
+        : isBn2
+        ? await bitnetChat(model, cleanMsgs2, cleanTools2, isStream, { max_tokens: parsed.max_tokens, temperature: parsed.temperature, top_p: parsed.top_p })
+        : await opencodeChat(model, cleanMsgs2, cleanTools2, isStream, parsed, session?.keyIdx, session?.sessionLabel);
 
       if (!isStream) {
         const data: any = await resp.json();
@@ -691,8 +929,44 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
       }
 
       // Streaming: write SSE chunks directly to client socket
+      const ct = resp.headers.get("content-type") || "";
+      const actualStream = isStream && ct.includes("text/event-stream");
+      if (!actualStream && !resp.ok) {
+        const txt = await resp.text().catch(() => "");
+        throw new Error(`Copilot upstream ${resp.status}: ${txt.slice(0, 300)}`);
+      }
       const sock = req.clientSocket;
       if (sock) {
+        if (!actualStream) {
+          const data: any = await resp.json().catch(() => ({}));
+          const msg = data.choices?.[0]?.message || {};
+          const msgId = `msg_${forge.util.bytesToHex(forge.random.getBytesSync(8))}`;
+          const stopReason = msg.tool_calls?.length ? "tool_use" : "end_turn";
+          const usage = data.usage || {};
+          if (usage.output_tokens === undefined) usage.output_tokens = 0;
+          if (usage.input_tokens === undefined) usage.input_tokens = 0;
+          const sseChunks: string[] = [];
+          sseChunks.push(`event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: { id: msgId, type: "message", role: "assistant", content: [], model, stop_reason: null, stop_sequence: null, usage: { input_tokens: usage.input_tokens, output_tokens: usage.output_tokens } } })}\n\n`);
+          if (msg.content) {
+            sseChunks.push(`event: content_block_start\ndata: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "text", text: msg.content } })}\n\n`);
+            sseChunks.push(`event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: 0 })}\n\n`);
+          }
+          if (msg.tool_calls?.length) {
+            msg.tool_calls.forEach((tc: any, i: number) => {
+              const fn = tc.function || tc;
+              sseChunks.push(`event: content_block_start\ndata: ${JSON.stringify({ type: "content_block_start", index: msg.content ? i + 1 : i, content_block: { type: "tool_use", id: tc.id, name: fn.name || "unknown", input: typeof fn.arguments === "string" ? JSON.parse(fn.arguments) : fn.arguments || {} } })}\n\n`);
+              sseChunks.push(`event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: msg.content ? i + 1 : i })}\n\n`);
+            });
+          }
+          sseChunks.push(`event: message_delta\ndata: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: stopReason, stop_sequence: null }, usage: { input_tokens: usage.input_tokens, output_tokens: usage.output_tokens } })}\n\n`);
+          sseChunks.push(`event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}\n\n`);
+          const respHead = `HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-store\r\naccess-control-allow-origin: *\r\nx-accel-buffering: no\r\nconnection: close\r\n\r\n`;
+          sock.write(respHead);
+          sock.write(sseChunks.join(""));
+          sock.end();
+          if (completeLog) completeLog(Date.now() - startTime);
+          return { handled: true, response: { statusCode: 200, headers: {}, body: Buffer.alloc(0), _streamed: true } };
+        }
         const respHead = `HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-store\r\naccess-control-allow-origin: *\r\nx-accel-buffering: no\r\nx-request-id: req-${forge.util.bytesToHex(forge.random.getBytesSync(6))}\r\nconnection: close\r\n\r\n`;
         sock.write(respHead);
 
@@ -706,8 +980,7 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
           const { done, value } = await reader.read();
           if (done) break;
           const chunk = decoder.decode(value, { stream: true });
-          const hasDone = chunk.includes("data: [DONE]");
-          if (!_nagAppend || !hasDone) sock.write(chunk);
+          sock.write(chunk);
           buf += chunk;
           const lines = buf.split("\n");
           buf = lines.pop() || "";
@@ -950,7 +1223,7 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
         });
       model = real?.id || model;
     }
-    if (!FAKE_MODELS.find((m: any) => m.id === model)) {
+    if (!FAKE_MODELS.find((m: any) => m.id === model) && model !== "bitnet-demo" && !model.startsWith("bitnet/")) {
       const real = FAKE_MODELS.find((m: any) => m.id.startsWith("deepseek") && !m.id.includes("-embedding"))
         || FAKE_MODELS.find((m: any) => {
           const v = detectVendor(m.id);
@@ -965,12 +1238,31 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
     ];
 
     const tag = agentTag(headers);
-    const provider = model.startsWith("pol/") ? "poll" : "go";
+    const provider = model.startsWith("pol/") ? "poll" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "go";
     const completeLog = reqLog({ tag, provider, model, preview: userContent, body: parsed });
     const startTime = Date.now();
 
     try {
-      const resp = await opencodeChat(model, messages, tools, isStream, { ...parsed });
+      const scrubbed3 = scrubTaskComplete(messages, tools);
+      const cleanMsgs3 = scrubbed3.messages;
+      const cleanTools3 = scrubbed3.tools;
+      const cleanTools3Compressed = compressToolDefinitions(cleanTools3);
+      const isFb3 = model.startsWith("freebuff/");
+      const isPol3 = model.startsWith("pol/");
+      const isFeath3 = model.startsWith("featherless/");
+      const isAg3 = model.startsWith("agnes");
+      const isBn3 = model === "bitnet-demo" || model.startsWith("bitnet/");
+      const resp = isFb3
+        ? await freebuffChat(model, cleanMsgs3, cleanTools3, isStream, { max_tokens: parsed.max_tokens, temperature: parsed.temperature, top_p: parsed.top_p, ...parsed })
+        : isPol3
+        ? await pollChat(model, cleanMsgs3, cleanTools3, isStream, { max_tokens: parsed.max_tokens, temperature: parsed.temperature, top_p: parsed.top_p })
+        : isFeath3
+        ? await featherlessChat(model, cleanMsgs3, cleanTools3, isStream, { max_tokens: parsed.max_tokens, temperature: parsed.temperature, top_p: parsed.top_p })
+        : isAg3
+        ? await agnesChat(model, cleanMsgs3, cleanTools3, isStream, { ...parsed })
+        : isBn3
+        ? await bitnetChat(model, cleanMsgs3, cleanTools3, isStream, { max_tokens: parsed.max_tokens, temperature: parsed.temperature, top_p: parsed.top_p })
+        : await opencodeChat(model, cleanMsgs3, cleanTools3, isStream, { ...parsed });
 
       if (!isStream) {
         const ct = resp.headers.get("content-type") || "";
@@ -1004,18 +1296,48 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
               }
             }
           }
-          const msg: any = { content: fullContent };
+          const msg: any = { content: stripCopilotGreeting(fullContent) };
           const keys = Object.keys(toolCallAccum);
           if (keys.length) msg.tool_calls = keys.map((k) => toolCallAccum[+k]);
           data = { choices: [{ message: msg }], usage: { completion_tokens: fullContent.length } };
         } else {
           data = await resp.json();
+          if (data?.choices?.[0]?.message?.content) {
+            data.choices[0].message.content = stripCopilotGreeting(data.choices[0].message.content);
+          }
         }
         const elapsed = Date.now() - startTime;
         if (completeLog) completeLog(elapsed);
 
         // Build output items: text message + tool call items
         const msg = data.choices?.[0]?.message || {};
+
+        // ── Tool salvager (responses non-stream streaming accumulation path) ──
+        if (msg.tool_calls?.length) {
+          const { repaired, dropped } = repairToolCalls(msg.tool_calls);
+          const allDropped = msg.tool_calls.length > 0 && repaired.length === 0;
+          const isApology = detectApologyText(msg.content || "");
+          const isLoop = repaired.length
+            ? detectToolLoop(bridge.messages, { name: repaired[0].function?.name || "", arguments: repaired[0].function?.arguments || "{}" })
+            : { inLoop: false, count: 0, tool: "", args: "" };
+          if ((isApology && allDropped) || isLoop.inLoop) {
+            bumpSalvageStat(isLoop.inLoop ? "loopInjected" : "apologyInjected");
+            console.log(`[TOOL SALVAGE] ${bridge.model}: ${isLoop.inLoop ? `loop(${isLoop.tool}×${isLoop.count})` : "apology"} → task_complete`);
+            msg.tool_calls = [{ id: `call_${forge.util.bytesToHex(forge.random.getBytesSync(6))}`, type: "function", function: { name: "task_complete", arguments: "{}" } }];
+          } else {
+            const originalLen = msg.tool_calls.length;
+            msg.tool_calls = repaired;
+            if (repaired.length !== originalLen || dropped.length) {
+              console.log(`[TOOL SALVAGE] ${bridge.model}: ${repaired.length}/${originalLen} tool_calls repaired, ${dropped.length} dropped`);
+            }
+          }
+        } else if (detectApologyText(msg.content || "")) {
+          bumpSalvageStat("apologyInjected");
+          console.log(`[TOOL SALVAGE] ${bridge.model}: pure apology text → task_complete`);
+          msg.tool_calls = [{ id: `call_${forge.util.bytesToHex(forge.random.getBytesSync(6))}`, type: "function", function: { name: "task_complete", arguments: "{}" } }];
+        }
+
+        // Build output items: text message + tool call items
         const output: any[] = [{
           type: "message",
           id: `msg_${forge.util.bytesToHex(forge.random.getBytesSync(8))}`,
@@ -1047,6 +1369,35 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
 
       const sock = req.clientSocket;
       if (sock) {
+        const respCt = resp.headers.get("content-type") || "";
+        const actualStream = isStream && respCt.includes("text/event-stream");
+        if (!actualStream) {
+          const data: any = await resp.json().catch(() => ({}));
+          const respId = `resp_${forge.util.bytesToHex(forge.random.getBytesSync(8))}`;
+          const msgId = `msg_${forge.util.bytesToHex(forge.random.getBytesSync(8))}`;
+          const head = `HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-store\r\naccess-control-allow-origin: *\r\nx-accel-buffering: no\r\nconnection: close\r\n\r\n`;
+          sock.write(head);
+          sock.write(`event: response.created\ndata: ${JSON.stringify({ response: { id: respId, object: "response", created_at: Math.floor(Date.now() / 1000), model, instructions, status: "completed", incomplete_details: null, output: [], usage: data.usage || null } })}\n\n`);
+          const msg = data.choices?.[0]?.message || {};
+          let outIdx = 0;
+          if (msg.content) {
+            sock.write(`event: response.output_item.added\ndata: ${JSON.stringify({ response_id: respId, output_index: outIdx, item: { id: msgId, type: "message", role: "assistant", content: [{ type: "output_text", text: msg.content }], status: "completed" } })}\n\n`);
+            outIdx++;
+          }
+          if (msg.tool_calls?.length) {
+            for (const tc of msg.tool_calls) {
+              const fn = tc.function || tc;
+              const callId = tc.id || `call_${forge.util.bytesToHex(forge.random.getBytesSync(6))}`;
+              const args = typeof fn.arguments === "string" ? fn.arguments : JSON.stringify(fn.arguments || {});
+              sock.write(`event: response.output_item.added\ndata: ${JSON.stringify({ response_id: respId, output_index: outIdx, item: { id: callId, type: "function_call", status: "completed", name: fn.name || "unknown", arguments: args } })}\n\n`);
+              outIdx++;
+            }
+          }
+          sock.write(`event: response.done\ndata: ${JSON.stringify({ response_id: respId })}\n\n`);
+          sock.end();
+          if (completeLog) completeLog(Date.now() - startTime);
+          return { handled: true, response: { statusCode: 200, headers: {}, body: Buffer.alloc(0), _streamed: true } };
+        }
         const respId = `resp_${forge.util.bytesToHex(forge.random.getBytesSync(8))}`;
       const msgId = `msg_${forge.util.bytesToHex(forge.random.getBytesSync(8))}`;
       const head = `HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-store\r\naccess-control-allow-origin: *\r\nx-accel-buffering: no\r\nx-quota-snapshot-chat: ent=500&ov=0.0&ovPerm=false&rem=0.0&rst=2120-01-01T00:00:00Z&totRem=0.0\r\nx-quota-snapshot-completions: ent=4000&ov=0.0&ovPerm=false&rem=98.3&rst=2120-01-01T00:00:00Z&totRem=3932.0\r\nconnection: close\r\n\r\n`;
@@ -1061,7 +1412,10 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
         const decoder = new TextDecoder();
         let fullContent = "";
         const toolCallAccum: Record<number, { id: string; name: string; args: string; ouputIndex: number }> = {};
+        const toolCallEvents: any[] = [];
         let nextToolOutputIdx = 1;
+        let gBuf = "";
+        let gDone = false;
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
@@ -1074,28 +1428,38 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
                 const d = JSON.parse(t.slice(6));
                 const delta = d.choices?.[0]?.delta;
                 if (delta?.content) {
-                  fullContent += delta.content;
-                  sock.write(`event: response.output_text.delta\ndata: ${JSON.stringify({ response_id: respId, item_id: msgId, output_index: outputIndex, content_index: 0, delta: delta.content })}\n\n`);
+                  if (!gDone) {
+                    gBuf += delta.content;
+                    const s = stripCopilotGreeting(gBuf);
+                    if (s.length !== gBuf.length || gBuf.length >= 200) {
+                      gDone = true;
+                      if (s.length > 0) {
+                        fullContent += s;
+                        sock.write(`event: response.output_text.delta\ndata: ${JSON.stringify({ response_id: respId, item_id: msgId, output_index: outputIndex, content_index: 0, delta: s })}\n\n`);
+                      }
+                    }
+                  } else {
+                    fullContent += delta.content;
+                    sock.write(`event: response.output_text.delta\ndata: ${JSON.stringify({ response_id: respId, item_id: msgId, output_index: outputIndex, content_index: 0, delta: delta.content })}\n\n`);
+                  }
                 }
                 if (delta?.tool_calls) {
                   for (const tc of delta.tool_calls) {
                     const idx = tc.index ?? 0;
                     if (!toolCallAccum[idx]) {
                       toolCallAccum[idx] = { id: tc.id || "", name: "", args: "", ouputIndex: nextToolOutputIdx++ };
-                      if (tc.id) {
-                        sock.write(`event: response.output_item.added\ndata: ${JSON.stringify({ response_id: respId, output_index: toolCallAccum[idx].ouputIndex, item: { id: tc.id, type: "function_call", status: "in_progress", name: "", arguments: "" } })}\n\n`);
-                      }
+                      toolCallEvents.push({ type: "added", ouputIndex: toolCallAccum[idx].ouputIndex, id: tc.id || "" });
                     }
                     if (tc.id) toolCallAccum[idx].id = tc.id;
                     if (tc.function?.name) {
                       toolCallAccum[idx].name += tc.function.name;
                       if (tc.function.name) {
-                        sock.write(`event: response.function_call_arguments.delta\ndata: ${JSON.stringify({ response_id: respId, item_id: toolCallAccum[idx].id, output_index: toolCallAccum[idx].ouputIndex, delta: `{"name":"${tc.function.name}","arguments":"` })}\n\n`);
+                        toolCallEvents.push({ type: "delta_name", id: toolCallAccum[idx].id, ouputIndex: toolCallAccum[idx].ouputIndex, name: tc.function.name });
                       }
                     }
                     if (tc.function?.arguments) {
                       toolCallAccum[idx].args += tc.function.arguments;
-                      sock.write(`event: response.function_call_arguments.delta\ndata: ${JSON.stringify({ response_id: respId, item_id: toolCallAccum[idx].id, output_index: toolCallAccum[idx].ouputIndex, delta: tc.function.arguments })}\n\n`);
+                      toolCallEvents.push({ type: "delta_args", id: toolCallAccum[idx].id, ouputIndex: toolCallAccum[idx].ouputIndex, args: tc.function.arguments });
                     }
                   }
                 }
@@ -1108,10 +1472,58 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
         sock.write(`event: response.output_text.done\ndata: ${JSON.stringify({ response_id: respId, item_id: msgId, output_index: outputIndex, content_index: 0, text: fullContent })}\n\n`);
         sock.write(`event: response.content_part.done\ndata: ${JSON.stringify({ response_id: respId, item_id: msgId, output_index: outputIndex, content_index: 0, part: { type: "text", text: fullContent } })}\n\n`);
         sock.write(`event: response.output_item.done\ndata: ${JSON.stringify({ response_id: respId, output_index: outputIndex, item: { id: msgId, type: "message", role: "assistant", content: [{ type: "text", text: fullContent }], status: "completed" } })}\n\n`);
-        for (const [idxStr, acc] of Object.entries(toolCallAccum)) {
-          const idx = +idxStr;
-          outputItems.push({ id: acc.id, type: "function_call", status: "completed", name: acc.name, call_id: acc.id, arguments: acc.args });
-          sock.write(`event: response.output_item.done\ndata: ${JSON.stringify({ response_id: respId, output_index: acc.ouputIndex, item: { id: acc.id, type: "function_call", status: "completed", name: acc.name, call_id: acc.id, arguments: acc.args } })}\n\n`);
+
+        // ── Tool salvager (responses streaming path) ──
+        // Buffer was collected during stream; run salvager on accumulated tool calls.
+        const accumulatedToolCalls = Object.keys(toolCallAccum).length
+          ? Object.values(toolCallAccum).map(a => ({ id: a.id, type: "function", function: { name: a.name, arguments: a.args } }))
+          : [];
+        let useTaskComplete = false;
+        if (accumulatedToolCalls.length) {
+          const { repaired, dropped } = repairToolCalls(accumulatedToolCalls);
+          const allDropped = accumulatedToolCalls.length > 0 && repaired.length === 0;
+          const isApology = detectApologyText(fullContent);
+          const isLoop = repaired.length
+            ? detectToolLoop(bridge.messages, { name: repaired[0].function?.name || "", arguments: repaired[0].function?.arguments || "{}" })
+            : { inLoop: false, count: 0, tool: "", args: "" };
+          if ((isApology && allDropped) || isLoop.inLoop) {
+            bumpSalvageStat(isLoop.inLoop ? "loopInjected" : "apologyInjected");
+            console.log(`[TOOL SALVAGE] ${bridge.model}: ${isLoop.inLoop ? `loop(${isLoop.tool}×${isLoop.count})` : "apology"} → task_complete`);
+            useTaskComplete = true;
+          } else if (repaired.length !== accumulatedToolCalls.length || dropped.length) {
+            console.log(`[TOOL SALVAGE] ${bridge.model}: ${repaired.length}/${accumulatedToolCalls.length} tool_calls repaired, ${dropped.length} dropped`);
+          }
+        } else if (detectApologyText(fullContent)) {
+          bumpSalvageStat("apologyInjected");
+          console.log(`[TOOL SALVAGE] ${bridge.model}: pure apology text → task_complete`);
+          useTaskComplete = true;
+        }
+
+        if (useTaskComplete) {
+          // Drop all original tool calls; emit a single task_complete
+          const tcId = `call_${forge.util.bytesToHex(forge.random.getBytesSync(6))}`;
+          const tcOutIdx = nextToolOutputIdx++;
+          outputItems.push({ id: tcId, type: "function_call", status: "completed", name: "task_complete", call_id: tcId, arguments: "{}" });
+          sock.write(`event: response.output_item.added\ndata: ${JSON.stringify({ response_id: respId, output_index: tcOutIdx, item: { id: tcId, type: "function_call", status: "in_progress", name: "", arguments: "" } })}\n\n`);
+          sock.write(`event: response.function_call_arguments.delta\ndata: ${JSON.stringify({ response_id: respId, item_id: tcId, output_index: tcOutIdx, delta: '{"name":"task_complete","arguments":"' })}\n\n`);
+          sock.write(`event: response.function_call_arguments.delta\ndata: ${JSON.stringify({ response_id: respId, item_id: tcId, output_index: tcOutIdx, delta: '{}"}' })}\n\n`);
+          sock.write(`event: response.output_item.done\ndata: ${JSON.stringify({ response_id: respId, output_index: tcOutIdx, item: { id: tcId, type: "function_call", status: "completed", name: "task_complete", call_id: tcId, arguments: "{}" } })}\n\n`);
+        } else {
+          // Emit buffered tool call events
+          for (const ev of toolCallEvents) {
+            if (ev.type === "added") {
+              sock.write(`event: response.output_item.added\ndata: ${JSON.stringify({ response_id: respId, output_index: ev.ouputIndex, item: { id: ev.id, type: "function_call", status: "in_progress", name: "", arguments: "" } })}\n\n`);
+            } else if (ev.type === "delta_name") {
+              sock.write(`event: response.function_call_arguments.delta\ndata: ${JSON.stringify({ response_id: respId, item_id: ev.id, output_index: ev.ouputIndex, delta: `{"name":"${ev.name}","arguments":"` })}\n\n`);
+            } else if (ev.type === "delta_args") {
+              sock.write(`event: response.function_call_arguments.delta\ndata: ${JSON.stringify({ response_id: respId, item_id: ev.id, output_index: ev.ouputIndex, delta: ev.args })}\n\n`);
+            }
+          }
+          for (const [idxStr, acc] of Object.entries(toolCallAccum)) {
+            const idx = +idxStr;
+            outputItems.push({ id: acc.id, type: "function_call", status: "completed", name: acc.name, call_id: acc.id, arguments: acc.args });
+            sock.write(`event: response.output_item.done\ndata: ${JSON.stringify({ response_id: respId, output_index: acc.ouputIndex, item: { id: acc.id, type: "function_call", status: "completed", name: acc.name, call_id: acc.id, arguments: acc.args } })}\n\n`);
+          }
         }
         sock.write(`event: response.completed\ndata: ${JSON.stringify({ response: { id: respId, object: "response", created_at: Math.floor(Date.now() / 1000), model, instructions, status: "completed", incomplete_details: null, output: outputItems, usage: { input_tokens: 0, output_tokens: fullContent.length, total_tokens: fullContent.length } } })}\n\n`);
         sock.end();
@@ -1373,21 +1785,85 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
 
     const prompt = parsed.prompt || parsed.suffix || "";
     const language = parsed.language || parsed.lang || "typescript";
+    const model = parsed.model || "supermaven-free";
+    const isStream = parsed.stream === true;
+    const tag = agentTag(headers);
 
-    const completionMap: Record<string, string> = {
-      "// ": "complete this line\nfunction processData(input: string): void {\n  // Implementation here\n}\n",
-      "function ": "processData(input: string): void {\n  // TODO: implement\n}\n",
-      "import ": "{ readFileSync, writeFileSync } from 'node:fs';\nimport { join, resolve } from 'node:path';\n",
-      "const ": "result = await fetchData();\nif (!result.ok) throw new Error('Failed to fetch');\n",
-    };
+    const completionsComplete = reqLog({ tag, provider: "fim", model, preview: prompt.substring(0, 120) });
+    const completionsStart = Date.now();
 
-    let completion = "// Mock completion\nfunction placeholder(): void {}\n";
-    for (const [prefix, suffix] of Object.entries(completionMap)) {
-      if (prompt.includes(prefix)) {
-        completion = suffix;
-        break;
+    // 1) Try Supermaven first
+    let completion = "";
+    const useSupermaven = isSupermavenEnabled() && isSupermavenReady();
+
+    if (useSupermaven) {
+      try {
+        completion = await supermavenCodeComplete(prompt);
+        if (completion) console.log(`[SUPERMAVEN] ${tag} result: "${completion.substring(0, 80)}"`);
+      } catch (e: any) {
+        console.log(`[SUPERMAVEN] ${tag} error: ${e.message}`);
       }
     }
+
+    // 2) Fallback: Mistral FIM if key available
+    if (!completion) {
+      const completionsModel = getCompletionsModel();
+      if (completionsModel) {
+        try {
+          const resp = await codestralCompletions(prompt, parsed.suffix || "", completionsModel, {
+            max_tokens: parsed.max_tokens,
+            temperature: parsed.temperature,
+            top_p: parsed.top_p,
+            stop: parsed.stop,
+            stream: isStream,
+          });
+
+          if (isStream) {
+            const sock = req.clientSocket;
+            if (sock) {
+              const respHead = `HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-store\r\naccess-control-allow-origin: *\r\nx-accel-buffering: no\r\nconnection: close\r\n\r\n`;
+              sock.write(respHead);
+              const reader = resp.body!.getReader();
+              const decoder = new TextDecoder();
+              let len = 0;
+              while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                const chunk = decoder.decode(value, { stream: true });
+                sock.write(chunk);
+                len += chunk.length;
+              }
+              sock.end();
+              if (completionsComplete) completionsComplete(Date.now() - completionsStart);
+              return { handled: true, response: { statusCode: 200, headers: {}, body: Buffer.alloc(0), _streamed: true } };
+            }
+          }
+
+          const data: any = await resp.json();
+          if (completionsComplete) completionsComplete(Date.now() - completionsStart);
+          console.log(`[CODESTRAL] ${tag} completions → ${data.choices?.length || 0} choices`);
+          return { handled: true, response: jsonResponse(data) };
+        } catch (e: any) {
+          console.log(`[CODESTRAL] ${tag} completions error: ${e.message}`);
+        }
+      }
+    }
+
+    // 3) Fallback: static mock
+    if (!completion) {
+      const completionMap: Record<string, string> = {
+        "// ": "complete this line\nfunction processData(input: string): void {\n  // Implementation here\n}\n",
+        "function ": "processData(input: string): void {\n  // TODO: implement\n}\n",
+        "import ": "{ readFileSync, writeFileSync } from 'node:fs';\nimport { join, resolve } from 'node:path';\n",
+        "const ": "result = await fetchData();\nif (!result.ok) throw new Error('Failed to fetch');\n",
+      };
+      completion = "// Mock completion\nfunction placeholder(): void {}\n";
+      for (const [prefix, suffix] of Object.entries(completionMap)) {
+        if (prompt.includes(prefix)) { completion = suffix; break; }
+      }
+    }
+
+    if (completionsComplete) completionsComplete(Date.now() - completionsStart);
 
     return {
       handled: true,
@@ -1395,7 +1871,7 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
         id: `cmpl-${forge.util.bytesToHex(forge.random.getBytesSync(6))}`,
         object: "text_completion",
         created: Math.floor(Date.now() / 1000),
-        model: "copilot-codex",
+        model: model,
         choices: [{
           text: completion,
           index: 0,
@@ -1445,8 +1921,8 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
     };
   }
 
-  // GET /v1/health or /health
-  if ((method === "GET" || method === "HEAD") && (url.includes("/health") || url === "/")) {
+  // GET /v1/health or /health (not bare /, which would block github.com in hybrid mode)
+  if ((method === "GET" || method === "HEAD") && (url.includes("/health") && url !== "/")) {
     return { handled: true, response: jsonResponse({ status: "ok", service: "copilot-proxy" }) };
   }
 

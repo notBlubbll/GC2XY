@@ -5,30 +5,9 @@ cd /d "%~dp0"
 if exist ".config\.env" for /f "usebackq delims=" %%x in (".config\.env") do set "%%x" 2>nul
 
 net session >nul 2>&1
-if %ERRORLEVEL% NEQ 0 goto :elevate
-goto :after_elevate
-
-:elevate
-if "%ENFORCE_CMD%"=="1" goto :elevate_cmd
-where wt.exe >nul 2>&1
-if not errorlevel 1 goto :elevate_wt
-:elevate_cmd
-if not "%ENFORCE_CMD%"=="" echo set ENFORCE_CMD=%ENFORCE_CMD%>"%TEMP%\gc2xy_env.cmd"
-if not "%ENFORCE_NODE%"=="" echo set ENFORCE_NODE=%ENFORCE_NODE%>>"%TEMP%\gc2xy_env.cmd"
-powershell -NoProfile -Command "Start-Process cmd.exe -Verb RunAs -ArgumentList '/c \"%~f0\" %*'"
-exit /b 0
-
-:elevate_wt
-if not "%ENFORCE_CMD%"=="" echo set ENFORCE_CMD=%ENFORCE_CMD%>"%TEMP%\gc2xy_env.cmd"
-if not "%ENFORCE_NODE%"=="" echo set ENFORCE_NODE=%ENFORCE_NODE%>>"%TEMP%\gc2xy_env.cmd"
-powershell -NoProfile -Command "Start-Process wt.exe -Verb RunAs -ArgumentList 'cmd /c \"%~f0\" %*'"
-exit /b 0
-
-:after_elevate
-if exist "%TEMP%\gc2xy_env.cmd" call "%TEMP%\gc2xy_env.cmd" & del "%TEMP%\gc2xy_env.cmd"
-if "%ENFORCE_CMD%"=="1" if not "%WT_SESSION%"=="" (
-  start "" cmd.exe /c "%~f0" %*
-  exit
+if %ERRORLEVEL% NEQ 0 (
+    start "" powershell -NoP -Command "Start-Process cmd -Verb RunAs -ArgumentList '/c \"\"%~f0\" %*\"'"
+    exit /b
 )
 echo ==================================================
 echo  gc2xy - Remove MITM Proxy
@@ -84,7 +63,12 @@ powershell -NoProfile "Get-NetTCPConnection -LocalPort 443 -ErrorAction Silently
 goto :clean_done
 
 :iis_cleanup
-echo   IIS detected - cleaning port 80 only
+echo   IIS detected - cleaning SSL bindings + port 80
+for %%h in (github.com www.github.com api.github.com api.githubcopilot.com copilot-proxy.githubusercontent.com api.individual.githubcopilot.com origin-tracker.individual.githubcopilot.com proxy.individual.githubcopilot.com telemetry.individual.githubcopilot.com) do (
+    netsh http delete sslcert "hostnameport=%%h:443" >nul 2>&1
+)
+netsh http delete sslcert "ipport=0.0.0.0:443" >nul 2>&1
+netsh http delete sslcert "ipport=[::]:443" >nul 2>&1
 powershell -NoProfile "Get-NetTCPConnection -LocalPort 80 -ErrorAction SilentlyContinue | Select -ExpandProperty OwningProcess | ForEach-Object { taskkill /F /PID $_ 2>$null }" >nul 2>&1
 
 :clean_done

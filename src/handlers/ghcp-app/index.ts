@@ -1,4 +1,4 @@
-import { HandlerInput, HandlerResult, htmlResponse } from "../../shared.ts";
+import { HandlerInput, HandlerResult, htmlResponse, getGithubUsername } from "../../shared.ts";
 import { isGHCPApp } from "./auth.ts";
 import { handleGHCPModels } from "./models.ts";
 import { trackRequest } from "../../usage-tracker.ts";
@@ -50,7 +50,7 @@ export async function _handleGHCPApp(req: HandlerInput): Promise<HandlerResult> 
 
   // Autopilot team membership check — fake user is always a member
   if (req.method === "GET" && req.url.match(/\/orgs\/github\/teams\/autopilot\/memberships\//)) {
-    const username = req.url.split("/").pop() || "fake-copilot-user";
+    const username = req.url.split("/").pop() || getGithubUsername();
     return { handled: true, response: { statusCode: 200, headers: { "content-type": "application/json; charset=utf-8", "access-control-allow-origin": "*" }, body: Buffer.from(JSON.stringify({ url: `https://api.github.com/orgs/github/teams/autopilot/memberships/${username}`, role: "member", state: "active" })) } };
   }
 

@@ -1,6 +1,10 @@
 import forge from "node-forge";
-import { jsonResponse, HandlerInput, HandlerResult } from "../../shared.ts";
-import { initModels, getModelCtx, getModelDisplayName } from "../opencode-client.ts";
+import { readFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import { jsonResponse, HandlerInput, HandlerResult, getProjectRoot } from "../../shared.ts";
+import { getModelCtx, getModelDisplayName, getModelProviderTag } from "../opencode-client.ts";
+
+import { addModels } from "../../models.ts";
 import { isDebug } from "../../split-console.ts";
 
 const VS_MODELS: any[] = [];
@@ -8,27 +12,12 @@ let _lastModelIds: string[] = [];
 let _rebuilding = false;
 
 const THINKING_TAGS = ["LOW", "MEDIUM", "HIGH", "MAXIMUM"];
-const TAG_PARAMS: Record<string, Record<string, string>> = {
-  LOW: { reasoningEffort: "low" },
-  MEDIUM: { reasoningEffort: "medium" },
-  HIGH: { reasoningEffort: "high" },
-  MAXIMUM: { reasoningEffort: "max" },
-};
-const SHORT_TAG: Record<string, string> = { LOW: "LO", MEDIUM: "MD", HIGH: "HI", MAXIMUM: "MX" };
-const SMALL_CAPS: Record<string, string> = {
-  a: "ᴀ", b: "ʙ", c: "ᴄ", d: "ᴅ", e: "ᴇ", f: "ғ", g: "ɢ", h: "ʜ", i: "ɪ",
-  j: "ᴊ", k: "ᴋ", l: "ʟ", m: "ᴍ", n: "ɴ", o: "ᴏ", p: "ᴘ", q: "ǫ", r: "ʀ",
-  s: "s", t: "ᴛ", u: "ᴜ", v: "v", w: "ᴡ", x: "x", y: "ʏ", z: "ᴢ",
-  A: "ᴀ", B: "ʙ", C: "ᴄ", D: "ᴅ", E: "ᴇ", F: "ғ", G: "ɢ", H: "ʜ", I: "ɪ",
-  J: "ᴊ", K: "ᴋ", L: "ʟ", M: "ᴍ", N: "ɴ", O: "ᴏ", P: "ᴘ", Q: "ǫ", R: "ʀ",
-  S: "s", T: "ᴛ", U: "ᴜ", V: "v", W: "ᴡ", X: "x", Y: "ʏ", Z: "ᴢ",
-};
-const toSc = (s: string) => s.split("").map(c => SMALL_CAPS[c] || c).join("");
+const LEVEL_SUFFIX: Record<string, string> = { LOW: "lo", MEDIUM: "md", HIGH: "hi", MAXIMUM: "mx" };
 const TAG_FITS: Record<string, string[]> = {
-  LOW: ["low", "lo", "ʟ"].map(toSc),
-  MEDIUM: ["medium", "med"].map(toSc).concat(["🇲🇩"]),
-  HIGH: ["high", "hi", "ʜ"].map(toSc),
-  MAXIMUM: ["maximum", "max"].map(toSc).concat(["🇲🇽"]),
+  LOW: ["ʟᴏ", "ʟ"],
+  MEDIUM: ["ᴍᴅ", "ᴍᴇᴅ"],
+  HIGH: ["ʜɪ", "ʜ"],
+  MAXIMUM: ["ᴍx", "ᴍᴀx"],
 };
 
 function isPremium(id: string): boolean {
@@ -40,6 +29,18 @@ function isThinkingModel(id: string): boolean {
   const l = id.toLowerCase();
   return l.includes("deepseek") || l.includes("claude") || l.includes("mimo") || l.includes("codex") || l.includes("big-pickle");
 }
+
+function isFreeModel(id: string): boolean {
+  return id.startsWith("pol/") || id.startsWith("agnes");
+}
+
+// ── Free model lightweight tuning ──
+// model_picker_category: "lightweight" | model_picker_price_category: "low"
+// is_chat_fallback: true  (eligible as auto-fallback)
+// 
+// When switching to real GitHub token_prices format for Copilot Chat:
+//   getBilling() → { token_prices: { input_price: 0, output_price: 0, cache_price: 0, batch_size: 1000000 } }
+//   variant billing → same token_prices block (no is_premium/multiplier/restricted_to)
 
 function getBilling(id: string, ctx: number): any {
   return {
@@ -124,11 +125,13 @@ export function detectVendor(id: string): string {
   if (l.includes("nemotron")) return "NVIDIA";
   if (l.includes("big-pickle")) return "Opencode";
   if (l.includes("ring")) return "Ring";
+  if (l.includes("codestral") || l.includes("mistral")) return "Mistral AI";
   return "Opencode";
 }
 
 export function getThinkingModes(id: string): string[] {
   const l = id.toLowerCase();
+  if (l.startsWith("freebuff/")) return [];
   if (l.includes("deepseek-v4")) return THINKING_TAGS;
   if (l.includes("mimo")) return ["LOW", "MEDIUM", "HIGH"];
   return [];
@@ -136,7 +139,23 @@ export function getThinkingModes(id: string): string[] {
 
 async function ensureModels() {
   if (_rebuilding) return;
-  const models = await initModels();
+  let models = await addModels();
+
+  // Filter out disabled models and inactive providers from config.json
+  const PROVIDER_MAP: Record<string, string> = { opencode: "go", zen: "zen", freebuff: "freebuff", agnes: "agnes", codestral: "codestral", featherless: "featherless", bitnet: "bitnet", deepseek: "deepseek" };
+  try {
+    const cp = join(getProjectRoot(), ".config", "config.json");
+    if (existsSync(cp)) {
+      const cfg = JSON.parse(readFileSync(cp, "utf-8"));
+      const activeProviders: string[] = cfg.providers || ["opencode"];
+      const activeTags = new Set(activeProviders.map((pr: string) => PROVIDER_MAP[pr] || pr));
+      models = models.filter(id => activeTags.has(getModelProviderTag(id)));
+      const dm: Record<string, string[]> = cfg.disabledModels || {};
+      const disabledSet = new Set(Object.values(dm).flat() as string[]);
+      models = models.filter(id => !disabledSet.has(id));
+    }
+  } catch {}
+
   const changed = models.length !== _lastModelIds.length ||
     models.some((id, i) => id !== _lastModelIds[i]);
   if (!changed && VS_MODELS.length > 0) return;
@@ -149,9 +168,11 @@ async function ensureModels() {
   const addModel = (id: string) => {
     if (seen.has(id)) return;
     seen.add(id);
-    let name = "✨" + getModelDisplayName(id);
+    const free = isFreeModel(id);
+    const prefix = id.startsWith("pol/") ? "🐝" : id.startsWith("freebuff/") ? "🇫🇷ᴇᴇ" : id.startsWith("agnes") ? "💜" : id.startsWith("codestral/") ? "🔷" : "✨";
+    let name = getModelDisplayName(id);
     if (name.length > 17) name = name.replace(/\s/g, "");
-    const modes = getThinkingModes(id);
+    const fullName = `${prefix}￤${name}`;
     const picker = { category: "powerful" as const, enabled: true, chat_default: true, chat_fallback: false };
     const limits = getLimits(id);
     const realCtx = getModelCtx(id) || limits.max_context_window_tokens || 128000;
@@ -159,63 +180,100 @@ async function ensureModels() {
     const fakeMult = (realCtx / 100) + 0.01;
     const supports = getSupports(id);
 
-    const model = {
+    const model: any = {
       id,
       object: "model",
-      name,
+      name: fullName,
       vendor: detectVendor(id),
       version: id,
       preview: false,
-      model_picker_category: picker.category,
-      model_picker_enabled: picker.enabled,
+      model_picker_category: free ? "lightweight" : picker.category,
+      model_picker_enabled: true,
       is_chat_default: picker.chat_default,
-      is_chat_fallback: picker.chat_fallback,
+      is_chat_fallback: free ? true : picker.chat_fallback,
       billing: getBilling(id, fakeMult),
-      supported_endpoints: ["/v1/messages", "/chat/completions"],
-      capabilities: {
-        family: id,
-        object: "model_capabilities",
-        type: "chat",
-        tokenizer: "o200k_base",
-        limits,
-        supports,
-      },
+      policy: { state: "enabled", terms: `Enable access to the ${id} model. [Learn more](https://opencode.ai)` },
+    };
+    model.supported_endpoints = ["/v1/messages", "/chat/completions"];
+    model.capabilities = {
+      family: id,
+      object: "model_capabilities",
+      type: "chat",
+      tokenizer: "o200k_base",
+      limits,
+      supports,
     };
     VS_MODELS.push(model);
 
-    // Thinking tag variants
+    // Thinking variants with -lo/-md/-hi/-mx suffix (only if model supports thinking)
+    const modes = getThinkingModes(id);
     for (const mode of modes) {
-      const tag = SHORT_TAG[mode] || mode;
-      const taggedId = `${id} [${tag}]`;
+      const suffix = LEVEL_SUFFIX[mode] || mode.toLowerCase();
+      const taggedId = `${id}-${suffix}`;
       if (seen.has(taggedId)) continue;
       seen.add(taggedId);
-      const tagOptions = TAG_FITS[mode] || [tag.toLowerCase()];
-      let displayName = name.replace(/\s/g, "").slice(1);
+      const baseName = name.replace(/\s/g, "");
+      const tagOptions = TAG_FITS[mode] || [suffix.toUpperCase()];
       let smallTag = tagOptions[0];
-	  const prefix = "☆";
-      let taggedName = `${prefix}${displayName}￤${smallTag}`;
+      let taggedName = `${prefix}￤${baseName}￤${smallTag}`;
       for (let ti = 1; ti < tagOptions.length && taggedName.length > 17; ti++) {
         smallTag = tagOptions[ti];
-        taggedName = `${prefix}${displayName}￤${smallTag}`;
+        taggedName = `${prefix}￤${baseName}￤${smallTag}`;
       }
       const tagSupports = { ...supports, reasoning_effort: [mode.toLowerCase()] };
-      VS_MODELS.push({
+      const pushVariant: any = {
         ...model,
         id: taggedId,
         name: taggedName,
-        model_picker_category: "versatile",
+        model_picker_category: free ? "lightweight" : "versatile",
         model_picker_enabled: true,
         is_chat_default: false,
         is_chat_fallback: false,
         billing: { is_premium: false, multiplier: fakeMult, restricted_to: ["pro", "pro_plus", "business", "enterprise", "max"] },
+        policy: { state: "enabled", terms: `Enable access to the ${id} model. [Learn more](https://opencode.ai)` },
         capabilities: { ...model.capabilities, supports: tagSupports },
-      });
-
+      };
+      VS_MODELS.push(pushVariant);
     }
   };
 
   for (const id of models) addModel(id);
-  if (isDebug()) console.log(`\n[MODEL CACHE] vs/models.ts rebuilt ${VS_MODELS.length} models`);
+
+  // Build separators by cloning a real model to avoid field mismatch
+  const template = VS_MODELS.find((m: any) => !m.id.startsWith("_cat_") && !m.id.includes("["));
+  if (template && VS_MODELS.length > 0) {
+    const PROVIDER_NAMES: Record<string, string> = {
+      go: "\u200D✨ ⸻ OpenCode Go:", poll: "\u200D\u200D🐝 ⸻ Pollinations.ai:", freebuff: "\u200D\u200D\u200D🇫🇷ᴇᴇ ⸻ FreeBuff:", codestral: "\u200D\u200D\u200D\u200D🔷 ⸻ Codestral:", agnes: "\u200D\u200D\u200D\u200D\u200D💜 ⸻ AgnesAI:", featherless: "\u200D\u200D\u200D\u200D\u200D\u200D✨ ⸻ Featherless:", bitnet: "\u200D\u200D\u200D\u200D\u200D\u200D\u200D✨ ⸻ Bitnet:", deepseek: "\u200D\u200D\u200D\u200D\u200D\u200D\u200D\u200D✨ ⸻ DeepSeek:", openrouter: "\u200D\u200D\u200D\u200D\u200D\u200D\u200D\u200D\u200D✨ ⸻ OpenRouter:", zen: "\u200D\u200D\u200D\u200D\u200D\u200D\u200D\u200D\u200D\u200D⸻ ZEN:",
+    };
+    const SEP_ORDER = ["go", "poll", "freebuff", "codestral", "agnes", "featherless", "bitnet", "deepseek", "openrouter", "zen"];
+    // Header banner at very top
+    VS_MODELS.splice(0, 0, {
+      ...template,
+      id: `_cat_header`,
+      name: ".⸻ Model (/Category) ⸻ ContextLength",
+      is_chat_default: false,
+      is_chat_fallback: false,
+      billing: { ...template.billing, multiplier: 0 },
+    });
+    const seenTags: string[] = [];
+    for (let i = 0; i < VS_MODELS.length; i++) {
+      const tag = getModelProviderTag(VS_MODELS[i].id);
+      if (!tag || seenTags.includes(tag)) continue;
+      seenTags.push(tag);
+      const displayName = PROVIDER_NAMES[tag] || tag.toUpperCase();
+      VS_MODELS.splice(i, 0, {
+        ...template,
+        id: `cat_${tag}`,
+        name: displayName,
+        is_chat_default: false,
+        is_chat_fallback: false,
+        model_picker_price_category: "high",
+      });
+      i++;
+    }
+  }
+
+  if (isDebug()) console.log(`\n[MODEL CACHE] vs/models.ts rebuilt ${VS_MODELS.length} models (cats: ${VS_MODELS.filter((m:any) => typeof m.id === "string" && m.id.startsWith("cat_")).map((m:any) => m.id).join(", ") || "none"})`);
   _rebuilding = false;
 }
 
@@ -226,7 +284,11 @@ export async function handleVSModels(req: HandlerInput): Promise<HandlerResult> 
   if (!isModelsEndpoint) return { handled: false };
 
   await ensureModels();
-  return { handled: true, response: jsonResponse({ data: VS_MODELS, object: "list" }) };
+  const data = { data: VS_MODELS, object: "list" };
+  const sepIds = VS_MODELS.filter((m: any) => typeof m.id === "string" && (m.id.startsWith("cat_") || m.id.startsWith("_cat_"))).map((m: any) => m.id + "=" + m.name);
+  console.log(`[MODEL LIST] ${VS_MODELS.length} entries, separators: [${sepIds.join(", ") || "NONE"}]`);
+  try { const fs = require("node:fs"); const p = require("node:path"); fs.writeFileSync(p.join(getProjectRoot(), ".cache", "vs-models-dump.json"), JSON.stringify(data, null, 2)); } catch {}
+  return { handled: true, response: jsonResponse(data) };
 }
 
 export { ensureModels as ensureVSModels, VS_MODELS };

@@ -2,7 +2,7 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { isDebug, setModelsList } from "../split-console.ts";
-import { getProjectRoot } from "../shared.ts";
+import { getProjectRoot, normalizeTool, normalizeToolChoice } from "../shared.ts";
 
 // Reasoning cache: stores reasoning_content from DeepSeek responses
 // and re-attaches it on subsequent requests (DeepSeek requires this)
@@ -25,9 +25,16 @@ function keyHash(): string {
   if (env.OPENCODE_API_KEYS) {
     try { all.push(...JSON.parse(env.OPENCODE_API_KEYS)); } catch {}
   }
+  if (keys.length) all.push(...keys);
   const deduped = [...new Set(all)].sort();
   if (!deduped.length) return "no-key";
   return crypto.createHash("sha256").update(deduped.join("")).digest("hex");
+}
+
+function openRouterKeyHash(): string {
+  const key = getOpenRouterApiKeyLive();
+  if (!key) return "no-openrouter-key";
+  return crypto.createHash("sha256").update(key).digest("hex");
 }
 
 function loadKeyHashFromDisk(): string | null {
@@ -102,7 +109,7 @@ function saveKeyState(): void {
   } catch {}
 }
 
-// ── Session Tracking (from ZEN-PROXY proxy.js) ──
+// ── Session Tracking ──
 
 const TITLE_PROMPT_RE = /generate\s+a\s+title\s+for\s+this\s+conversation/i;
 
@@ -132,7 +139,7 @@ export function fingerprintPayload(messages: any[]): string | null {
   return crypto.createHash('md5').update(stripped).digest('hex').slice(0, 12);
 }
 
-export function detectSessionSignal(messages: any[]): { sessNum: number; keyIdx: number; keyLabel: string } | null {
+export function detectSessionSignal(messages: any[]): { sessNum: number; keyIdx: number; keyLabel: string; sessionLabel: string } | null {
   const fingerprint = fingerprintPayload(messages);
   if (!fingerprint) return null;
 
@@ -142,7 +149,8 @@ export function detectSessionSignal(messages: any[]): { sessNum: number; keyIdx:
   if (entry !== undefined) {
     entry.requestCount++;
     const label = keys[entry.keyIdx] ? `Key${entry.keyIdx + 1}` : `Key${entry.keyIdx + 1}`;
-    return { sessNum: entry.sessNum, keyIdx: entry.keyIdx, keyLabel: label };
+    const sessionLabel = `${label}|sess${entry.sessNum}`;
+    return { sessNum: entry.sessNum, keyIdx: entry.keyIdx, keyLabel: label, sessionLabel };
   }
 
   let keyIdx = 0;
@@ -153,24 +161,10 @@ export function detectSessionSignal(messages: any[]): { sessNum: number; keyIdx:
   const newEntry = { keyIdx, requestCount: 1, sessNum: ++globalSessionCounter };
   conversationMap.set(fingerprint, newEntry);
 
-  const text = (m: any) =>
-    typeof m.content === 'string' ? m.content :
-    (Array.isArray(m.content) ? m.content.find((p: any) => p?.type === 'text')?.text || '' : '');
-  let stampIdx = messages.findIndex((m: any) => m.role === 'user' && !TITLE_PROMPT_RE.test(text(m)));
-  if (stampIdx < 0) stampIdx = messages.findIndex((m: any) => m.role === 'user');
-  const m = messages[stampIdx];
-  const curLabel = `Key${keyIdx + 1}|sess${newEntry.sessNum}`;
-  const setter = (c: any) => {
-    if (typeof c === 'string') return `[${curLabel}] ${c}`;
-    if (Array.isArray(c)) {
-      const b = c.find((p: any) => p?.type === 'text');
-      if (b) b.text = `[${curLabel}] ${b.text}`;
-    }
-    return c;
-  };
-  if (m) m.content = setter(m.content);
+  const keyLabel = `Key${keyIdx + 1}`;
+  const sessionLabel = `${keyLabel}|sess${newEntry.sessNum}`;
 
-  return { sessNum: newEntry.sessNum, keyIdx, keyLabel: `Key${keyIdx + 1}` };
+  return { sessNum: newEntry.sessNum, keyIdx, keyLabel, sessionLabel };
 }
 
 export function storeReasoning(content: string, reasoning: string) {
@@ -197,9 +191,22 @@ function injectCachedReasoning(messages: any[], modelId: string): any[] {
   });
 }
 
+function getOpenRouterApiKeyLive(): string {
+  try {
+    const p = path.join(getProjectRoot(), ".config", "config.json");
+    if (fs.existsSync(p)) {
+      const c = JSON.parse(fs.readFileSync(p, "utf-8"));
+      return c.openrouterKey || "";
+    }
+  } catch {}
+  return "";
+}
+
 const CONFIG = {
   baseUrl: "https://opencode.ai/zen/go/v1",
   baseUrlFree: "https://opencode.ai/zen/v1",
+  openRouterBaseUrl: "https://openrouter.ai/api/v1",
+  get openRouterApiKey(): string { return getOpenRouterApiKeyLive(); },
   maxRetries: 3,
 };
 
@@ -212,7 +219,6 @@ const RETRY_DELAY_429 = 3 * 1000;
 let keys: string[] = [];
 let balancer: ApiBalancer | null = null;
 const key429Count = new Map<string, number>();
-let zen429Until = 0;
 
 function tryLoadEnvFile() {
   try {
@@ -220,7 +226,7 @@ function tryLoadEnvFile() {
     if (fs.existsSync(p)) {
       const raw = fs.readFileSync(p, "utf-8");
       for (const line of raw.split("\n")) {
-        const m = line.match(/^\s*(OPENCODE_API_KEYS?|OPENCODE_SESSION|ZENITH_SESSION|ZENITH_API_KEY)\s*=\s*(.+)/);
+        const m = line.match(/^\s*(OPENCODE_API_KEYS?|OPENCODE_SESSION)\s*=\s*(.+)/);
         if (m) {
           let val = m[2].replace(/^["']|["']$/g, "").trim();
           if (val && !process.env[m[1]]) {
@@ -375,50 +381,43 @@ function parseRetryAfter(resp: Response): number {
   return 0;
 }
 
-function getModelTier(modelId: string): "go" | "free" | "poll" {
+function getModelTier(modelId: string): "go" | "free" | "openrouter" {
   const l = modelId.toLowerCase();
-  if (l.startsWith("pol/")) return "poll";
+  if (l.startsWith("openrouter/")) return "openrouter";
   if (l.endsWith("-free") || l === "big-pickle" || l === "nemotron-3-super-free" || l === "ring-2.6-1t-free") return "free";
   return "go";
 }
 
-function normalizeTool(t: any): any {
-  if (!t) return t;
-  // Already in proper OpenAI format
-  if (t.type === "function" && t.function?.name) return t;
-  // Has function wrapper but no type
-  if (t.function?.name) return { type: "function", function: t.function };
-  // Anthropic format: {name, description, input_schema}
-  if (t.name && t.input_schema) return { type: "function", function: { name: t.name, description: t.description || "", parameters: t.input_schema } };
-  // Simple format: {name, description, parameters}
-  if (t.name) return { type: "function", function: { name: t.name, description: t.description || "", parameters: t.parameters || {} } };
-  // Fallback with available properties
-  return { type: "function", function: { name: t.function?.name || t.name || "unknown", description: t.description || t.function?.description || "", parameters: t.parameters || t.input_schema || t.function?.parameters || {} } };
+
+
+// ── Request Dedup (cooldown-based) ──
+const _lastDone = new Map<string, number>();
+const DEDUP_COOLDOWN_MS = 5000;
+function _dedupKey(modelId: string, messages: any[]): string {
+  const lastUser = [...messages].reverse().find((m: any) => m.role === "user");
+  const prompt = typeof lastUser?.content === "string" ? lastUser.content.slice(-200) :
+    Array.isArray(lastUser?.content) ? lastUser.content.map((c: any) => c.text || "").join("").slice(-200) : "";
+  return `${modelId}:${prompt}`;
 }
 
-function normalizeToolChoice(tc: any): any {
-  if (tc === undefined || tc === null || typeof tc === "string") return tc;
-  // Anthropic format: {type: "auto"|"any"} → "auto"
-  if (tc.type === "auto" || tc.type === "any") return "auto";
-  // Anthropic format: {type: "tool", name: "..."} → OpenAI {type: "function", function: {name}}
-  if (tc.type === "tool" && tc.name) return { type: "function", function: { name: tc.name } };
-  // Already OpenAI format or pass-through
-  return tc;
+export async function chatCompletion(modelId: string, messages: any[], tools?: any[], stream = true, extra: Record<string, any> = {}, pinnedKeyIdx?: number, sessionLabel?: string): Promise<Response> {
+  const promise = _doChatCompletion(modelId, messages, tools, stream, extra, pinnedKeyIdx, sessionLabel);
+  return promise;
 }
 
-export async function chatCompletion(modelId: string, messages: any[], tools?: any[], stream = true, extra: Record<string, any> = {}, pinnedKeyIdx?: number): Promise<Response> {
+async function _doChatCompletion(modelId: string, messages: any[], tools?: any[], stream = true, extra: Record<string, any> = {}, pinnedKeyIdx?: number, sessionLabel?: string): Promise<Response> {
   loadKeys();
   const tier = getModelTier(modelId);
-  const isFree = tier === "free" || tier === "poll";
-  const isPoll = tier === "poll";
+  const isFree = tier === "free";
+  const isOpenRouter = tier === "openrouter";
 
-  if (isFree && zen429Until > Date.now()) {
-    throw new Error("Zen free tier is throttled. Try again later.");
+  if (isFree) {
+    throw new Error("Free tier is throttled. Try again later.");
   }
 
-  const base = isPoll ? "https://text.pollinations.ai/openai" : (isFree ? CONFIG.baseUrlFree : CONFIG.baseUrl);
+  const base: string = isOpenRouter ? CONFIG.openRouterBaseUrl : CONFIG.baseUrl;
   const url = `${base}/chat/completions`;
-  const key = withKey(pinnedKeyIdx);
+  const key = isOpenRouter ? CONFIG.openRouterApiKey : withKey(pinnedKeyIdx);
 
   // Extract and normalize tool_choice from extra before body spread
   let _toolChoice: any;
@@ -429,7 +428,7 @@ export async function chatCompletion(modelId: string, messages: any[], tools?: a
 
   const injected = injectCachedReasoning(messages, modelId);
   const body: any = { ...extra };
-  body.model = isPoll ? modelId.replace(/^pol\//, "") : modelId;
+  body.model = isOpenRouter ? modelId.replace(/^openrouter\//, "") : modelId;
   body.messages = injected.map((msg: any) => {
     const out: any = { role: msg.role, content: msg.content };
     if (msg.tool_calls?.length) out.tool_calls = msg.tool_calls;
@@ -455,7 +454,11 @@ export async function chatCompletion(modelId: string, messages: any[], tools?: a
   }
 
   const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (!isPoll) {
+  if (sessionLabel) headers["x-session"] = sessionLabel;
+  if (isOpenRouter) {
+    if (key) headers["Authorization"] = `Bearer ${key}`;
+    else throw new Error("No OpenRouter API key configured.");
+  } else {
     if (key) {
       headers["Authorization"] = `Bearer ${key}`;
     } else if (!isFree) {
@@ -489,6 +492,7 @@ export async function chatCompletion(modelId: string, messages: any[], tools?: a
       body.max_tokens = 2048;
       const h2: Record<string, string> = { "Content-Type": "application/json" };
       if (key) h2["Authorization"] = `Bearer ${key}`;
+      if (sessionLabel) h2["x-session"] = sessionLabel;
       resp = await fetch(url, { method: "POST", headers: h2, body: JSON.stringify(body) });
       if (resp.ok) return resp;
     }
@@ -496,11 +500,9 @@ export async function chatCompletion(modelId: string, messages: any[], tools?: a
 
   if (!resp.ok) {
     const txt = await resp.text().catch(() => "");
-    // Report ALL upstream errors to console for debugging
     const statusStr = `${resp.status}`;
-    const preview = txt.slice(0, 500);
-    const modelInfo = `${modelId} (${modelId.replace(/^pol\//, "")} via ${isPoll ? "poll" : isFree ? "zen" : "go"})`;
-    const service = isPoll ? "text.pollinations.ai" : isFree ? CONFIG.baseUrlFree : CONFIG.baseUrl;
+    const modelInfo = `${modelId} (via ${isFree ? "free" : "go"})`;
+    const service = CONFIG.baseUrl;
     const urlShort = url.replace(/https?:\/\//, "");
     const toolCount = tools?.length || 0;
     const msgCount = messages?.length || 0;
@@ -510,20 +512,17 @@ export async function chatCompletion(modelId: string, messages: any[], tools?: a
     const bd = txt ? txt.slice(0, 500) : "(empty)";
     const hx = Buffer.from(txt || "").slice(0, 100).toString("hex");
     console.log(`[UPSTREAM] ${statusStr} ${modelInfo} @ ${urlShort} | url=${url} | msgs=${msgCount} tools=${toolCount} | msg="${umsg}" | body="${bd}" | hex="${hx}"`);
-    if (resp.status === 429 && isFree) {
-      zen429Until = Date.now() + 60 * 1000;
-    }
     if (resp.status === 429 && key && !isFree) {
       const resetSec = parseRetryAfter(resp);
       if (balancer) balancer.mark429(key, resetSec);
       if (balancer && !balancer.hasAvailable()) {
         throw new Error("All API keys are rate-limited. Try again later.");
       }
-      // Retry once with different key
       const newKey = withKey();
       if (newKey) {
         const h2: Record<string, string> = { "Content-Type": "application/json" };
         if (newKey) h2["Authorization"] = `Bearer ${newKey}`;
+        if (sessionLabel) h2["x-session"] = sessionLabel;
         const retryResp = await fetch(url, { method: "POST", headers: h2, body: JSON.stringify(body) });
         if (retryResp.ok) return retryResp;
         const retryTxt = await retryResp.text().catch(() => "");
@@ -535,12 +534,13 @@ export async function chatCompletion(modelId: string, messages: any[], tools?: a
     if (resp.status === 402 && key && balancer) {
       balancer.mark402(key, txt);
       if (!balancer.hasAvailable()) {
-        throw new Error("All API keys have reached their usage limits. Try again later or use poll/free models.");
+        throw new Error("All API keys have reached their usage limits. Try again later or use free models.");
       }
       const newKey = withKey();
       if (newKey) {
         const h2: Record<string, string> = { "Content-Type": "application/json" };
         h2["Authorization"] = `Bearer ${newKey}`;
+        if (sessionLabel) h2["x-session"] = sessionLabel;
         const retryResp = await fetch(url, { method: "POST", headers: h2, body: JSON.stringify(body) });
         if (retryResp.ok) return retryResp;
         const retryTxt = await retryResp.text().catch(() => "");
@@ -555,6 +555,7 @@ export async function chatCompletion(modelId: string, messages: any[], tools?: a
       if (newKey) {
         const h2: Record<string, string> = { "Content-Type": "application/json" };
         h2["Authorization"] = `Bearer ${newKey}`;
+        if (sessionLabel) h2["x-session"] = sessionLabel;
         const retryResp = await fetch(url, { method: "POST", headers: h2, body: JSON.stringify(body) });
         if (retryResp.ok) return retryResp;
       }
@@ -569,7 +570,7 @@ export async function chatCompletion(modelId: string, messages: any[], tools?: a
 
 // ── Per-Provider Model Caching ──
 
-type Provider = "go" | "poll" | "zen";
+type Provider = "go" | "zen" | "openrouter";
 
 function modelDiskPath(provider: Provider): string {
   return path.join(ensureCacheDir(), `models-${provider}.json`);
@@ -580,7 +581,7 @@ function loadProviderModels(provider: Provider): string[] | null {
     const p = modelDiskPath(provider);
     if (!fs.existsSync(p)) return null;
     const data = JSON.parse(fs.readFileSync(p, "utf8"));
-    const h = keyHash();
+    const h = provider === "openrouter" ? openRouterKeyHash() : keyHash();
     if (data._keyHash !== h) {
       if (isDebug()) console.log(`\n[MODEL CACHE:${provider.toUpperCase()}] key hash changed — re-fetching`);
       return null;
@@ -592,7 +593,8 @@ function loadProviderModels(provider: Provider): string[] | null {
 function saveProviderModels(provider: Provider, ids: string[]): void {
   try {
     ensureCacheDir();
-    fs.writeFileSync(modelDiskPath(provider), JSON.stringify({ _modelIds: ids, _keyHash: keyHash() }));
+    const h = provider === "openrouter" ? openRouterKeyHash() : keyHash();
+    fs.writeFileSync(modelDiskPath(provider), JSON.stringify({ _modelIds: ids, _keyHash: h }));
     if (isDebug()) console.log(`\n[MODEL CACHE:${provider.toUpperCase()}] saved ${ids.length} model IDs`);
   } catch {}
 }
@@ -615,25 +617,11 @@ async function fetchGoModels(goKey: string): Promise<string[]> {
     const resp = await fetchWithTimeout("https://opencode.ai/zen/go/v1/models", { headers });
     if (resp.ok) {
       const data: any = await resp.json();
-      return (data?.data || []).map((m: any) => typeof m === "string" ? m : m.id || "").filter((id: string) => id.length > 0);
+      return (data?.data || []).map((m: any) => typeof m === "string" ? m : m.id || "").filter((id: string) => id.length > 0 && !id.toLowerCase().includes("owl") && !id.startsWith("codestral/"));
     }
     if (isDebug()) console.log(`\n[MODEL CACHE:GO] fetch returned ${resp.status}`);
   } catch (e: any) {
     if (isDebug()) console.log(`\n[MODEL CACHE:GO] fetch error: ${e.message}`);
-  }
-  return [];
-}
-
-async function fetchPollinationsModels(): Promise<string[]> {
-  try {
-    const resp = await fetchWithTimeout("https://text.pollinations.ai/models");
-    if (resp.ok) {
-      const data: any = await resp.json();
-      return (data || []).map((m: any) => `pol/${m.name}`).filter((id: string) => id.length > 4);
-    }
-    if (isDebug()) console.log(`\n[MODEL CACHE:POLL] fetch returned ${resp.status}`);
-  } catch (e: any) {
-    if (isDebug()) console.log(`\n[MODEL CACHE:POLL] fetch error: ${e.message}`);
   }
   return [];
 }
@@ -691,6 +679,9 @@ export function modelHasVision(id: string): boolean {
 }
 
 export function getModelDisplayName(id: string): string {
+  // Check display name override first
+  const override = _displayNameOverrides[id];
+  if (override) return override;
   const cached = _nameCache?.[id];
   if (cached) {
     const cleaned = cached.replace(/-/g, " ").replace(/\bV(?=\d)/g, "v");
@@ -722,21 +713,42 @@ export function getModelFamily(id: string): string {
 
 // ── Per-provider model ID caches ──
 let _cachedGoIds: string[] | null = null;
-let _cachedPollIds: string[] | null = null;
+let _cachedOpenRouterIds: string[] | null = null;
 let _providersInitialized = false;
 
-async function initProviderModels(provider: Provider, goKey: string): Promise<string[]> {
+async function fetchOpenRouterModels(): Promise<string[]> {
+  // Disabled for now.
+  // To enable fetching, uncomment and use:
+  //   const apiKey = getOpenRouterApiKeyLive();
+  //   if (!apiKey) return [];
+  //   const resp = await fetchWithTimeout("https://openrouter.ai/api/v1/models", {
+  //     headers: { "Authorization": `Bearer ${apiKey}`, "User-Agent": "gc2xy/3.0" },
+  //   });
+  //   if (resp.ok) {
+  //     const data: any = await resp.json();
+  //     const ids: string[] = (data?.data || []).map((m: any) => typeof m === "string" ? m : m.id || "").filter((id: string) => id.length > 0);
+  //     if (ids.length > 0) {
+  //       saveProviderModels("openrouter", ids);
+  //       return ids;
+  //     }
+  //   }
+  return [];
+}
+
+async function initProviderModels(provider: Provider, goKey?: string): Promise<string[]> {
   const diskIds = loadProviderModels(provider);
   if (diskIds && diskIds.length > 0) {
-    if (isDebug()) console.log(`\n[MODEL CACHE:${provider.toUpperCase()}] loaded ${diskIds.length} from disk`);
-    return diskIds;
+    const filtered = provider === "go" ? diskIds.filter(id => !id.toLowerCase().includes("owl") && !id.startsWith("codestral/")) : diskIds;
+    if (filtered.length !== diskIds.length && isDebug()) console.log(`\n[MODEL CACHE:GO] filtered ${diskIds.length - filtered.length} non-go models from disk`);
+    if (isDebug()) console.log(`\n[MODEL CACHE:${provider.toUpperCase()}] loaded ${filtered.length} from disk`);
+    return filtered;
   }
 
   let fetched: string[] = [];
   if (provider === "go") {
-    fetched = await fetchGoModels(goKey);
-  } else if (provider === "poll") {
-    fetched = await fetchPollinationsModels();
+    fetched = await fetchGoModels(goKey || "");
+  } else if (provider === "openrouter") {
+    fetched = await fetchOpenRouterModels();
   }
 
   if (fetched.length > 0) {
@@ -746,10 +758,11 @@ async function initProviderModels(provider: Provider, goKey: string): Promise<st
 }
 
 export async function initModels(): Promise<string[]> {
-  if (_providersInitialized && _cachedGoIds) {
-    return [...new Set([..._cachedGoIds, ...(_cachedPollIds || [])])];
+  if (_providersInitialized && _cachedGoIds && _cachedGoIds.length > 0) {
+    return [..._cachedGoIds, ...(_cachedOpenRouterIds || [])];
   }
 
+  loadDisplayNameOverrides();
   checkKeyChanged();
 
   const env = typeof process !== "undefined" ? process.env : {};
@@ -759,32 +772,83 @@ export async function initModels(): Promise<string[]> {
   } else if (env.OPENCODE_API_KEY) {
     goKey = env.OPENCODE_API_KEY;
   }
+  if (!goKey && keys.length > 0) goKey = keys[0];
 
-  const [goIds, pollIds] = await Promise.all([
+  const [goIds, openRouterIds] = await Promise.all([
     initProviderModels("go", goKey),
-    initProviderModels("poll", ""),
+    initProviderModels("openrouter"),
     fetchModelCtxMap(),
-  ]);
+  ] as any);
 
-  _cachedGoIds = goIds;
-  _cachedPollIds = pollIds;
+  _cachedGoIds = goIds || [];
+  _cachedOpenRouterIds = openRouterIds || [];
   _providersInitialized = true;
 
-  const allIds = [...new Set([...goIds, ...pollIds])];
+  const allIds = [..._cachedGoIds, ..._cachedOpenRouterIds];
   setModelsList(allIds);
-  if (isDebug()) console.log(`\n[MODEL CACHE] init complete: ${allIds.length} models (${goIds.length} go, ${pollIds.length} poll)`);
+  if (isDebug()) console.log(`\n[MODEL CACHE] init complete: ${allIds.length} models (${_cachedGoIds.length} go + ${_cachedOpenRouterIds.length} openrouter)`);
   return allIds;
 }
 
 export function getModelIds(): string[] {
   if (!_providersInitialized) return [];
-  return [...new Set([...(_cachedGoIds || []), ...(_cachedPollIds || [])])];
+  return [...(_cachedGoIds || []), ...(_cachedOpenRouterIds || [])];
 }
 
 export function getProviderModelIds(provider: Provider): string[] {
   if (provider === "go") return _cachedGoIds || [];
-  if (provider === "poll") return _cachedPollIds || [];
+  if (provider === "openrouter") return _cachedOpenRouterIds || [];
   return [];
+}
+
+// ── Model Display Name Overrides (from config.json modelDisplayNames) ──
+let _displayNameOverrides: Record<string, string> = {};
+
+export function loadDisplayNameOverrides() {
+  try {
+    const p = path.join(getProjectRoot(), ".config", "config.json");
+    if (fs.existsSync(p)) {
+      const c = JSON.parse(fs.readFileSync(p, "utf-8"));
+      if (c.modelDisplayNames && typeof c.modelDisplayNames === "object") {
+        _displayNameOverrides = c.modelDisplayNames;
+      }
+    }
+  } catch {}
+}
+
+export function getDisplayNameOverride(id: string): string | null {
+  return _displayNameOverrides[id] || null;
+}
+
+export function setDisplayNameOverride(id: string, name: string) {
+  if (name) {
+    _displayNameOverrides[id] = name;
+  } else {
+    delete _displayNameOverrides[id];
+  }
+  // Persist to config.json
+  try {
+    const p = path.join(getProjectRoot(), ".config", "config.json");
+    let config: any = {};
+    if (fs.existsSync(p)) {
+      config = JSON.parse(fs.readFileSync(p, "utf-8"));
+    }
+    config.modelDisplayNames = { ..._displayNameOverrides };
+    fs.writeFileSync(p, JSON.stringify(config, null, 2));
+  } catch {}
+}
+
+export function getModelProviderTag(modelId: string): string {
+  if (modelId.startsWith("freebuff/")) return "freebuff";
+  if (modelId.startsWith("openrouter/")) return "openrouter";
+  if (modelId.startsWith("featherless/")) return "featherless";
+  if (modelId.startsWith("agnes")) return "agnes";
+  if (modelId.startsWith("codestral/")) return "codestral";
+  if (modelId.startsWith("pol/")) return "poll";
+  if (modelId.startsWith("bitnet/") || modelId === "bitnet-demo") return "bitnet";
+  if (modelId.toLowerCase().includes("deepseek")) return "deepseek";
+  if (modelId.endsWith("-free") || modelId === "big-pickle" || modelId === "nemotron-3-super-free" || modelId === "ring-2.6-1t-free") return "zen";
+  return "go";
 }
 
 export function getKeyStatus(): any[] {
@@ -809,6 +873,21 @@ export function getKeyStatus(): any[] {
     }
     return { keyPrefix: short, status, reason, consecutive429: key429Count.get(k) || 0 };
   });
+}
+
+export function setKeys(newKeys: string[]) {
+  const filtered = newKeys.filter(k => k && k.length > 5);
+  const changed = keys.length !== filtered.length || keys.some((k, i) => k !== filtered[i]);
+  keys = filtered;
+  if (keys.length > 0 && (!balancer || changed)) {
+    const savedState = loadKeyState();
+    balancer = new ApiBalancer(keys, savedState);
+  }
+  if (changed && filtered.length > 0) {
+    _providersInitialized = false;
+    _cachedGoIds = null;
+    initModels().catch(() => {});
+  }
 }
 
 // ── Model Metadata (for family lookups) ──

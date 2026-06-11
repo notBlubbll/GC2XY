@@ -5,30 +5,9 @@ cd /d "%~dp0"
 if exist ".config\.env" for /f "usebackq delims=" %%x in (".config\.env") do set "%%x" 2>nul
 
 net session >nul 2>&1
-if %ERRORLEVEL% NEQ 0 goto :elevate
-goto :after_elevate
-
-:elevate
-if "%ENFORCE_CMD%"=="1" goto :elevate_cmd
-where wt.exe >nul 2>&1
-if not errorlevel 1 goto :elevate_wt
-:elevate_cmd
-if not "%ENFORCE_CMD%"=="" echo set ENFORCE_CMD=%ENFORCE_CMD%>"%TEMP%\gc2xy_env.cmd"
-if not "%ENFORCE_NODE%"==""   echo set ENFORCE_NODE=%ENFORCE_NODE%>>"%TEMP%\gc2xy_env.cmd"
-powershell -NoProfile -Command "Start-Process cmd.exe -Verb RunAs -ArgumentList '/c \"^%~f0\" %*'"
-exit /b 0
-
-:elevate_wt
-if not "%ENFORCE_CMD%"=="" echo set ENFORCE_CMD=%ENFORCE_CMD%>"%TEMP%\gc2xy_env.cmd"
-if not "%ENFORCE_NODE%"==""   echo set ENFORCE_NODE=%ENFORCE_NODE%>>"%TEMP%\gc2xy_env.cmd"
-powershell -NoProfile -Command "Start-Process wt.exe -Verb RunAs -ArgumentList 'cmd /c \"^%~f0\" %*'"
-exit /b 0
-
-:after_elevate
-if exist "%TEMP%\gc2xy_env.cmd" call "%TEMP%\gc2xy_env.cmd" & del "%TEMP%\gc2xy_env.cmd"
-if "%ENFORCE_CMD%"=="1" if not "%WT_SESSION%"=="" (
-  start "" cmd.exe /c "%~f0" %*
-  exit
+if %ERRORLEVEL% NEQ 0 (
+    start "" powershell -NoP -Command "Start-Process cmd -Verb RunAs -ArgumentList '/c \"\"%~f0\" %*\"'"
+    exit /b
 )
 echo ==================================================
 echo  gc2xy - Hybrid Mode
@@ -51,6 +30,28 @@ if %ERRORLEVEL% NEQ 0 goto :no_iis
 echo   IIS detected - using IIS reverse proxy mode on port 3080
 set IIS_PROXY=1
 set gc2xy_HTTP_PORT=3080
+
+echo   Cleaning up stale SSL bindings...
+netsh http delete sslcert "ipport=[::]:443" >nul 2>&1
+netsh http delete sslcert "ipport=0.0.0.0:443" >nul 2>&1
+
+echo   Setting up IIS site...
+set "IIS_DIR=%~dp0iis-site"
+set "SITE_NAME=gc2xy"
+appcmd list site "%SITE_NAME%" >nul 2>&1
+if %ERRORLEVEL% NEQ 0 (
+    appcmd add site /name:"%SITE_NAME%" /physicalPath:"%IIS_DIR%" /serverAutoStart:true >nul 2>&1
+    for %%h in (github.com www.github.com api.github.com api.githubcopilot.com copilot-proxy.githubusercontent.com api.individual.githubcopilot.com origin-tracker.individual.githubcopilot.com proxy.individual.githubcopilot.com telemetry.individual.githubcopilot.com) do (
+        appcmd set site "%SITE_NAME%" "/+bindings.[protocol='http',bindingInformation='*:80:%%h']" >nul 2>&1
+        appcmd set site "%SITE_NAME%" "/+bindings.[protocol='https',bindingInformation='*:443:%%h',sslFlags='0']" >nul 2>&1
+    )
+    appcmd start site "%SITE_NAME%" >nul 2>&1
+    echo   IIS site created with reverse proxy bindings.
+) else (
+    appcmd start site "%SITE_NAME%" >nul 2>&1
+    echo   IIS site already exists.
+)
+
 goto :detect_runtime
 
 :no_iis
@@ -69,6 +70,10 @@ if %ERRORLEVEL% equ 0 goto :skip_cert
 certutil -delstore ROOT "MITM Debug Proxy" >nul 2>&1
 certutil -addstore ROOT ".certs\ca-cert.pem" >nul
 :skip_cert
+
+if "%IIS_PROXY%"=="1" goto :detect_runtime
+findstr /C:"# BEGIN gc2xy PROXY" "C:\Windows\System32\drivers\etc\hosts" >nul 2>&1
+if %ERRORLEVEL% equ 0 (echo   Hosts file already patched.) else (echo   Hosts file NOT patched - proxy will apply on startup.)
 
 :detect_runtime
 set RUNTIME_FOUND=

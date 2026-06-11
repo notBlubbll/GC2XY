@@ -1,5 +1,7 @@
 import { jsonResponse, HandlerInput, HandlerResult } from "../../shared.ts";
-import { initModels, getModelCtx, modelHasVision, getModelDisplayName } from "../opencode-client.ts";
+import { getModelCtx, modelHasVision, getModelDisplayName } from "../opencode-client.ts";
+import { getFreebuffModelPremium } from "../freebuff-client.ts";
+import { addModels } from "../../models.ts";
 import { isDebug } from "../../split-console.ts";
 
 const GHCP_MODELS: any[] = [];
@@ -77,9 +79,13 @@ function modelLimits(id: string): any {
   return limits;
 }
 
+function isFreeModel(id: string): boolean {
+  return id.startsWith("pol/") || id.startsWith("agnes");
+}
+
 async function ensureModels() {
   if (_rebuilding) return;
-  const modelIds = await initModels();
+  const modelIds = await addModels();
 
   const changed = modelIds.length !== _lastModelIds.length ||
     modelIds.some((id, i) => id !== _lastModelIds[i]);
@@ -93,20 +99,22 @@ async function ensureModels() {
   const addModel = (id: string) => {
     if (seen.has(id)) return;
     seen.add(id);
-    const baseEmoji = supportsThinkingVariants(id) ? "💡" : "✨";
+    const baseEmoji = id.startsWith("freebuff/") ? "[🇫🇷ᴇᴇ]" : supportsThinkingVariants(id) ? "💡" : "✨";
     const mediaEmoji = modelHasVision(id) ? "🎞️" : "";
-    const name = `${baseEmoji}${mediaEmoji} ${getModelDisplayName(id)}`;
+    const limTag = id.startsWith("freebuff/") && getFreebuffModelPremium(id) ? " [LIM]" : "";
+    const name = `${baseEmoji}${mediaEmoji}${limTag} ${getModelDisplayName(id)}`;
     const isLightweight = id.includes("mini") || id.includes("nano") || (id.includes("flash") && !id.includes("deepseek")) || id.includes("haiku") || id.includes("free");
     const isPowerful = id.includes("pro") || id.includes("opus") || id.includes("codex") || id.includes("omni") || (id.includes("flash") && id.includes("deepseek"));
     const limits = modelLimits(id);
-    const baseModel = {
+    const free = isFreeModel(id);
+    const baseModel: any = {
       id, object: "model",
       name, vendor: detectVendor(id), version: id, preview: false,
-      model_picker_category: isLightweight ? "lightweight" : isPowerful ? "powerful" : "versatile",
+      model_picker_category: free ? "lightweight" : isLightweight ? "lightweight" : isPowerful ? "powerful" : "versatile",
       model_picker_enabled: true,
       is_chat_default: true,
       is_chat_fallback: true,
-      billing: { is_premium: true, multiplier: getModelCtx(id) || limits.max_context_window_tokens, restricted_to: ["pro", "pro_plus", "business", "enterprise", "max"] },
+      billing: free ? { token_prices: { batch_size: 1000000, cache_price: 0, input_price: 0, output_price: 0 } } : { is_premium: true, multiplier: id.startsWith("pol/") ? 1 : (getModelCtx(id) || limits.max_context_window_tokens), restricted_to: ["pro", "pro_plus", "business", "enterprise", "max"] },
       policy: { state: "enabled", terms: `Enable access to the ${id} model. [Learn more](https://opencode.ai)` },
       supported_endpoints: ["/chat/completions", "/v1/messages"],
       capabilities: {
@@ -114,6 +122,7 @@ async function ensureModels() {
         limits, supports: modelSupports(id),
       },
     };
+    if (free) baseModel.model_picker_price_category = "low";
     GHCP_MODELS.push(baseModel);
   };
 

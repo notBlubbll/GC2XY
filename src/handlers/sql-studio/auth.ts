@@ -1,24 +1,7 @@
 import forge from "node-forge";
-import { jsonResponse, HandlerInput, HandlerResult, getGithubSku, getGithubUsername, getGithubDisplayName } from "../../shared.ts";
+import { jsonResponse, HandlerInput, HandlerResult, getGithubSku, getGithubUsername } from "../../shared.ts";
 import { trackRequest, getZenStats } from "../../usage-tracker.ts";
-
-const YEAR10_S = 3600 * 24 * 365 * 10;
-const YEAR10_MS = YEAR10_S * 1000;
-const RESET_DATE_2500 = Math.floor(new Date("2500-01-01T00:00:00Z").getTime() / 1000);
-const MONTHLY_QUOTA_CHAT = 500;
-const MONTHLY_QUOTA_COMPLETIONS = 4000;
-
-function getRemainingQuota(): { chat: number; completions: number } {
-  const zs = getZenStats();
-  if (!zs || !zs.loggedIn || (zs.cost + zs.balance) === 0) return { chat: 290, completions: 2320 };
-  const usedPct = Math.max(0, Math.min(100, (zs.cost / (zs.cost + zs.balance)) * 100));
-  const chatTotal = 500, completionsTotal = 4000;
-  return { chat: chatTotal - Math.round(chatTotal * usedPct / 100), completions: completionsTotal - Math.round(completionsTotal * usedPct / 100) };
-}
-
-// VS OAuth app credentials (from VS 2026)
-const VS_CLIENT_ID = "a200baed193bb2088a6e";
-const VS_REDIRECT_URI_PREFIX = "vsweb+githubsi://authcode/";
+import { handleVSModels } from "../vs/models.ts";
 
 function getSkuFromGh(): { copilot_plan: string; access_type_sku: string; sku: string } {
   const s = getGithubSku();
@@ -34,49 +17,29 @@ function getSkuFromGh(): { copilot_plan: string; access_type_sku: string; sku: s
   }
 }
 
+function getRemainingQuota(): { chat: number; completions: number } {
+  const zs = getZenStats();
+  if (!zs || !zs.loggedIn || (zs.cost + zs.balance) === 0) return { chat: 290, completions: 2320 };
+  const usedPct = Math.max(0, Math.min(100, (zs.cost / (zs.cost + zs.balance)) * 100));
+  const chatTotal = 500, completionsTotal = 4000;
+  return { chat: chatTotal - Math.round(chatTotal * usedPct / 100), completions: completionsTotal - Math.round(completionsTotal * usedPct / 100) };
+}
+
 function generateTrackingId(): string {
   return forge.util.bytesToHex(forge.random.getBytesSync(16));
 }
 
-export function isVisualStudio(headers: Record<string, string>): boolean {
-  const editorVersion = headers?.["editor-version"] || "";
-  // Match VS/VisualStudio/* (VS 2022+) or VS/<version> (VS Team Explorer, VS 2026 GHCP subprocess)
-  return editorVersion.startsWith("VS/VisualStudio") || /^VS\/\d/.test(editorVersion);
+export function isSQLStudio(headers: Record<string, string>): boolean {
+  const ua = headers?.["user-agent"] || "";
+  return ua.startsWith("VSTeamExplorer-GitHub");
 }
 
-// Check if request is part of the VS OAuth flow — must pass through to real GitHub
-export function isVSOAuthFlow(req: HandlerInput): boolean {
-  const { method, url, headers } = req;
-
-  // Token exchange: VS client requests access_token
-  if (method === "POST" && url.includes("/login/oauth/access_token") && isVisualStudio(headers)) {
-    return true;
-  }
-
-  // Authorize: browser requests with VS-specific client_id or redirect_uri
-  if (method === "GET" && url.includes("/login/oauth/authorize")) {
-    const queryIdx = url.indexOf("?");
-    if (queryIdx >= 0) {
-      const params = new URLSearchParams(url.slice(queryIdx));
-      const clientId = params.get("client_id") || "";
-      const redirectUri = params.get("redirect_uri") || "";
-      if (clientId === VS_CLIENT_ID || redirectUri.startsWith(VS_REDIRECT_URI_PREFIX)) {
-        return true;
-      }
-    }
-  }
-
-  return false;
-}
-
-export function handleVSCopilotUser(req: HandlerInput): HandlerResult | null {
+export function handleSQLStudioCopilotUser(req: HandlerInput): HandlerResult | null {
   const { method, url } = req;
   if (method !== "GET" || !url.includes("/copilot_internal/user")) return null;
   const ghUser = getGithubUsername();
   const { copilot_plan, access_type_sku } = getSkuFromGh();
   const tid = generateTrackingId();
-  const resetDate = new Date("2120-01-01T00:00:00Z");
-  const resetStr = resetDate.toISOString().slice(0, 10);
   const assignedDate = new Date(Date.now() - 12 * 86400000);
   const q = getRemainingQuota();
   const canUpgrade = access_type_sku === "free_limited_copilot" || access_type_sku === "copilot_for_individual";
@@ -89,7 +52,6 @@ export function handleVSCopilotUser(req: HandlerInput): HandlerResult | null {
     can_upgrade_plan: canUpgrade,
     chat_enabled: true,
     cli_enabled: true,
-    cli_remote_control_enabled: true,
     copilotignore_enabled: true,
     copilot_plan,
     editor_preview_features_enabled: true,
@@ -104,7 +66,7 @@ export function handleVSCopilotUser(req: HandlerInput): HandlerResult | null {
       proxy: "https://proxy.individual.githubcopilot.com",
       telemetry: "https://telemetry.individual.githubcopilot.com",
     },
-    quota_reset_date: resetStr,
+    quota_reset_date: "2120-01-01",
     limited_user_quotas: { chat: q.chat, completions: q.completions },
     quota_snapshots: {
       chat: { entitlement: 500, remaining: q.chat, percent_remaining: Math.round(q.chat / 500 * 100), unlimited: false, overage_permitted: false, overage_count: 0 },
@@ -114,17 +76,16 @@ export function handleVSCopilotUser(req: HandlerInput): HandlerResult | null {
   })};
 }
 
-export function handleVSToken(req: HandlerInput): HandlerResult | null {
+export function handleSQLStudioToken(req: HandlerInput): HandlerResult | null {
   const { method, url } = req;
   if (method !== "GET" || !url.startsWith("/copilot_internal/v2/token")) return null;
   const now = Math.floor(Date.now() / 1000);
   const tid = generateTrackingId();
   const exp = now + 1800;
   const iat = now;
-  const resetDate = new Date("2120-01-01T00:00:00Z");
-  const resetTs = Math.floor(resetDate.getTime() / 1000);
+  const resetTs = Math.floor(new Date("2120-01-01T00:00:00Z").getTime() / 1000);
   const q = getRemainingQuota();
-  const { sku, access_type_sku } = getSkuFromGh();
+  const { sku } = getSkuFromGh();
   const token = `tid=${tid};exp=${exp};iat=${iat};sku=${sku};proxy-ep=proxy.individual.githubcopilot.com;st=dotcom;chat=1;cit=1;malfil=1;editor_preview_features=1;agent_mode=1;agent_mode_auto_approval=1;mcp=1;blackbird_external_indexing=1;client_byok=0;rt=1;ip=0.0.0.0;asn=AS000000;cq=3934;rd=${resetTs}`;
   return { handled: true, response: jsonResponse({
     agent_mode_auto_approval: true,
@@ -158,22 +119,24 @@ export function handleVSToken(req: HandlerInput): HandlerResult | null {
   })};
 }
 
-export function handleVSContentExclusion(req: HandlerInput): HandlerResult | null {
+export function handleSQLStudioContentExclusion(req: HandlerInput): HandlerResult | null {
   const { method, url } = req;
   if (method !== "GET" || !url.includes("/copilot_internal/content_exclusion")) return null;
   return { handled: true, response: jsonResponse({ exclusions: [], scope: "all", enabled: false }) };
 }
 
-export function handleVSAuth(req: HandlerInput): HandlerResult {
+export async function handleSQLStudioAuth(req: HandlerInput): Promise<HandlerResult> {
   trackRequest("vs");
   const { headers } = req;
-  if (!isVisualStudio(headers)) return { handled: false };
+  if (!isSQLStudio(headers)) return { handled: false };
   let result: HandlerResult | null;
-  result = handleVSCopilotUser(req);
+  result = handleSQLStudioCopilotUser(req);
   if (result) return result;
-  result = handleVSToken(req);
+  result = handleSQLStudioToken(req);
   if (result) return result;
-  result = handleVSContentExclusion(req);
+  result = handleSQLStudioContentExclusion(req);
   if (result) return result;
+  const vsModelsResult = await handleVSModels(req);
+  if (vsModelsResult.handled) return vsModelsResult;
   return { handled: false };
 }

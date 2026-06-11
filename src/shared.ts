@@ -1,7 +1,8 @@
 import forge from "node-forge";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 
 type ProxyMode = "mock" | "hybrid" | "proxy";
 
@@ -57,12 +58,110 @@ setInterval(() => {
   }
 }, 10000);
 
+// ── Tool normalization (shared across all providers) ──
+export function normalizeTool(tool: any): any {
+  const t = { ...tool };
+  if (t.function) {
+    const fn: any = { name: t.function.name };
+    if (t.function.description) fn.description = t.function.description;
+    if (t.function.parameters) fn.parameters = t.function.parameters;
+    if (t.function.strict !== undefined) fn.strict = t.function.strict;
+    t.function = fn;
+    if (!t.type) t.type = "function";
+  } else if (t.name && (t.input_schema || t.parameters)) {
+    const fn: any = { name: t.name, parameters: t.input_schema || t.parameters };
+    if (t.description) fn.description = t.description;
+    t.function = fn;
+    t.type = "function";
+    delete t.name;
+    delete t.input_schema;
+    delete t.parameters;
+    delete t.description;
+  }
+  return t;
+}
+
+// ── Tool description compression (from gc2oc token-optimizer.js) ──
+export function compressDescription(desc: string): string {
+  if (!desc) return "";
+  let c = desc
+    .replace(/^(This tool|Use this tool|This function|Use this function)\b/gi, "")
+    .replace(/\b(allows you to|enables you to|lets you|helps you|can be used to)\b/gi, " ")
+    .replace(/\b(the following|is not case sensitive)\b/gi, " ")
+    .replace(/You must have .+? access/gi, "")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+  if (c.length > 120) {
+    const first = c.match(/^[^.!?]+[.!?]/);
+    c = first ? first[0] : c.slice(0, 120) + "...";
+  }
+  return c;
+}
+
+function compressToolSchemaImpl(schema: any): any {
+  if (!schema || typeof schema !== "object") return schema;
+  const out: any = {};
+  if (schema.type) out.type = schema.type;
+  if (schema.enum) out.enum = schema.enum;
+  if (schema.required) out.required = schema.required;
+  if (schema.minimum !== undefined) out.minimum = schema.minimum;
+  if (schema.maximum !== undefined) out.maximum = schema.maximum;
+  if (schema.properties) {
+    out.properties = {};
+    for (const [key, prop] of Object.entries(schema.properties)) {
+      out.properties[key] = compressToolSchemaImpl(prop);
+    }
+  }
+  if (schema.items) out.items = compressToolSchemaImpl(schema.items);
+  return out;
+}
+
+export function compressToolDefinitions(tools: any[]): any[] {
+  if (!tools?.length) return tools;
+  return tools.map((t: any) => ({
+    type: "function",
+    function: {
+      name: t.function?.name || t.name || "unknown",
+      description: compressDescription(t.function?.description || t.description || ""),
+      parameters: compressToolSchemaImpl(t.function?.parameters || t.parameters || {}),
+    },
+  }));
+}
+
+export function normalizeToolChoice(tc: any): any {
+  if (!tc || typeof tc === "string") return tc || "auto";
+  if (tc.type === "function" && tc.function?.name) return { type: "function", function: { name: tc.function.name } };
+  if (tc.type === "auto" || tc.type === "any") return "auto";
+  if (tc.type === "required") return "required";
+  if (tc.type === "none") return "none";
+  if (tc.type === "tool" && tc.name) return { type: "function", function: { name: tc.name } };
+  if (typeof tc === "object") return "auto";
+  return tc;
+}
+
 const _ARGS = new Set(typeof process !== "undefined" ? process.argv.slice(1) : []);
 if (_ARGS.has("--mode-3") || process.env.gc2xy_MODE === "proxy") _currentMode = "proxy";
 else if (_ARGS.has("--mode-2") || process.env.gc2xy_MODE === "hybrid") _currentMode = "hybrid";
 
 export function getMode(): ProxyMode { return _currentMode; }
-export function setMode(m: ProxyMode) { _currentMode = m; }
+export function setMode(m: ProxyMode) {
+  _currentMode = m;
+  process.env.gc2xy_MODE = m;
+  try {
+    const configDir = join(getProjectRoot(), ".config");
+    const configPath = join(configDir, "config.json");
+    const cfg = existsSync(configPath) ? JSON.parse(readFileSync(configPath, "utf-8")) : {};
+    cfg.mode = m;
+    if (!existsSync(configDir)) try { writeFileSync(join(configDir, ".gitkeep"), ""); } catch {}
+    writeFileSync(configPath, JSON.stringify(cfg, null, 2));
+    const envPath = join(configDir, ".env");
+    if (existsSync(envPath)) {
+      let env = readFileSync(envPath, "utf8");
+      env = env.replace(/^gc2xy_MODE=.*\r?\n?/gm, "").trimEnd() + "\n";
+      writeFileSync(envPath, env);
+    }
+  } catch {}
+}
 export function isProxy() { return _currentMode === "proxy"; }
 export function isHybrid() { return _currentMode === "hybrid"; }
 export function isMock() { return _currentMode === "mock"; }
@@ -235,4 +334,50 @@ export function buildSseResponse(content: string, model: string): string {
   result += `data: {"id":"${id}","object":"chat.completion.chunk","created":${created},"model":"${model}","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n`;
   result += "data: [DONE]\n\n";
   return result;
+}
+
+// ── Github Settings (shared config for fake auth responses) ──
+let _githubSku = "enterprise";
+let _githubUsername = "fake-github-user";
+let _githubDisplayName = "Fake Github User";
+
+export function setGithubSku(v: string) { _githubSku = v; }
+export function setGithubUsername(v: string) { _githubUsername = v; }
+export function setGithubDisplayName(v: string) { _githubDisplayName = v; }
+export function getGithubSku() { return _githubSku; }
+export function getGithubUsername() { return _githubUsername; }
+export function getGithubDisplayName() { return _githubDisplayName; }
+
+export function compactIdentity(displayName: string, modelId?: string, thinkingTag?: string): string {
+  const thinkNote = thinkingTag ? ` [${thinkingTag.toLowerCase()} thinking mode]` : "";
+  const modelRef = modelId ? `${displayName} (${modelId})` : displayName;
+  return `IDENTITY OVERRIDE: You are NOT GitHub Copilot. You are "Copilot (gc2xy)", a coding assistant running ${modelRef}${thinkNote}. When asked who you are, say: "I am Copilot (gc2xy) running ${modelRef}${thinkNote}." Never claim to be GitHub Copilot. Never start your response with any greeting, introduction, or "Hello! I'm..." — just get straight to the answer.`;
+}
+
+export function injectIdentity(messages: any[], displayName: string, modelId?: string, thinkingTag?: string): any[] {
+  const identity = compactIdentity(displayName, modelId, thinkingTag);
+  for (let i = 0; i < messages.length; i++) {
+    if (messages[i].role === "system") {
+      messages[i] = { ...messages[i], content: identity + "\n\n" + (messages[i].content || "") };
+      return messages;
+    }
+  }
+  messages.unshift({ role: "system", content: identity });
+  return messages;
+}
+
+// Strips "Hello! I'm Copilot..." greeting from upstream LLM responses
+// Weaker models (MiMo, DeepSeek Flash, MiniMax) ignore the system prompt
+// and repeat this canned greeting verbatim.
+const COPILOT_GREETING = /Hello!?\s*I['']?m\s*Copilot[^]*?(?:What are you working on[?]|How can I help you[?])/gi;
+export function stripCopilotGreeting(text: string): string {
+  return text.replace(COPILOT_GREETING, "").trimStart();
+}
+
+export function killPortProcess(port: number): void {
+  try {
+    spawnSync("powershell", ["-NoP", "-Command",
+      `Get-NetTCPConnection -LocalPort ${port} -ErrorAction SilentlyContinue | Select -ExpandProperty OwningProcess | ForEach-Object { taskkill /F /PID $_ 2>$null }`
+    ], { timeout: 5000, windowsHide: true });
+  } catch {}
 }

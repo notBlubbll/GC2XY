@@ -36,6 +36,8 @@ Real copilot user response includes `endpoints` object — our fake responses MU
 4. **Interceptors**: Request/response hooks that can modify or short-circuit traffic
 5. **Cache-first**: In mock mode, checks `cache/` before falling through to fake handlers
 6. **Real IP bypass**: Uses hardcoded real GitHub IPs for traffic forwarded upstream in proxy mode
+7. **Host header routing (PROXY mode)**: The unified intercept cert covers every intercepted host with a single SAN, so SNI is not reliable for upstream routing. `forwardWithInterceptor` (`mitm-proxy.ts:634-639`) prefers the HTTP `Host:` header (what the client actually requested) over SNI when building the upstream target. This is what makes `api.github.com/user/orgs` route to real `api.github.com` instead of `github.com:443` (which has no API and returns 404).
+8. **Tool salvager** (`src/tool-salvager.ts`): per-tool schema coercion + JSON salvage + apology/loop detection. Upstream LLMs (Agnes, Pollinations, Freebuff, etc.) frequently emit broken or non-VS tool calls — the salvager repairs them or replaces the entire response with `task_complete` so VS stops waiting on a stuck model. See **Tool Salvager** section below.
 
 ## IIS Reverse Proxy Mode (Alternative)
 
@@ -68,17 +70,18 @@ sc failure w3svc reset= 86400 actions= restart/5000/restart/10000/restart/30000
 | `!REMOVE.cmd` | Kill proxy, clean hosts, remove CA cert (IIS-aware port cleanup) |
 | `mitm-proxy.ts` | Main proxy: TLS/HTTP servers, hosts redirect, interceptor engine, request forwarding, cache integration, **deletes `package-lock.json` on startup** (avoids stale lock) |
 | `cache.ts` | Auto-cache: saves upstream responses to `cache/<sanitized-url>.json`; loads before fake handlers in mock mode |
-| `split-console.ts` | Console dashboard TUI: status banner with model column, log buffer, keyboard commands, debug/record/restart toggles, mode switching, terminal resize handling, **Windows Terminal tab color** via `settings.json` hot-reload |
+| `split-console.ts` | Console dashboard TUI: status banner with model column (grouped by provider: POLL / FREEBUFF / FEATHERLESS / OC-GO / OTHER), log buffer, keyboard commands, debug/record/restart toggles, mode switching, terminal resize handling, **Windows Terminal tab color** via `settings.json` hot-reload |
 | `handlers/anthropic-bridge.ts` | Anthropic→OpenAI request conversion via `llm-bridge` library (system prompt, tool_use/tool_result, thinking blocks) |
+| `handlers/freebuff-client.ts` | Freebuff provider: embedded Codebuff free-tier pipeline. Session management, token pool, run chains, dynamic model registry (fetches from Codebuff GitHub + hardcoded fallback), dynamic User-Agent version detection, chat completion forwarding |
 | `handlers/device-login-emulator.ts` | Route dispatcher: vs-auth → auth → repo → ghcp-app → vs → copilot → catch-all (`handleVSAuth` runs first so VS gets enterprise plan) |
 | `handlers/auth-handler.ts` | All auth endpoints: device login, OAuth PKCE, user info, copilot user/token, CORS preflight (individual/free responses) |
 | `llm-bridge` (npm) | External library for Anthropic↔OpenAI translation (`anthropicToUniversal`, `universalToOpenAI`, streaming parsers/emitters) |
-| `handlers/opencode-client.ts` | Core LLM forwarding client: API key balancer, model init, tool normalization, **forwards all request params upstream** (no whitelist) |
+| `handlers/opencode-client.ts` | Core LLM forwarding client: **4-provider model routing** (OC-GO / POLL / FREEBUFF / AGNES), API key balancer, model init, tool normalization, **forwards all request params upstream** (no whitelist) |
 | `opencode-workspace.ts` | Workspace usage fetcher: fetches root page `/` and each workspace `/go` page, parses ALL `<script>` blocks for `$R` embedded data (workspace IDs + rolling/weekly/monthly usage). Falls back to `_server` RPC API if root page extraction fails. |
 | `handlers/copilot-handler.ts` | All Copilot API routes: sessions, messages, MCP, models, completions, embeddings, tokenize (non-VS/non-GHCP) |
 | `handlers/vs/handler.ts` | Visual Studio chat endpoints: `/v1/messages`, `/responses`, `/chat/completions` |
 | `handlers/vs/auth.ts` | Visual Studio enterprise auth: copilot user, token, content exclusion |
-| `handlers/vs/models.ts` | Visual Studio model list (matches real GitHub API format, includes thinking variants) |
+| `handlers/vs/models.ts` | Visual Studio model list — real GitHub billing format (`token_prices`, `model_picker_price_category`, `policy.state`). Injects fake category separator entries (`cat_*`) between provider groups using model clone approach. Filters by active providers and disabled models from `config.json`. |
 | `handlers/ghcp-app/index.ts` | GitHub App (Windows) route dispatcher: detects `github-app/*` User-Agent |
 | `handlers/ghcp-app/auth.ts` | GHCP app auth helpers and detection |
 | `handlers/ghcp-app/models.ts` | GHCP app model list format |
@@ -88,6 +91,7 @@ sc failure w3svc reset= 86400 actions= restart/5000/restart/10000/restart/30000
 | `build.cmd` | **Unified build**: auto-detects Bun or Node.js, delegates to `build-bun.cmd` or `build-node.cmd` |
 | `build-bun.cmd` | Bun standalone build: compiles TS → single `gc2xy` exe + C# service wrapper |
 | `build-node.cmd` | Node.js portable build: copies src/ + node_modules/ + node.exe + C# service wrapper |
+| `src/tool-salvager.ts` | **Tool salvager**: per-tool schema coercion + JSON salvage + apology/loop detection. Repairs broken `tool_calls` from upstream LLMs (Agnes, Pollinations, Freebuff) or replaces them with `task_complete` so VS doesn't get stuck. See **Tool Salvager** section below. |
 | `bunfig.toml` | Bun runtime config: telemetry off, small heap mode, no install cache |
 | `.config/.env` | Environment configuration (API keys) |
 | `certs/` | Auto-generated CA key/cert and unified multi-SAN intercept cert |
@@ -108,6 +112,52 @@ Client → TLS Server (443) → secureConnection → parseHttpRequest
   → [Response Interceptor] → saveToCache → Send response back to client
 
 **Priority**: Cache → VSAuth/Auth/Repo/GHCP/VS/Copilot handlers (per-client routing, VS-auth first for enterprise plan) → Catch-all → Upstream proxy
+
+## Provider System (Model Routing)
+
+The proxy supports **5 upstream model providers** determined by model ID prefix. Multiple providers can be active simultaneously via checkbox toggles in the dashboard.
+
+| Provider | Prefix | Upstream | Auth | Notes |
+|----------|--------|----------|------|-------|
+| **OC-GO** | (none) | `https://opencode.ai/zen/go/v1` | OpenCode API key | Default premium provider |
+| **OC-ZEN** | `-free` | `https://opencode.ai/zen/v1` | None | Currently throttled |
+| **POLL** | `pol/` | `https://text.pollinations.ai/openai` | None | Free tier, no API key needed |
+| **FREEBUFF** | `freebuff/` | `https://www.codebuff.com` (embedded pipeline) | Freebuff auth tokens (`FREEBUFF_TOKENS` env or `freebuffTokens` in config.json) | Routes directly to Codebuff free-tier API with session management, token pool, run chains. Models dynamically fetched from Codebuff GitHub, falls back to 7 hardcoded models. Dynamic User-Agent version detection. |
+| **AGNES** | `agnes/` or `agnes-flash-2` | `https://apihub.agnes-ai.com` | AGNES API key (`cpk-...`) | Routes to Agnes AI API |
+
+### Model ID Mapping
+
+| Model Source | Example ID | Routes To |
+|-------------|-----------|-----------|
+| OpenCode Go | `deepseek-v4-pro` | `opencode.ai/zen/go/v1` |
+| Pollinations | `pol/openai-fast` | `text.pollinations.ai` |
+| Freebuff | `freebuff/deepseek/deepseek-v4-pro` | Codebuff free-tier (embedded pipeline) |
+| Agnes | `agnes/agnes-2.0-flash` or `agnes-flash-2` | `apihub.agnes-ai.com` |
+
+### How it Works
+
+1. **`getModelTier(modelId)`** in `opencode-client.ts` determines the provider tier from the model ID string:
+   - `startsWith("pol/")` → `poll`
+   - `startsWith("freebuff/")` → `freebuff`
+   - `startsWith("agnes")` or `=== "agnes-flash-2"` → `agnes`
+   - `endsWith("-free")` or special names → `free`
+   - everything else → `go`
+
+2. **`chatCompletion()`** in `opencode-client.ts` routes to the correct upstream:
+   - `poll` → `https://text.pollinations.ai/openai/chat/completions` (no key)
+   - `freebuff` → embedded Codebuff pipeline in `freebuff-client.ts` (session mgmt, token pool, run chains)
+   - `agnes` → `https://apihub.agnes-ai.com/chat/completions` (AGNES API key required)
+   - `go` → `https://opencode.ai/zen/go/v1/chat/completions` (OpenCode API key)
+
+3. **`initModels()`** fetches and caches per-provider model lists:
+   - Go models from `opencode.ai/zen/go/v1/models`
+   - Poll models from `text.pollinations.ai/models`
+   - Freebuff models from Codebuff's GitHub TypeScript sources (`freebuff-models.ts`, `free-agents.ts`, `model-config.ts`) with hardcoded fallback (7 models: DeepSeek V4 Pro, DeepSeek V4 Flash, MiMo 2.5, MiMo 2.5 Pro, Kimi K2.6, MiniMax M2.7, MiniMax M3)
+   - Cached to `.cache/models-{go,poll}.json`
+
+4. **Dashboard grouping**: The dashboard WebSocket snapshot includes `providerTag` for each model ("go", "poll", "freebuff", "agnes", "zen", "bitnet", "codestral", "featherless", "openrouter") and renders them grouped by provider with headers: **OC-GO**, **POLL**, **FREEBUFF**, **AGNES**, **BITNET**, **CODESTRAL**, **FEATHERLESS**, **OPENROUTER**, **OC-ZEN**.
+
+5. **Provider toggles**: The dashboard Proxy Config section includes **checkbox toggles** for each provider (OC-GO, FREEBUFF, AGNES). Multiple providers can be active simultaneously. Active providers are persisted to `.config/config.json` as an array. **AGNES auto-activation**: When an AGNES API key is saved (via dashboard or directly in `config.json`), the `"agnes"` provider is automatically added to `_activeProviders` — no need to manually check the AGNES checkbox.
 
 ## All Intercepted Endpoints
 
@@ -174,7 +224,7 @@ The GitHub App for Windows (Rust, `github-app/*` User-Agent) is detected and rou
 | POST | `/v1/messages` | Anthropic Messages API chat (forwarded to opencode.ai) | `vs/handler.ts` |
 | POST | `/responses` | OpenAI Responses API chat (forwarded to opencode.ai) | `vs/handler.ts` |
 | POST | `/chat/completions` | OpenAI Chat Completions (forwarded to opencode.ai) | `vs/handler.ts` |
-| GET | `/models`, `/v1/models` | Model list (VS-specific format with thinking variants) | `vs/models.ts` |
+| GET | `/models`, `/v1/models` | Model list (VS-specific format with `token_prices` billing, `model_picker_price_category`, fake `cat_*` category separator entries between provider groups, filters by `config.json` providers/disabledModels) | `vs/models.ts` |
 | GET | `/models/{id}` | Specific model detail | `vs/models.ts` |
 | GET | `/copilot_internal/user` | Enterprise plan user (VS-only, others get individual) | `vs/auth.ts` |
 | GET | `/copilot_internal/v2/token` | Enterprise token (VS-only, others get free) | `vs/auth.ts` |
@@ -234,19 +284,25 @@ Business/Enterprise plans use `quota_snapshots` instead of `limited_user_quotas`
 
 ### Model Name Emoji Conventions
 
-Model display names in `ghcp-app/models.ts` and `copilot-handler.ts` use a prefix emoji based on capabilities from models.dev:
+Model display names in `ghcp-app/models.ts`, `copilot-handler.ts`, and `vs/models.ts` use a prefix emoji:
 
-| Capability | Emoji | Condition |
-|-----------|-------|-----------|
+| Prefix | Emoji | Condition |
+|--------|-------|-----------|
+| Freebuff | `[🇫🇷ᴇᴇ]` | `id.startsWith("freebuff/")` |
 | Has thinking variants (deepseek-v4, mimo) | `💡` | `supportsThinkingVariants(id)` — checks `deepseek-v4` or `mimo` without internal-thinking overlap |
 | No thinking variants | `✨` | default |
 | Has vision (modalities.input includes `"image"`) | `🎞️` | `modelHasVision(id)` — reads `modalities.input` from `models.dev/api.json` |
+| Premium freebuff | `[LIM]` | `getFreebuffModelPremium(id)` — checks dynamic metadata or hardcoded `premium` flag |
+
+Freebuff models use agent-based routing (no controllable thinking), so they never get `💡` regardless of model name. Premium freebuff models (DeepSeek V4 Pro, MiMo 2.5 Pro, Kimi K2.6) additionally show `[LIM]`.
 
 Emojis are concatenated: base + media. Examples:
 - `deepseek-v4-pro` (text-only, has variants) → `💡 DeepSeek V4 Pro`
 - `mimo-v2.5` (image+audio+video, has variants) → `💡🎞️ MiMo V2.5`
 - `kimi-k2.5` (image+video, no variants) → `✨🎞️ Kimi K2.5`
 - `minimax-m2.7` (text-only, no variants) → `✨ MiniMax M2.7`
+- `freebuff/deepseek/deepseek-v4-pro` (premium) → `[🇫🇷ᴇᴇ][LIM] DeepSeek V4 Pro`
+- `freebuff/minimax/minimax-m2.7` (free) → `[🇫🇷ᴇᴇ] MiniMax M2.7`
 
 Vision data sourced from `models.dev/api.json` at startup (`fetchModelCtxMap` → `_visionSet`). Models not in the API (e.g. `pol/openai-fast`) get no `🎞️`.
 
@@ -346,7 +402,7 @@ All intercepted traffic sources detected by User-Agent header:
 
 ## Web Dashboard
 
-A web-based dashboard is available at `http://github.com/dashboard` (or `http://localhost:{HTTP_PORT}/dashboard`). Built with **Bootstrap 5.3** and custom liquid glass effect (SVG displacement maps with Snell's law refraction, IOR 2.5).
+A web-based dashboard is available at `https://github.com/dashboard`. Built with **Bootstrap 5.3** and custom liquid glass effect (SVG displacement maps with Snell's law refraction, IOR 2.5). All live data is push-based via **WebSocket** (`ws://127.0.0.1:3441/ws`, piped through `wss://host/ws` from TLS handler) — no polling, changes delivered as deltas only.
 
 ### Layout
 - **Left (col-lg-8)**: Available Models — family-grouped model tags (deepseek, xiaomi, alibaba, etc.) with enabled/disabled toggle, model ID overlay
@@ -356,12 +412,13 @@ A web-based dashboard is available at `http://github.com/dashboard` (or `http://
 Replicates the TUI status bar with real-time values: mode (MOCK/HYBRID/PROXY), LReq (local proxy request count), TPS, active keys (active/total), models (enabled/total), **Quota** (combined workspace usage % for OpenCode / cost% for ZEN), provider. All inline in the header card with a dark `card-header` background. In OpenCode mode, Quota shows **remaining** monthly capacity as a percentage (100 - avg(usage%) across all workspaces). In ZEN mode, Quota shows cost/(cost+balance) %. Updates every 2s via WS.
 
 ### Provider Selector
-Horizontal radio button group:
-- **OpenCode** — route through opencode.ai
-- **ZEN** — route through zenllm.org
+Checkbox toggles (multiple can be active simultaneously):
+- **OC-GO** — route through opencode.ai /zen/go (default, requires OpenCode API key)
+- **FREEBUFF** — route through embedded Codebuff pipeline (session mgmt, token pool, run chains). Requires `FREEBUFF_TOKENS` env var or `freebuffTokens` in config.json, or auto-discovers tokens from Freebuff CLI credentials.
+- **AGNES** — route through Agnes AI API at apihub.agnes-ai.com (requires AGNES API key). **Auto-activates** when an AGNES key is saved — checkbox is automatically checked and config row shown.
 
 ### Model Tiles
-Compact horizontal checkbox tiles in a flex-wrap container. Models are **grouped by vendor family** using the `family` field from `models.dev/api.json`:
+Compact horizontal checkbox tiles in a flex-wrap container. Models are **grouped by provider** (`go`, `poll`, `freebuff`) using the `providerTag` field from `getModelProviderTag()`:
 
 - **Family normalization**: `getModelFamily()` in `opencode-client.ts` strips `thinking-` prefix, keeps text before first `-`, then strips trailing version digits. E.g. `deepseek-flash`/`deepseek-thinking` → `deepseek`, `minimax-m2`/`minimax-m2.5` → `minimax`, `qwen3.5`/`qwen3.6` → `qwen`.
 - **Fallback**: API `family` first, then `MODEL_INFO[id].family`, else `""` which falls through to `id.split('/')[0]` in the HTML.
@@ -394,50 +451,93 @@ When ZEN provider is active with a logged-in session, three extra inline columns
 All cards (keys, config, models, actions, env) collapse with chevron toggle icons.
 
 ### Restart
-Shows yellow pulsing "Reconnecting..." while polling `/api/status` every 2s. Requires two consecutive successful responses before declaring online (prevents premature "Online" during initialization).
+Shows yellow pulsing "Reconnecting..." while WebSocket is disconnected. When WS reconnects, server sends full snapshot — declares online immediately.
 
 ### Wallpaper Switcher
 
-The dashboard Proxy Configuration section includes a **Wallpaper** radio group with three options:
+The dashboard Proxy Configuration section includes a **Wallpaper** radio group with four options:
 - **None** — plain black background
 - **Bing** — daily Bing wallpaper, cached to `.cache/wallpaper-bing.jpg`
 - **Wallhaven** — random SFW wallpaper from Wallhaven's monthly top list (page 3), cached to `.cache/wallpaper-haven.jpg`
+- **AI** — Agnes image generation (gated on Agnes API key being set). Prompt input + **Save** button shown only when an Agnes key is configured.
 
-Wallpapers are fetched on-demand when the WebSocket connects and cached for **1 hour**. The client uses `/api/wallpaper` HTTP endpoint to serve the cached image. Wallhaven uses the API at `https://wallhaven.cc/api/v1/search?categories=100&purity=100&topRange=1M&sorting=toplist&order=desc&page=3` and picks a random result.
+Wallpapers are fetched on-demand when the WebSocket connects and cached for **1 hour**. The cached image is base64-encoded and pushed to the client as a **WebSocket `wallpaperData` message** with a `dataUri` field — the client applies it as a CSS background directly, no HTTP roundtrip. A `/api/bg` HTTP fallback endpoint exists server-side but is no longer used by the dashboard. Wallhaven uses the API at `https://wallhaven.cc/api/v1/search?categories=100&purity=100&topRange=1M&sorting=toplist&order=desc&page=3` and picks a random result.
 
-The wallpaper source is stored in `localStorage` (`gc2xy_wallpaper`) and in `.config/config.json` (`wallpaper` field). On initial snapshot load, the radio button is auto-selected.
+The wallpaper source is stored in `localStorage` (`gc2xy_wallpaper`) and in `.config/config.json` (`wallpaper` field). On initial snapshot load, the radio button is auto-selected. The client stores the current `dataUri` in a global `_wallpaperDataUri` variable; when empty, non-AI wallpaper selections fall back to `/api/bg`.
+
+#### AI Wallpaper Flow (Agnes)
+
+`generateAiWallpaperToDisk()` in `dashboard-handler.ts:710`:
+
+1. **Agnes API call** — `POST https://apihub.agnes-ai.com/v1/images/generations` with `model: agnes-image-2.1-flash`, the saved prompt, `size: 1024x768`, and `Authorization: Bearer <agnesKey>`. Up to 3 retries on 429/5xx. Aggressive console logging (`[AI WALLPAPER] attempt N/3 failed: ...`) on each attempt.
+2. **CDN download** — Agnes returns `data[0].url` (e.g. `https://platform-outputs.agnes-ai.space/...`). The image is downloaded via the local `downloadInsecure()` helper which uses `node:https` with `rejectUnauthorized: false` (the Agnes CDN cert is self-signed). `response_format: b64_json` is **not** supported by the underlying `agnes-t2i-general-model` and returns 400, so URL is the only path.
+3. **Bing fallback** — if the CDN download throws (corporate proxy block, Cloudflare 403, cert error, timeout), the proxy calls `fetchBingWallpaper()` and copies the daily Bing image to `.cache/ai-paper.jpg` so the AI slot isn't empty. It then broadcasts a **`wallpaperFallback`** WS message with `{ reason }`; the client shows a warning toast ("Agnes CDN blocked, using Bing wallpaper"). Generation still reports success (100% progress, no error toast) because the user got a wallpaper.
+4. **Hard errors** — auth failures, rate limits, missing key, malformed response all hit the outer `catch` block which returns `false`, leaves progress at 0, and broadcasts a **`wallpaperError`** WS message with the upstream error string. The client shows a red error toast ("AI wallpaper failed: ..."). No Bing fallback in this case — those are user-fixable issues, not network blips.
+5. **Success path** — only on full success does `setGenProgress("image", 100)` fire (the old code falsely reported 100% in `finally` regardless of outcome, masking every failure). Progress auto-resets to `{kind: null, progress: 0}` after 60s.
+
+The 1-hour cache on `.cache/ai-paper.jpg` (via `fetchAiWallpaper()`) means successful Agnes generations are reused; the Bing fallback also lands in this file and is reused until the next generation attempt or prompt change (which calls `unlinkSync` to clear it).
 
 | WS Action | Purpose |
 |-----------|---------|
-| `setWallpaper` | Set wallpaper source, cache the image, push URL to client |
-| `getBingBg` | Get current wallpaper (legacy name, works for all sources) |
+| `setWallpaper` | Set wallpaper source, cache the image, push `wallpaperData` to client |
+| `getBingBg` | Get current wallpaper (legacy name, works for all sources), push `wallpaperData` to client |
+| `wallpaperError` | (Server → client) Real Agnes failure (auth/rate-limit/parse); client shows red toast |
+| `wallpaperFallback` | (Server → client) Agnes succeeded but CDN blocked; client shows warning toast, Bing image is displayed |
 
 ### API Endpoints
 
+All read/status data is delivered via WebSocket push (delta-based, only on change). Only the HTML page and initial snapshot remain as HTTP endpoints:
+
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/status` | GET | Status + mode + model list + key validity |
-| `/api/config` | GET/POST | Get/set config (mode, provider, keys, model states) |
-| `/api/provider` | GET/POST | Get/set upstream provider |
-| `/api/models` | GET/POST | Get/set model enabled states |
-| `/api/keys/validate` | POST | Validate all OpenCode keys |
-| `/api/keys` | GET/POST | ZEN token pool CRUD (add/update/delete keys with name/token/session) |
-| `/api/zen/login` | GET/POST/DELETE | ZEN session cookie management + OAuth URLs |
-| `/api/zenith/requests` | GET | ZEN dashboard aggregate stats (requests, tokens, cost, balance) |
-| `/api/restart` | POST | Trigger restart (exit code 42, picks up code changes) |
-| `/api/wallpaper` | GET | Serve cached wallpaper image (Bing or Wallhaven) |
-| `/health` | GET | Health check (status, version, cwd, platform, runtime, hasValidKey) |
-| `/api/opencode/workspace-usage` | GET | Per-key OpenCode workspace usage (rolling/weekly/monthly %) |
-| `/api/opencode/debug` | GET | Debug session state (cookie prefixes, key sessions, cache state) |
-| `/api/oc/login` | GET/POST/DELETE | OpenCode session cookie management |
+| `/dashboard` or `/` | GET | Serve dashboard HTML page |
+| `/api/init` | GET | Initial snapshot (status, models, keys, health) — called once on page load |
+
+All mutations (toggle model, CRUD keys, set mode/provider, save/clear sessions, restart, fetch wallpaper/zen stats/workspace usage) are sent as **WebSocket action messages** to `ws://127.0.0.1:3441/ws` (piped through `wss://host/ws` from TLS handler).
 
 ### Files
 | File | Purpose |
 |------|---------|
 | `dashboard.html` | Web dashboard HTML (project root) |
-| `src/handlers/dashboard-handler.ts` | Dashboard handler: serves HTML + JSON API endpoints. OpenCode key validation, ZEN key CRUD, session login, stats aggregation, Bearer/cookie two-tier ZEN auth, ZEN model list, OpenCode workspace usage |
+| `src/handlers/dashboard-handler.ts` | Dashboard handler: serves HTML + JSON API endpoints. OpenCode key validation, ZEN key CRUD, Freebuff config (URL + API key), provider toggle, session login, stats aggregation, Bearer/cookie two-tier ZEN auth, ZEN model list, OpenCode workspace usage. **AI wallpaper** generation via Agnes API with **Bing fallback** when the Agnes CDN is unreachable (corporate proxy / WAF / self-signed cert). **WebSocket server** on `127.0.0.1:3441` (`gc2xy_WS_PORT`) — snapshot/diff push system pushes delta patches only when data changes, never polling. WS action handler for all mutations (toggle model, save config, key CRUD, restart, set provider, etc.) |
 | `src/opencode-workspace.ts` | Workspace usage fetcher: extracts workspace IDs + rolling/weekly/monthly usage from opencode.ai `/go` page `$R` data |
-| `src/mitm-proxy.ts` | Routes `/dashboard` and `/api/*` in all modes (mock/hybrid/proxy) |
+| `src/mitm-proxy.ts` | Routes `/dashboard` and `/api/*` in all modes (mock/hybrid/proxy). Detects `Upgrade: websocket` in TLS handler → pipes upgraded socket to WebSocket server on `WS_PORT` |
+
+### Dashboard HTML Structure (`dashboard.html`)
+
+#### Key DOM Containers
+| ID | Purpose |
+|----|---------|
+| `apiKeysContainer` | Workspace cards render here (OPENCODE STATS section) |
+| `quotaDisplay` | Quota % in status header (remaining monthly capacity) |
+| `quotaTopBar` | Wrapper for quota display with label |
+| `keysCountBadge` | Total API key count badge |
+| `workspaceNamesList` | Datalist for key name autocomplete |
+
+#### Key JavaScript Functions (in `dashboard.html`)
+| Function | Line | Purpose |
+|----------|------|---------|
+| `renderOpencodeStats()` | ~1301 | Main workspace card renderer — builds `pool-card` divs with workspace name (hover: `wrk_` ID), key checkboxes, usage progress bars |
+| `renderWorkspaceUsageSummary()` | ~1363 | Updates `#quotaDisplay` with remaining % (100 - avg usage) |
+| `renderWorkspaceUsage(data)` | ~1291 | Entry point when WS `workspaceUsage` message arrives — stores `_wsData`, calls both render functions |
+| `toggleWsKey(wsId, keyID, enabled)` | ~1297 | Sends `toggleWorkspaceKey` WS action |
+| `applyKeys(k)` | ~1280 | Called when keys WS message arrives — updates `_wsData` and re-renders |
+| `applySnapshot(data)` | ~1107 | Handles initial WS snapshot — sets `_wsData` from `workspaceData` field |
+| `applyPatch(data)` | ~1162 | Handles WS delta patches — same logic for `workspaceData` |
+
+#### Data Flow: Workspace Keys → Key Rotator + Provider Activation
+```
+Dashboard checkbox toggle
+  → wsSend('toggleWorkspaceKey', { workspaceId, keyID, enabled })
+  → dashboard-handler.ts:166 — updates _workspaceKeyStates[wsId]
+  → syncKeysFromWorkspaceStates() — filters _keys to only enabled keys
+    → setOcKeys(newKeys.map(k => k.key)) — pushes to opencode-client.ts balancer
+    → if keys exist: adds "opencode" to _activeProviders (so ensureModels() serves them)
+    → if no keys: removes "opencode" from _activeProviders (so ensureModels() skips them)
+    → saveConfig() — persists providers + disabledModels to config.json
+  → Next withKey() call uses only enabled keys
+  → Next ensureModels() call filters by active providers → no keys = no OpenCode models served
+```
 
 ### Keyboard Reference
 The dashboard footer shows terminal keyboard shortcuts: `1`-`3` switch modes, `r` restart, `d` debug, `q` quit.
@@ -473,6 +573,100 @@ On Server 2016 or systems without WT, the fallback is `timeout /t 3` then script
 - Format: `{ statusCode, statusMessage, headers, bodyBase64 }`
 - Priority: Cache → Fake handlers → Catch-all → Upstream
 - See `skills.md` → **Working with the Cache System** for cache ops and troubleshooting.
+
+## Tool Salvager
+
+`src/tool-salvager.ts` — repairs upstream LLM tool calls that don't match VS
+schemas. **Inspired by [gc2oc](https://github.com/notBlubbll/gc2oc)'s
+`normalizeToolCall` and `_tool400Streak` recovery** (see their
+`src/server.js`).
+
+Small/upstream LLMs (Agnes-2.0-Flash, Pollinations GPT-OSS 20B, Freebuff
+Codebuff, etc.) routinely emit tool calls that fail to satisfy VS's
+strict tool schema. The salvager runs **after the LLM response arrives**
+and **before the response is converted to `tool_use` blocks** for VS.
+
+### Four problems the salvager handles
+
+| # | Problem | Example | Salvager action |
+|---|---------|---------|-----------------|
+| 1 | **Schema-drift** (wrong field names) | LLM calls `get_file` with `filePath` (Anthropic) instead of `filename` (VS) | Coerce aliases: `filePath`/`path`/`uri`/`resource` → `filename` |
+| 2 | **Type-drift** (strings instead of numbers) | `"endLine": "100"` (string) instead of `100` (number) | Coerce `startLine`/`endLine` to numbers; default to `1` / `999999` for missing |
+| 3 | **Broken JSON** (truncated content, Windows path escapes) | `{"content":"dir\ntl\file","filename":"foo` (unterminated) | Regex-extract `filename` / `content` / etc. from the broken blob |
+| 4 | **Apology text** (model gives up) | `"I apologize, but I'm unable to retrieve the contents..."` | Inject synthetic `task_complete` tool_use so VS finalizes the turn |
+| 5 | **Tool-call loop** (model stuck) | `get_file` called 5× in a row with `endLine: 500, -1, 100, 100, 0` | Inject `task_complete` to break the loop |
+
+### Architecture
+
+```
+LLM response (OpenAI tool_calls[])
+   ↓
+repairToolCalls() — runs normalizeToolCall, falls back to salvageToolCall
+   ↓
+detectApologyText(content) — regex match for "I apologize / I can't / as an AI..."
+   ↓
+detectToolLoop(messages, candidate) — same tool name called ≥3 times in a row
+   ↓
+If (apology || loop) AND all tool calls dropped → buildAnthropicTaskComplete
+If (apology || loop) AND tool calls salvageable → keep repaired calls, log it
+Otherwise → return repaired tool calls as-is
+```
+
+### Public API
+
+| Export | Purpose |
+|--------|---------|
+| `normalizeToolCall(tc)` | Stage A: schema coercion. Returns `tc` with coerced args, or `null` if `JSON.parse` failed |
+| `salvageToolCall(tc)` | Stage B: regex-extract from broken JSON. Returns salvaged `tc` or `null` |
+| `repairToolCall(tc)` | Combined: normalize → salvage. Always returns the best-effort result |
+| `repairToolCalls(tcs)` | Apply to a list. Returns `{ repaired, dropped, total }` |
+| `detectApologyText(text)` | `true` if text is an LLM refusal / "I can't" / "as an AI" pattern |
+| `detectToolLoop(msgs, candidate)` | `true` if same tool name fired ≥3 times in last 4 assistant messages |
+| `buildAnthropicTaskComplete(model)` | Returns SSE buffer with synthetic `task_complete` tool_use (Anthropic Messages format) |
+| `buildOpenAITaskComplete(model)` | Returns OpenAI chat-completion object with synthetic `task_complete` tool_call |
+| `bumpSalvageStat(kind)` | Diagnostic counter — `normalized` / `salvaged` / `dropped` / `apologyInjected` / `loopInjected` |
+| `getSalvageStats()` | Read counters for logs / dashboard |
+
+### Per-tool schema coverage
+
+Coerced tools: `get_file` (VS), `read_file` (VS Code), `grep_search`,
+`replace_string_in_file`, `multi_replace_string_in_file`, `create_file`,
+`remove_file` / `delete_file(s)`, `run_command_in_terminal` /
+`execute_command`, `get_background_terminal_output`, `get_terminal_output`,
+`kill_terminal`, `semantic_search`, `fetch_webpage`, `runSubagent`,
+`manage_todo_list`, `memory`, `vscode_listCodeUsages`, `vscode_renameSymbol`,
+`vscode_askQuestions`, `run_vscode_command`, `create_and_run_task`,
+`github_text_search`, `github_repo`, `open_browser_page`/Playwright tools,
+`lookup_vs`, `find_symbol`, `plan`, `code_search`, `file_search`. Browser
+tools (`open_browser_page` etc.) are pass-through.
+
+Each tool has its own list of accepted field aliases — e.g. for `get_file`:
+`filename ← filePath | path | uri | resource`.
+
+### Integration points
+
+| File | Where | Behavior |
+|------|-------|----------|
+| `src/handlers/vs/handler.ts` (`/v1/messages` non-stream) | After `resp.json()` | Run salvager on `openaiData.choices[0].message`; on `replacedWithTaskComplete`, return `buildAnthropicTaskComplete` SSE; else inject repaired `tool_calls` into `contentBlocks` |
+| `src/handlers/vs/handler.ts` (`/v1/messages` stream) | After SSE accumulation | Repair accumulated `toolCallAccum[*]`; if all dropped + apology/loop, write `buildAnthropicTaskComplete` SSE and close socket |
+| `src/handlers/vs/handler.ts` (`/responses` non-stream) | After `resp.json()` | Same as `/v1/messages` non-stream but returns `buildOpenAITaskComplete` for `replacedWithTaskComplete` |
+| `src/handlers/vs/handler.ts` (`/chat/completions` non-stream) | After `resp.json()` | Same pattern; mutates `data.choices[0].message` in place |
+| `src/handlers/copilot-handler.ts` (`/v1/messages` non-stream) | After `toolCalls` build, before conversion to `tool_use` | Repair `toolCalls`; on (apology/loop) + all-dropped, replace with `task_complete`; on pure apology text (no tool calls), also synthesize `task_complete` |
+| `src/handlers/copilot-handler.ts` (`/responses` non-stream, SSE accumulation) | After stream accumulation → `data` build | Repair `msg.tool_calls`; same apology/loop/task_complete logic |
+| `src/handlers/copilot-handler.ts` (`/responses` streaming to socket) | After stream completes, before `response.completed` | Buffer tool call SSE events; run salvager on accumulated tool calls; if apology/loop → emit `task_complete` output item instead; else flush buffered events |
+
+### Diagnostic output
+
+Console example (when salvager fires):
+```
+[TOOL SALVAGE] agnes-2.0-flash: 0/1 tool_calls repaired, 1 dropped
+[TOOL SALVAGE] agnes-2.0-flash: apology → task_complete
+```
+
+For the specific agnes log case described by the user, this would have
+broken the loop after 1-2 iterations instead of letting the model
+apologize 8+ times in a row with `endLine` varying between `-1`, `0`,
+`100`, `500`, `1000`.
 
 ## Nag Handling (task_complete suppression)
 
@@ -548,6 +742,10 @@ Before exiting, the proxy **clears the module cache** (`require.cache`) so `bun 
 
 See `skills.md` → **Restart & Mode Switching** for batch implementation details and restart flow.
 
+### Live Mode Switch (`1`/`2`/`3` in dashboard)
+
+Pressing `1`, `2` or `3` from the TUI is a **soft** switch: `mitm-proxy.ts:1225-1242` calls `setMode()` (in-memory only) and redraws the status bar. The traffic log filename (`traffic-<date>-<mode>.log`) is set once at startup (`mitm-proxy.ts:62-65`) and does **not** rename, so a `mock → proxy` switch keeps appending to the old `...-mock.log` file. The mode value used for the log filename and the in-memory mode can briefly disagree until restart. To get a fresh `...-PROXY.log` and a clean process, press `r` (restart) after switching — the launcher restarts with the matching `--mode-N` arg. The console key `3` was historically broken (emitted `switch:PROXY` uppercase, which fell through to `mock`); it now emits `switch:proxy` (`split-console.ts:594`) and routes correctly through `validModes` in `mitm-proxy.ts:1227`.
+
 ## Copilot Token
 
 Generated by `generateCopilotToken()` at `auth-handler.ts:50`:
@@ -588,12 +786,15 @@ See `skills.md` → **Interceptor Development** for detailed handler chain prior
 
 ## Env Variables
 
+> **Always use `.config/config.json` for configs, API keys, and provider settings** (e.g. `opencodeKey`, `codestralKey`, `pollApiKey`, `freebuffTokens`, `wallpaper`, `providers`, `disabledModels`, `workspaceKeyStates`). The `.env` file is reserved for runtime/process flags only (port overrides, mode, IIS auto-detect, ENFORCE_NODE/ENFORCE_CMD). Never put secrets or per-provider keys in `.env` — they are persisted via the dashboard UI or by editing `config.json` directly. Each provider client reads its key from `config.json` (e.g. `getPollKey()` in `pollinations-client.ts`, `getCodestralKey()` in `codestral-client.ts`).
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `gc2xy_MODE` | `mock` | Set by launcher: `mock`, `hybrid`, or `proxy`. Also set on mode switch via dashboard. Display-only; actual mode determined by `--mode-2`/`--mode-3` launch args |
 | `IIS_PROXY` | unset | Set to `"1"` to enable IIS reverse proxy mode (HTTP only, skips TLS on 443). Auto-set by launchers when W3SVC detected. |
 | `gc2xy_HTTP_PORT` | `3080` (IIS) / `80` | Port for HTTP intercept server. Launchers set to `3080` when IIS detected. |
 | `gc2xy_HTTPS_PORT` | `443` | Port for HTTPS/TLS intercept server. |
+| `gc2xy_WS_PORT` | `3441` | Port for dashboard WebSocket server (dedicated `http.Server`). |
 | `gc2xy_SETUP_DONE` | unset | Internal flag — set by launcher after first-run setup (cleanup/DNS/CA) to skip on restarts |
 | `FAKE_DEVICE_LOGIN` | `"0"` (enabled) | Set to `"0"` to DISABLE the emulator |
 | `TARGET_HOST` | `github.com` | Target host to intercept |
@@ -607,6 +808,7 @@ See `skills.md` → **Interceptor Development** for detailed handler chain prior
 | `SKIP_CACHE` | unset | Set to `"1"` to skip reading from cache |
 | `OPENCODE_API_KEYS` | unset | JSON array of opencode.ai API keys for model forwarding |
 | `OPENCODE_API_KEY` | unset | Single opencode.ai API key (alternative to array) |
+| `FREEBUFF_TOKENS` | unset | Comma-separated Freebuff auth tokens for Codebuff free-tier (or set `freebuffTokens` in config.json). Auto-discovers CLI tokens from `~/.config/manicode/credentials.json`. |
 | `ZENITH_API_KEY` | unset | ZEN API key (`sk-zenith-...`) from zenllm.org |
 | `ZENITH_SESSION` | unset | ZEN session cookie (`zs=...`) for dashboard stats |
 | `OPENCODE_SESSION` | unset | OpenCode `auth` cookie value for workspace usage tracking in dashboard |
@@ -642,16 +844,28 @@ The dashboard width fills the terminal window (no cap). Resize events trigger an
 ```
 ┌─ gc2xy ───────────────────────────────────────────────────────────┐
 │                                                                   │
-│ █▀▀▀ █▀▀▀ █▀▀█ █▀▀█ █▀▀▀ │ Free: pol/openai-fast                  │
-│ █ ▀█ █      ▀█ █░░█ █░░░ │ Premium: minimax-m2.7, kimi-k2.5       │
+│ █▀▀▀ █▀▀▀ █▀▀█ █▀▀█ █▀▀▀ │ POLL: pol/openai-fast                   │
+│ █ ▀█ █      ▀█ █░░█ █░░░ │ OC-GO: minimax-m2.7, kimi-k2.5         │
 │ ▀▀▀▀ ▀▀▀▀ █▄▄█ ▀▀▀▀ ▀▀▀▀ │ deepseek-v4-pro, deepseek-v4-flash    │
-│                           │ qwen3.6-plus, mimo-v2-pro              │
+│                           │ OTHER: codestral/codestral-latest,     │
+│                           │ bitnet-demo                            │
 ├───────────────────────────────────────────────────────────────────┤
 │ github copilot proxy v3 │ Mode: MOCK │ Req: 0 │ ● 0.0 t/s │ Agent: GitHub Copilot Desktop ... │
 ├───────────────────────────────────────────────────────────────────┤
 │ Commands: 1=mock 2=hybrid 3=proxy  ● X.X t/s ○ e=rec r=rst d=dbg m=mdls ... │
 └───────────────────────────────────────────────────────────────────┘
 ```
+
+### Console Model Grouping
+
+The status banner right column groups models into colored label rows in this order:
+- **POLL** (yellow) — `pol/*` (Pollinations free tier)
+- **FREEBUFF** (yellow) — `freebuff/*` (Codebuff free-tier)
+- **FEATHERLESS** (magenta) — `featherless/*` (Featherless)
+- **OC-GO** (magenta) — all default `opencode.ai/zen/go` models (catchall)
+- **OTHER** (magenta) — `codestral/*`, `bitnet-demo`, `bitnet/*` (misc non-OC-GO upstreams)
+
+Rows that have no models are omitted entirely (no empty headers).
 
 See `skills.md` → **Using the Console Dashboard** for keyboard shortcuts, log format, TPS details, log levels, and debug-only entries.
 
@@ -677,7 +891,7 @@ See `skills.md` → **Using the Console Dashboard** for keyboard shortcuts, log 
 - **Non-VS clients** (VS Code, browser, CLI): Get **individual/free** plan responses from `auth-handler.ts` and `copilot-handler.ts`.
 - **GitHub App detection**: `github-app/*` User-Agent triggers GHCP-specific routing through `handlers/ghcp-app/`.
 - **Model name shortening**: For VS handler, if model display name + thinking tag exceeds 17 chars, spaces are stripped from the base name (e.g. `Claude Opus 4.7 [HI]` → `ClaudeOpus4.7[HI]`). Tags are dynamic: try full word first, then short form, then small-caps/symbol. Format: `✨Name￤ᴍx` (base) / `★Name￤ʟᴏ` (thinking).
-- **Model format differs by platform**: VS models served by `vs/models.ts` (matches real GitHub API format with correct `policy.state`, `billing.multiplier`, `reasoning_effort`). Non-VS models served by `copilot-handler.ts`. GHCP models served by `ghcp-app/models.ts`.
+- **Model format differs by platform**: VS models served by `vs/models.ts` (uses `token_prices` billing for free models, `multiplier` for premium, `model_picker_price_category` for pricing tiers, `policy.state` for access control). Non-VS models served by `copilot-handler.ts`. GHCP models served by `ghcp-app/models.ts`. All three now filter by `config.json` `providers` (active providers) and `disabledModels`. - **Category separator entries**: `vs/models.ts` inserts fake `cat_*` model entries between provider groups using model clone (`{...template, id, name}`) so they're structurally identical to real models. When selected in chat, `vs/handler.ts` returns "This is a [name] category. Please choose a model from it." - **Config filtering**: `ensureModels()` in `vs/models.ts` and `copilot-handler.ts` reads `config.json` to filter models by active providers (`providers` array) and disabled models (`disabledModels` map). Inactive provider models and disabled models are excluded from the response.
 - **VS model fallback no longer filters MiniMax**: The `detectVendor(m.id) !== "MiniMax"` guard was removed from `vs/handler.ts`. All models including MiniMax are eligible as fallback when the requested model isn't available.
 - **All request params forwarded upstream**: `opencode-client.ts` previously used a whitelist for extra params (reasoningEffort, temperature, max_tokens, etc.). Now `const body: any = { ...extra }` forwards **everything** from the incoming request body. Processed fields (model, messages, tools, stream) override their extra counterparts. This ensures `tool_choice`, `parallel_tool_calls`, `user`, and any VS-specific fields reach the upstream LLM.
 - **Tool schema compression**: `opencode-client.ts` compresses all tool `parameters`/`input_schema` before forwarding upstream. Strips `description`, `title`, `markdownDescription`, `examples` from all nested schema objects. Preserves only structural fields: `type`, `properties`, `items`, `required`, `enum`, `const`, `anyOf`/`oneOf`/`allOf`, `additionalProperties`, `minItems`/`maxItems`, `minLength`/`maxLength`, `minimum`/`maximum`, `pattern`, `format`, `default`. This significantly reduces token usage in tool definitions.
@@ -688,6 +902,7 @@ See `skills.md` → **Using the Console Dashboard** for keyboard shortcuts, log 
   - **Handler console.log** calls: only messages starting with a known-noisy prefix are debug-only: `[RESP BODY]`, `[REASONING CACHE]`, `[FAKE GHE]`, `[FAKE DEVICE LOGIN]`, `[FAKE DEVICE]`, `[RECORD]`, `[REPLAY]`, `[MOCK V1/MESSAGES]`, `[MOCK FALLBACK]`, `[VISUAL STUDIO]`, `[VS SESSION]`, `[COPILOT SESSION]`. All other `[` messages (model info, forwarding confirmations) show without debug (`split-console.ts:746`).
   - **Agent tag routing** in `logPlainEnglish`: traffic from `APP` (GitHub App), `VS` (Visual Studio), `TEAM` (VS Team Explorer), and `GO-HT` (Go HTTP client, e.g. Ollama updater) agents is always debug-only (`mitm-proxy.ts:87-89`).
   - **URL path routing** in `logPlainEnglish`: `/telemetry` and `/agents/sessions/*` URLs are always debug-only (`mitm-proxy.ts:89`).
+- **TLS error demotion**: `ECONNRESET`, `EPIPE` and `ECONNABORTED` on the client TLS socket are demoted from `ERROR` to `DEBUG` (`mitm-proxy.ts:880-887, 1032-1038`). These fire routinely when a browser cancels navigation, an idle keep-alive socket is GC'd, or a scanner probes port 443 — they are not real errors. The first TLS handler also checks `requestHandled` so post-response resets stay quiet while pre-handshake aborts still surface as `ERROR`.
 
 ## Critical Context
 

@@ -64,3 +64,82 @@ Recommended VS config:
 | `vs/auth.ts:89-127` | VS token response (`handleVSToken`) |
 | `auth-handler.ts:588-613` | Non-VS copilot user response (GHCP app/CLI) |
 | `auth-handler.ts:618-656` | Non-VS token response |
+
+## VS Model List — Real GitHub Billing & Pricing (Passthrough Capture)
+
+### Key Differences from Our Fake Format
+
+Real GitHub API model list for VS uses a different billing structure than our fake responses:
+
+### `token_prices` Billing (Real GitHub)
+
+Premium models (e.g. `claude-opus-4.7`, `claude-opus-4.8`) use `token_prices` instead of `multiplier`:
+
+```json
+{
+  "billing": {
+    "token_prices": {
+      "batch_size": 1000000,
+      "cache_price": 50000000000,
+      "input_price": 500000000000,
+      "output_price": 2500000000000
+    }
+  }
+}
+```
+
+- **`is_premium`** is NOT present in real billing objects
+- Free models use `token_prices` with all zero prices
+- `multiplier` is our fabricated field — real GitHub doesn't use it
+
+### `model_picker_category`
+
+Categorizes models into sections in the VS picker dropdown:
+
+| Value | Used For |
+|-------|----------|
+| `"powerful"` | Premium models (opus, pro, codex, deepseek-flash, omni) |
+| `"versatile"` | Default/mid-tier models (sonnet, standard models) |
+| `"lightweight"` | Small/fast/free models (mini, nano, haiku, flash, free tiers) |
+
+### `model_picker_price_category`
+
+A separate top-level field on the model object (NOT inside billing), indicates cost tier:
+
+| Value | Used For |
+|-------|----------|
+| `"high"` | Premium/expensive models (opus, pro, codex) |
+| `"medium"` | Mid-tier (sonnet, standard) |
+| `"low"` | Free/cheap models (haiku, free_limited_copilot) |
+
+- This field is independent of `model_picker_category`
+- Provider separator entries use `"high"` to visually separate groups at the top
+
+### `policy.state` for Premium Models
+
+Real GitHub sets `policy.state: "disabled"` for premium models not available on the current plan:
+
+```json
+{
+  "policy": {
+    "state": "disabled",
+    "terms": "Enable access to the claude-opus-4.7 model. [Learn more](https://opencode.ai)"
+  }
+}
+```
+
+### VS User Plan (Real Capture)
+
+Even when VS is detected, the real user response returns `free_limited_copilot` plan:
+
+- `token_based_billing: true` in copilot user response
+- `copilot_plan: "individual"`, `access_type_sku: "free_limited_copilot"`
+- This means the model picker shows premium models as disabled (greyed out) unless the user upgrades
+
+### Separator Entries
+
+Fake separator entries inserted between provider groups in the VS model list use:
+- `model_picker_price_category: "high"` → visually separates groups in the picker
+- `policy.state: "disabled"` → renders as a non-selectable label
+- `name` set to the full provider name: "OpenCode Go", "Pollinations.ai", "FreeBuff", "AgnesAI"
+- `model_picker_enabled: false` → not selectable
