@@ -205,6 +205,12 @@ let _pushTimer: ReturnType<typeof setInterval> | null = null;
 export function startWsPushLoop() { if (!_pushTimer) _pushTimer = setInterval(() => pushStatusToWs(), 2000); }
 export function stopWsPushLoop() { if (_pushTimer) { clearInterval(_pushTimer); _pushTimer = null; } }
 
+function detectDashboardLocale(payload?: any): string {
+  if (payload?.locale) return String(payload.locale).toLowerCase().split(/[-_]/)[0].slice(0, 8);
+  if (payload?.nav) return String(payload.nav).toLowerCase().split(/[-_]/)[0].slice(0, 8);
+  return "en";
+}
+
 async function handleWsMessage(ws: WebSocket, msg: any) {
   const { action, payload } = msg;
   switch (action) {
@@ -367,6 +373,43 @@ async function handleWsMessage(ws: WebSocket, msg: any) {
       const msg = JSON.stringify({ type: "wallpaperUpdated", data: { source: _wallpaperSource, prompt: _wallpaperPrompt } });
       ws.send(msg);
       sendWallpaperData(ws);
+      break;
+    }
+    case "getI18nConfig": {
+      const hasKey = !!getUmansTranslationKey();
+      const forced = getForcedLocale();
+      const fallbackLocale = forced || (hasKey ? detectDashboardLocale(payload) : "en");
+      const reply: any = { type: "i18nConfig", data: { has_key: hasKey, forced_locale: forced, fallback_locale: fallbackLocale } };
+      if (payload?._id) reply._id = payload._id;
+      ws.send(JSON.stringify(reply));
+      break;
+    }
+    case "getI18nBundle": {
+      const locale = String(payload?.locale || "en").toLowerCase().split(/[-_]/)[0].slice(0, 8);
+      const generate = !!payload?.generate;
+      try {
+        const hasKey = !!getUmansTranslationKey();
+        const forced = getForcedLocale();
+        let bundle: any;
+        if (!hasKey || locale === "en") {
+          bundle = buildI18nBundle("en");
+          bundle = { ...bundle, has_key: hasKey, forced_locale: forced, fallback_locale: "en" };
+        } else if (generate) {
+          bundle = await ensureI18nForLocale(locale);
+          bundle = { ...bundle, has_key: true, forced_locale: forced, fallback_locale: locale };
+        } else {
+          bundle = buildI18nBundle(locale);
+          bundle = { ...bundle, has_key: true, forced_locale: forced, fallback_locale: locale };
+        }
+        const reply: any = { type: "i18nBundle", data: bundle };
+        if (payload?._id) reply._id = payload._id;
+        ws.send(JSON.stringify(reply));
+      } catch (e) {
+        const fallback = buildI18nBundle("en");
+        const reply: any = { type: "i18nBundle", data: { ...fallback, has_key: false, forced_locale: getForcedLocale(), fallback_locale: "en" } };
+        if (payload?._id) reply._id = payload._id;
+        ws.send(JSON.stringify(reply));
+      }
       break;
     }
     case "restart": {

@@ -1162,34 +1162,49 @@
     }
 
     // ── WebSocket Connect (dedicated WS port) ──
+    let _wsOpenResolve = null;
+    let _wsOpenReject = null;
     function connectWs(port) {
-      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
-      port = port || 3441;
-      ws = new WebSocket('wss://' + location.host + '/ws');
+      return new Promise(function(resolve, reject) {
+        if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+          if (ws.readyState === WebSocket.OPEN) { resolve(); return; }
+          _wsOpenResolve = resolve;
+          _wsOpenReject = reject;
+          return;
+        }
+        _wsOpenResolve = resolve;
+        _wsOpenReject = reject;
+        port = port || 3441;
+        ws = new WebSocket('wss://' + location.host + '/ws');
 
-      ws.onopen = () => {
-        setStatusOnline();
-        if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
-        const wallpaper = localStorage.getItem('gc2xy_wallpaper') || 'none';
-        wsSend('getBingBg', { source: wallpaper });
-        wsSend('getWorkspaceUsage');
-        setTimeout(() => populateTestChatModelSelect(), 300);
-      };
+        ws.onopen = () => {
+          setStatusOnline();
+          if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
+          const wallpaper = localStorage.getItem('gc2xy_wallpaper') || 'none';
+          wsSend('getBingBg', { source: wallpaper });
+          wsSend('getWorkspaceUsage');
+          setTimeout(() => populateTestChatModelSelect(), 300);
+          if (_wsOpenResolve) { _wsOpenResolve(); _wsOpenResolve = null; _wsOpenReject = null; }
+        };
 
-      ws.onmessage = (event) => {
-        try {
-          const msg = JSON.parse(event.data);
-          handleWsMessage(msg);
-        } catch (e) { console.error('WS parse error:', e); }
-      };
+        ws.onmessage = (event) => {
+          try {
+            const msg = JSON.parse(event.data);
+            handleWsMessage(msg);
+          } catch (e) { console.error('WS parse error:', e); }
+        };
 
-      ws.onclose = () => {
-        ws = null;
-        setStatusReconnecting();
-        wsReconnectTimer = setTimeout(connectWs, 2000);
-      };
+        ws.onclose = () => {
+          ws = null;
+          setStatusReconnecting();
+          wsReconnectTimer = setTimeout(connectWs, 2000);
+        };
 
-      ws.onerror = () => { ws?.close(); };
+        ws.onerror = (err) => {
+          if (_wsOpenReject) { _wsOpenReject(err); _wsOpenResolve = null; _wsOpenReject = null; }
+          ws?.close();
+        };
+      });
     }
 
     // ── Handle incoming WS messages ──
@@ -1442,15 +1457,10 @@
       return 'en';
     }
     async function fetchI18nConfig() {
-      try { const r = await fetch('/api/i18n?config=1&nav=' + encodeURIComponent(detectDashboardLocale())); if (!r.ok) return {}; const d = await r.json(); _hasApiKey = !!d.has_key; return d; } catch (e) { return {}; }
+      try { const d = await wsCall('getI18nConfig', { nav: detectDashboardLocale() }); _hasApiKey = !!d.has_key; return d; } catch (e) { return {}; }
     }
     async function fetchTranslations(locale, withGenerate) {
-      const u = new URL('/api/i18n', location.origin);
-      u.searchParams.set('locale', locale);
-      if (withGenerate) u.searchParams.set('generate', '1');
-      const resp = await fetch(u.toString());
-      if (!resp.ok) throw new Error('i18n http ' + resp.status);
-      return await resp.json();
+      return await wsCall('getI18nBundle', { locale, generate: !!withGenerate });
     }
     function showTranslateOverlay(subtitle) {
       const ov = document.getElementById('translateOverlay'); if (!ov) return;
@@ -2666,12 +2676,13 @@
     // ── Event Listeners ──
     document.addEventListener('DOMContentLoaded', async () => {
       bindTranslateCancel();
+      await connectWs();
       const cfg = await fetchI18nConfig();
       _hasApiKey = !!cfg.has_key;
       const forcedLocale = cfg.forced_locale || null;
       const atCb = document.getElementById('autotranslateCheckbox');
       const stored = localStorage.getItem('gc2xy_preferredLocale');
-      if (forcedLocale && forcedLocale !== 'en') {
+      if (forcedLocale && forcedLocale !== 'en' && cfg.has_key) {
         if (atCb) {
           atCb.checked = true; atCb.disabled = true;
           const label = atCb.closest('label');
@@ -2688,7 +2699,6 @@
         setTimeout(() => enableAutotranslate(), 50);
       }
       loadInitialData().then(() => {
-        connectWs();
         initLiquidGlass();
         setTimeout(() => {
           wsSend('getWorkspaceUsage');
