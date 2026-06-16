@@ -5,6 +5,7 @@
 import { readFileSync, existsSync, writeFileSync, unlinkSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { createServer as createHttpServer } from "node:http";
+import { TextDecoder } from "node:util";
 
 const DASHBOARD_START_TIME = new Date().toISOString();
 import https from "node:https";
@@ -26,7 +27,7 @@ import {
   setUmansEmail, setUmansPassword, setUmansAppSession, setUmansKeys, setUmansEnabledModels,
   setUmansCurrentKeyIndex, getCurrentKeyIndex as getUmansCurrentKeyIndex,
   getUmansConfig, getModelDisplayName as getUmansModelDisplayName,
-  onUmansLoginStateChange,
+  onUmansLoginStateChange, maybeRefreshAccountUserId,
 } from "./umans-client.ts";
 import { getModelIds } from "../models.ts";
 import { getTps, restoreTerminal, setEnabledModelIds } from "../split-console.ts";
@@ -168,6 +169,7 @@ function takeSnapshot(): Record<string, any> {
       enabledKeyIDs: _workspaceKeyStates[ws.id] || [],
     })),
     umans: _umansState,
+    umansUserId: _umansState.userId || (_umansState.concurrency ? _umansState.concurrency.user_id : null) || null,
     umansUsage: _umansUsageCache,
   };
 }
@@ -378,7 +380,7 @@ async function handleWsMessage(ws: WebSocket, msg: any) {
     case "getI18nConfig": {
       const hasKey = !!getUmansTranslationKey();
       const forced = getForcedLocale();
-      const fallbackLocale = forced || (hasKey ? detectDashboardLocale(payload) : "en");
+      const fallbackLocale = forced || (hasKey ? (payload?.nav || "en") : "en");
       const reply: any = { type: "i18nConfig", data: { has_key: hasKey, forced_locale: forced, fallback_locale: fallbackLocale } };
       if (payload?._id) reply._id = payload._id;
       ws.send(JSON.stringify(reply));
@@ -557,13 +559,14 @@ async function handleWsMessage(ws: WebSocket, msg: any) {
       try {
         const model: string = payload?.model;
         const messages: any[] = payload?.messages;
-        const stream: boolean = payload?.stream === true;
+        const stream: boolean = payload?.stream !== false;
         const reqId = payload?._id;
         if (!model || !Array.isArray(messages)) {
           ws.send(JSON.stringify({ type: "testChatResult", data: { error: "Invalid request" }, _id: reqId }));
           break;
         }
         const provider = model.startsWith("pol/") ? "poll" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral/") ? "codestral" : (model.startsWith("bitnet/") || model === "bitnet-demo") ? "bitnet" : "go";
+        const requestStart = Date.now();
         let resp: Response;
         if (provider === "poll") resp = await pollChat(model, messages, undefined, stream, { max_tokens: 2048 });
         else if (provider === "freebuff") resp = await freebuffChat(model, messages, undefined, stream, { max_tokens: 2048 });
@@ -573,19 +576,51 @@ async function handleWsMessage(ws: WebSocket, msg: any) {
         else resp = await chatCompletion(model, messages, undefined, stream, { max_tokens: 2048 });
 
         if (stream && resp.ok && resp.body) {
-          let rawSse = "";
+          // Emit first-byte latency from LLM to server, then stream chunks over WS
+          let firstByteLatency: number | null = null;
           const decoder = new TextDecoder();
-          for await (const chunk of resp.body as any) { rawSse += decoder.decode(chunk, { stream: true }); }
-          const data = await summarizeSseTestChat(rawSse, model);
-          ws.send(JSON.stringify({ type: "testChatResult", data, _id: reqId }));
+          const reader = (resp.body as any).getReader ? (resp.body as any).getReader() : null;
+          if (reader) {
+            let chunkBuffer = "";
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              const text = decoder.decode(value, { stream: true });
+              if (firstByteLatency === null) firstByteLatency = Date.now() - requestStart;
+              chunkBuffer += text;
+              // Flush line-by-line so we don't split SSE events
+              let eol: number;
+              while ((eol = chunkBuffer.indexOf("\n\n")) !== -1) {
+                const block = chunkBuffer.slice(0, eol);
+                chunkBuffer = chunkBuffer.slice(eol + 2);
+                if (block.trim()) {
+                  ws.send(JSON.stringify({ type: "testChatChunk", chunk: block, model, provider, latencyMs: firstByteLatency, _id: reqId }));
+                }
+              }
+            }
+            // Emit any remaining complete line
+            if (chunkBuffer.trim()) {
+              ws.send(JSON.stringify({ type: "testChatChunk", chunk: chunkBuffer.trim(), model, provider, latencyMs: firstByteLatency, _id: reqId }));
+            }
+            const elapsedMs = Date.now() - requestStart;
+            ws.send(JSON.stringify({ type: "testChatDone", model, provider, latencyMs: firstByteLatency, elapsedMs, _id: reqId }));
+          } else {
+            // Fallback: read whole body and summarize
+            let rawSse = "";
+            for await (const chunk of resp.body as any) { rawSse += decoder.decode(chunk, { stream: true }); }
+            const data = await summarizeSseTestChat(rawSse, model);
+            const elapsedMs = Date.now() - requestStart;
+            ws.send(JSON.stringify({ type: "testChatResult", data, elapsedMs, _id: reqId }));
+          }
         } else if (!resp.ok) {
           const err: any = await resp.json().catch(() => ({}));
           ws.send(JSON.stringify({ type: "testChatResult", data: { error: err?.error?.message || err?.error || `HTTP ${resp.status}` }, _id: reqId }));
         } else {
           const data: any = await resp.json();
+          const elapsedMs = Date.now() - requestStart;
           const content = data?.choices?.[0]?.message?.content;
           if (!content) console.log(`[TEST CHAT] empty content from ${model}:`, JSON.stringify(data).slice(0, 500));
-          ws.send(JSON.stringify({ type: "testChatResult", data, _id: reqId }));
+          ws.send(JSON.stringify({ type: "testChatResult", data, elapsedMs, _id: reqId }));
         }
       } catch (e: any) {
         ws.send(JSON.stringify({ type: "testChatResult", data: { error: e?.message || "request failed" }, _id: payload?._id }));
@@ -609,6 +644,7 @@ async function handleWsMessage(ws: WebSocket, msg: any) {
             keys: state.keys,
             currentKeyIndex: 0,
             enabledModels: _umansState.enabledModels || [],
+            userId: concurrency.user_id,
           };
           syncUmansTranslationKey();
           saveConfig();
@@ -627,7 +663,7 @@ async function handleWsMessage(ws: WebSocket, msg: any) {
     }
     case "umansLogout": {
       umansLogoutApp();
-      _umansState = { loggedIn: false, email: "", keys: [], currentKeyIndex: 0, enabledModels: _umansState.enabledModels || [] };
+      _umansState = { loggedIn: false, email: "", keys: [], currentKeyIndex: 0, enabledModels: _umansState.enabledModels || [], userId: null };
       saveConfig();
       broadcastUmansState();
       ws.send(JSON.stringify({ type: "umansUsage", data: null }));
@@ -834,7 +870,7 @@ let _supermavenEnabled = false;
 
 let _workspaceKeyStates: Record<string, string[]> = {};
 let _workspaceData: WorkspaceWithKeys[] = [];
-let _umansState: any = { loggedIn: false, email: "", keys: [], currentKeyIndex: 0, enabledModels: [] };
+  let _umansState: any = { loggedIn: false, email: "", keys: [], currentKeyIndex: 0, enabledModels: [], userId: null };
 
 let _dashboardConfig: Record<string, any> = {
   mode: "mock",
@@ -1143,6 +1179,9 @@ function loadConfig() {
         if (Array.isArray(c.umans.keys)) setUmansKeys(c.umans.keys);
         if (Array.isArray(c.umans.enabledModels)) setUmansEnabledModels(c.umans.enabledModels);
         if (typeof c.umans.currentKeyIndex === "number") setUmansCurrentKeyIndex(c.umans.currentKeyIndex);
+        if (!_umansState.userId && _umansState.loggedIn) {
+          maybeRefreshAccountUserId().then(uid => { if (uid) { _umansState.userId = uid; saveConfig(); pushStatusToWs(); } }).catch(() => {});
+        }
         syncUmansTranslationKey();
       }
       if (c.disabledModels && typeof c.disabledModels === "object") {
@@ -1181,6 +1220,7 @@ function saveConfig() {
       keys: getUmansConfig().keys,
       enabledModels: getUmansConfig().enabledModels,
       currentKeyIndex: getUmansCurrentKeyIndex(),
+      userId: _umansState.userId || null,
     };
     const allIds = getModelIds();
     if (allIds.length > 0) {

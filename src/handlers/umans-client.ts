@@ -89,6 +89,7 @@ function emitLoginState() {
       keys: _config.keys,
       currentKeyIndex: _currentKeyIndex,
       enabledModels: _config.enabledModels,
+      userId: concurrencyCache.user_id,
     });
   }
 }
@@ -569,6 +570,12 @@ export async function loginToApp(email?: string, password?: string): Promise<boo
   } catch (e) { return false; }
 }
 
+export async function maybeRefreshAccountUserId(): Promise<string | null> {
+  if (concurrencyCache.user_id) return concurrencyCache.user_id;
+  const res = await fetchConcurrency();
+  return res.user_id;
+}
+
 export async function fetchKeysFromApp(): Promise<{ name: string; key: string }[]> {
   if (!_config.appSession) return [];
   try {
@@ -604,8 +611,8 @@ export function isLoggedIn(): boolean {
   return !!_config.appSession;
 }
 
-export function getAccountInfo(): { loggedIn: boolean; email: string; hasPassword: boolean } {
-  return { loggedIn: !!_config.appSession, email: _config.email || "", hasPassword: !!_config.password };
+export function getAccountInfo(): { loggedIn: boolean; email: string; hasPassword: boolean; userId: string | null } {
+  return { loggedIn: !!_config.appSession, email: _config.email || "", hasPassword: !!_config.password, userId: concurrencyCache.user_id };
 }
 
 export async function fetchUsageHistory(opts: { force?: boolean } = {}): Promise<any> {

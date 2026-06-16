@@ -290,33 +290,40 @@
       font-size: 9px;
       text-transform: uppercase;
       letter-spacing: 0.5px;
-      color: rgba(255,255,255,0.4);
+      color: rgba(255,255,255,0.5);
       margin-bottom: 2px;
       font-weight: 600;
       display: flex;
-      flex-direction: column;
-      align-items: flex-start;
-      gap: 1px;
+      align-items: center;
+      gap: 6px;
     }
     .test-chat-msg-role-line {
       display: flex;
       align-items: center;
       gap: 4px;
     }
-.test-chat-msg-prov {
-  color: rgba(255,255,255,0.4);
-  font-size: 9px;
-}
-.test-chat-msg-model {
-  color: #58a6ff;
-  text-transform: none;
-  font-weight: 500;
-}
-    .test-chat-msg-dur {
+    .test-chat-msg-prov {
+      color: rgba(255,255,255,0.4);
       font-size: 9px;
-      font-weight: 500;
-      color: rgba(255,255,255,0.35);
+      text-transform: uppercase;
+    }
+    .test-chat-msg-model {
+      color: rgba(255,255,255,0.8);
+      text-transform: none;
+      font-weight: 600;
+    }
+    .test-chat-msg-dur {
+      margin-left: auto;
+      font-size: 9px;
+      font-weight: 600;
+      letter-spacing: 0.3px;
+      text-transform: none;
+      color: rgba(255,255,255,0.4);
       font-variant-numeric: tabular-nums;
+    }
+    .test-chat-msg-ms {
+      color: #fff;
+      font-weight: 600;
     }
     .test-chat-msg-time {
       font-size: 9px;
@@ -480,25 +487,6 @@
               <div style="font-size:9px;color:rgba(255,255,255,0.5)" data-i18n="label_models">Models</div>
               <div style="font-size:13px;font-weight:600;color:white" id="totalModels">0 / 0</div>
             </div>
-            <div style="width:1px;height:24px;background:rgba(255,255,255,0.15)" id="usedTopBarSep1"></div>
-            <div class="d-flex align-items-center gap-2" style="background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.12);border-radius:8px;padding:2px 8px;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)">
-               <div style="font-size:9px;color:rgba(255,255,255,0.55);text-transform:uppercase;letter-spacing:0.6px" data-i18n="label_window">Window</div>
-
-              <div class="d-flex align-items-center gap-2">
-                <div class="text-center" style="line-height:1.1">
-                   <div style="font-size:9px;color:rgba(255,255,255,0.5)" data-i18n="label_requests">Requests</div>
-
-                  <div style="font-size:13px;font-weight:600;color:white" id="windowRequests">--</div>
-                </div>
-                <div style="width:1px;height:20px;background:rgba(255,255,255,0.12)"></div>
-                <div class="text-center" style="line-height:1.1">
-                   <div style="font-size:9px;color:rgba(255,255,255,0.5)" data-i18n="label_tokens">Tokens</div>
-
-                  <div style="font-size:13px;font-weight:600;color:white" id="windowTokens">--</div>
-                </div>
-              </div>
-            </div>
-            <div style="width:1px;height:24px;background:rgba(255,255,255,0.15)" id="usedTopBarSep2"></div>
             <div class="text-center" style="line-height:1.1" id="quotaTopBar">
               <div style="font-size:9px;color:rgba(255,255,255,0.5)" data-i18n="label_quota">90 Days</div>
               <div style="font-size:13px;font-weight:600;color:white" id="quotaDisplay" title="">n/a</div>
@@ -508,11 +496,6 @@
             <div class="text-center" style="line-height:1.1">
               <div style="font-size:9px;color:rgba(255,255,255,0.5)" data-i18n="label_account">Account</div>
               <div style="font-size:13px;font-weight:600;color:white;cursor:pointer" id="umansAccountTopLabel">Login</div>
-            </div>
-            <div style="width:1px;height:24px;background:rgba(255,255,255,0.15)"></div>
-            <div class="text-center" style="line-height:1.1">
-              <div style="font-size:9px;color:rgba(255,255,255,0.5)" data-i18n="label_keys">Keys</div>
-              <div style="font-size:13px;font-weight:600;color:white;cursor:pointer" id="umansKeysTopLabel">0</div>
             </div>
           </div>
         </div>
@@ -809,17 +792,18 @@
                   <button class="btn btn-outline-action btn-wp" data-wp="none" onclick="setWallpaper('none')" data-i18n="wp_none">None</button>
                   <button class="btn btn-outline-action btn-wp" data-wp="bing" onclick="setWallpaper('bing')" data-i18n="wp_bing">Bing</button>
                   <button class="btn btn-outline-action btn-wp" data-wp="wallhaven" onclick="setWallpaper('wallhaven')" data-i18n="wp_wallhaven">Wallhaven</button>
-                  <button class="btn btn-outline-action btn-wp" data-wp="ai" onclick="setWallpaper('ai')" disabled style="opacity:0.4;cursor:not-allowed" title="Requires an Agnes API key" data-i18n="wp_ai">AI</button>
+                  <button class="btn btn-outline-action btn-wp" data-wp="ai" onclick="setWallpaper('ai')" disabled style="opacity:0.4;cursor:not-allowed" title="Requires an Agnes API key" data-i18n="wp_ai">AI (FreeGen)</button>
                 </div>
               </div>
               <div class="mb-1" id="wallpaperPromptRow" style="display:none">
-                <label class="form-label" style="font-size:0.65rem;color:rgba(255,255,255,0.5);margin-bottom:2px" data-i18n="wp_prompt">Prompt</label>
+                <label class="form-label" style="font-size:0.65rem;color:rgba(255,255,255,0.5);margin-bottom:2px" data-i18n="wp_prompt">AI (FreeGen) Prompt</label>
                 <div class="d-flex gap-1 mt-1">
                   <input type="text" class="form-control form-control-sm" id="wallpaperPromptInput" placeholder="Describe the image…" style="font-size:0.7rem;background:rgba(255,255,255,0.12);border-color:rgba(255,255,255,0.2);color:white">
                    <button class="btn btn-outline-action" style="font-size:0.6rem;padding:0.2rem 0.5rem;white-space:nowrap" id="wallpaperDefaultBtn" data-i18n="wp_default">Default</button>
-                  <button class="btn btn-success" style="font-size:0.65rem;padding:0.2rem 0.5rem;white-space:nowrap" id="wallpaperGenerateBtn" data-i18n="wp_save">Save</button>
+                  <button class="btn btn-success" style="font-size:0.65rem;padding:0.2rem 0.5rem;white-space:nowrap" id="wallpaperGenerateBtn" data-i18n="wp_save">Generate</button>
 
                 </div>
+                <div id="wallpaperStatus" style="font-size:0.65rem;color:rgba(255,255,255,0.55);min-height:1rem;margin-top:2px"></div>
               </div>
             </div>
           </div>
@@ -877,56 +861,22 @@
     <div class="modal-dialog modal-lg modal-dialog-scrollable">
       <div class="modal-content" style="background:rgba(0,0,0,0.9);border:1px solid rgba(255,255,255,0.15);backdrop-filter:blur(20px)">
         <div class="modal-header" style="border-bottom:1px solid rgba(255,255,255,0.1)">
-          <h5 class="modal-title" style="color:white"><i class="bi bi-person-workspace me-2"></i>UMANS Account</h5>
+          <h5 class="modal-title" style="color:white"><i class="bi bi-person-workspace me-2"></i><span data-i18n="modal_umans_account">UMANS Account</span></h5>
           <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
         </div>
         <div class="modal-body" id="keysModalBody">
           <div class="pool-card mb-3" id="umansAccountCard"></div>
-          <div class="row mb-3">
-            <div class="col-md-6 mb-3 mb-md-0">
-              <div class="card" style="background:transparent;border:1px solid rgba(255,255,255,0.1)">
-                <div class="card-header" style="background:rgba(0,0,0,0.2);border-bottom:1px solid rgba(255,255,255,0.1);font-size:12px"><i class="bi bi-speedometer2 me-1"></i>Usage</div>
-                <div class="card-body" id="umansUsageContainer">
-                  <div id="umansUsageText" class="text-muted" style="font-size:12px">Loading...</div>
-                  <div class="progress mt-2" style="height:8px;background:rgba(255,255,255,0.1);display:none" id="umansUsageBarWrap"><div class="progress-bar" id="umansUsageBar" style="width:0%"></div></div>
-                </div>
-              </div>
-            </div>
-            <div class="col-md-6">
-              <div class="card" style="background:transparent;border:1px solid rgba(255,255,255,0.1)">
-                <div class="card-header" style="background:rgba(0,0,0,0.2);border-bottom:1px solid rgba(255,255,255,0.1);font-size:12px"><i class="bi bi-layers me-1"></i>Concurrency</div>
-                <div class="card-body" id="umansConcurrencyContainer">
-                  <div id="umansConcurrencyText" class="text-muted" style="font-size:12px">Loading...</div>
-                </div>
-              </div>
-            </div>
-          </div>
-          <div class="mb-3">
-            <label class="form-label" style="font-size:12px">Current Key</label>
-            <select class="form-select form-select-sm" id="umansModalKeySelect" onchange="umansModalSetKey(this.value)"></select>
-          </div>
-          <hr style="border-color:rgba(255,255,255,0.1)">
           <div id="umansKeysList"></div>
           <hr style="border-color:rgba(255,255,255,0.1)">
           <div class="mb-3">
-            <label class="form-label" id="umansKeyFormLabel">Add New Key</label>
+            <label class="form-label" id="umansKeyFormLabel" data-i18n="umans_add_new_key">Add New Key</label>
             <input type="hidden" id="umansEditKeyIndex" value="-1">
-            <input type="text" class="form-control form-control-sm mb-2" id="newKeyName" placeholder="Key name">
-            <input type="text" class="form-control form-control-sm mb-2" id="newKeyKey" placeholder="UMANS API key (sk-...)">
+            <input type="text" class="form-control form-control-sm mb-2" id="newKeyName" placeholder="Key name" data-i18n-placeholder="placeholder_key_name">
+            <input type="text" class="form-control form-control-sm mb-2" id="newKeyKey" placeholder="UMANS API key (sk-...)" data-i18n-placeholder="placeholder_umans_key">
             <div class="d-flex gap-2">
-              <button class="btn btn-success btn-sm" id="umansKeyFormBtn" onclick="addKey()"><i class="bi bi-plus-circle me-1"></i>Add Key</button>
-              <button class="btn btn-secondary btn-sm" id="umansKeyFormCancel" onclick="cancelEditKey()" style="display:none"><i class="bi bi-x me-1"></i>Cancel</button>
+              <button class="btn btn-success btn-sm" id="umansKeyFormBtn" onclick="addKey()"><i class="bi bi-plus-circle me-1"></i><span data-i18n="btn_add_key">Add Key</span></button>
+              <button class="btn btn-secondary btn-sm" id="umansKeyFormCancel" onclick="cancelEditKey()" style="display:none"><i class="bi bi-x me-1"></i><span data-i18n="btn_cancel">Cancel</span></button>
             </div>
-          </div>
-          <hr style="border-color:rgba(255,255,255,0.1)">
-          <div class="mb-2">
-            <button class="btn btn-outline-action btn-sm" onclick="umansRefreshUsage()"><i class="bi bi-arrow-clockwise me-1"></i>Refresh Usage</button>
-            <button class="btn btn-outline-action btn-sm" onclick="umansRefreshKeys()"><i class="bi bi-key me-1"></i>Refresh Keys</button>
-          </div>
-          <hr style="border-color:rgba(255,255,255,0.1)">
-          <div class="mb-2" id="umansModelsSection">
-            <label class="form-label" style="font-size:12px"><i class="bi bi-cpu me-1"></i>Enabled Models</label>
-            <div id="umansModelsContainer" style="max-height:240px;overflow-y:auto"></div>
           </div>
         </div>
         <div class="modal-footer" style="border-top:1px solid rgba(255,255,255,0.1)">
@@ -941,23 +891,23 @@
     <div class="modal-dialog modal-dialog-centered">
       <div class="modal-content" style="background:rgba(0,0,0,0.9);border:1px solid rgba(255,255,255,0.15);backdrop-filter:blur(20px)">
         <div class="modal-header" style="border-bottom:1px solid rgba(255,255,255,0.1)">
-          <h5 class="modal-title" style="color:white"><i class="bi bi-person-fill me-2"></i>UMANS Login</h5>
+          <h5 class="modal-title" style="color:white"><i class="bi bi-person-fill me-2"></i><span data-i18n="modal_umans_login">UMANS Login</span></h5>
           <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
         </div>
         <div class="modal-body">
           <div class="mb-3">
-            <label class="form-label" style="font-size:12px">Email</label>
-            <input type="text" class="form-control form-control-sm" id="platLoginUsername" placeholder="email@example.com">
+            <label class="form-label" style="font-size:12px" data-i18n="label_email">Email</label>
+            <input type="text" class="form-control form-control-sm" id="platLoginUsername" placeholder="email@example.com" data-i18n-placeholder="placeholder_email">
           </div>
           <div class="mb-3">
-            <label class="form-label" style="font-size:12px">Password</label>
-            <input type="password" class="form-control form-control-sm" id="platLoginPassword" placeholder="password">
+            <label class="form-label" style="font-size:12px" data-i18n="label_password">Password</label>
+            <input type="password" class="form-control form-control-sm" id="platLoginPassword" placeholder="password" data-i18n-placeholder="placeholder_password">
           </div>
           <div id="platLoginStatus" style="font-size:11px;color:#dc3545;min-height:16px"></div>
         </div>
         <div class="modal-footer" style="border-top:1px solid rgba(255,255,255,0.1)">
-          <button class="btn btn-sm btn-outline-action" data-bs-dismiss="modal">Cancel</button>
-          <button class="btn btn-sm btn-success" onclick="savePlatformLogin()"><i class="bi bi-check-circle me-1"></i>Save & Login</button>
+          <button class="btn btn-sm btn-outline-action" data-bs-dismiss="modal" data-i18n="btn_cancel">Cancel</button>
+          <button class="btn btn-sm btn-success" onclick="savePlatformLogin()"><i class="bi bi-check-circle me-1"></i><span data-i18n="btn_save_and_login">Save & Login</span></button>
         </div>
       </div>
     </div>
@@ -968,13 +918,13 @@
     <div class="modal-dialog modal-dialog-centered modal-sm">
       <div class="modal-content" style="background:rgba(0,0,0,0.9);border:1px solid rgba(255,255,255,0.15);backdrop-filter:blur(20px)">
         <div class="modal-header" style="border-bottom:1px solid rgba(255,255,255,0.1)">
-          <h5 class="modal-title" style="color:white"><i class="bi bi-box-arrow-right me-2"></i>Logout</h5>
+          <h5 class="modal-title" style="color:white"><i class="bi bi-box-arrow-right me-2"></i><span data-i18n="btn_logout">Logout</span></h5>
           <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
         </div>
         <div class="modal-body"><p class="text-muted mb-0" style="font-size:13px">Log out from UMANS account?</p></div>
         <div class="modal-footer" style="border-top:1px solid rgba(255,255,255,0.1)">
-          <button class="btn btn-sm btn-outline-action" data-bs-dismiss="modal">Cancel</button>
-          <button class="btn btn-sm btn-danger" onclick="confirmLogout()"><i class="bi bi-box-arrow-right me-1"></i>Logout</button>
+          <button class="btn btn-sm btn-outline-action" data-bs-dismiss="modal" data-i18n="btn_cancel">Cancel</button>
+          <button class="btn btn-sm btn-danger" onclick="confirmLogout()"><i class="bi bi-box-arrow-right me-1"></i><span data-i18n="btn_logout">Logout</span></button>
         </div>
       </div>
     </div>
@@ -1144,10 +1094,14 @@
           reject(new Error('WebSocket not connected'));
           return;
         }
-        var id = ++_wsReqId;
-        _wsCallbacks[id] = { resolve: resolve, reject: reject };
+        var id = (payload && payload._id) ? payload._id : ++_wsReqId;
+        var noCallback = !!(opts && opts.noCallback);
+        if (!noCallback) {
+          _wsCallbacks[id] = { resolve: resolve, reject: reject };
+        }
         var p = Object.assign({}, payload || {}, { _id: id });
         ws.send(JSON.stringify({ action: action, payload: p }));
+        if (noCallback) { resolve(); return; }
         var timeoutMs = (opts && opts.timeout) || 60000;
         var timer = setTimeout(function() {
           if (_wsCallbacks[id]) { delete _wsCallbacks[id]; reject(new Error('WS call timeout')); }
@@ -1258,8 +1212,13 @@
           handleRestartResponse();
           break;
         case 'testChatResult':
-          if (_pendingTestChat) { const cb = _pendingTestChat; _pendingTestChat = null; cb(msg.data); }
-          if (msg._id && _wsCallbacks[msg._id]) { var cb2 = _wsCallbacks[msg._id]; delete _wsCallbacks[msg._id]; cb2.resolve(msg.data); }
+          _finishTestChat(msg.data, msg._id);
+          break;
+        case 'testChatChunk':
+          _handleTestChatChunk(msg.chunk, msg._id, msg.latencyMs);
+          break;
+        case 'testChatDone':
+          _finishTestChatStream(msg._id, msg.latencyMs, msg.elapsedMs);
           break;
       }
     }
@@ -1306,8 +1265,9 @@
         updateSupermavenStatus(data.supermaven.initialized, data.supermaven.binaryPath);
       }
       if (data.githubSettings) applyGithubSettings(data.githubSettings);
-      if (data.umans) { _umansState = { ..._umansState, ...data.umans }; if (_umansState.concurrency && _umansState.concurrency.user_id) _umansUserId = _umansState.concurrency.user_id; updateUmansAccountBadge(); }
-      if (data.umansUsage !== undefined) { _umansState.usage = data.umansUsage; updateUmansAccountBadge(); }
+      if (data.umans) { _umansState = { ..._umansState, ...data.umans }; if (_umansState.userId) _umansUserId = _umansState.userId; updateUmansAccountBadge(); }
+      if (data.umansUsage !== undefined) { _umansState.usage = data.umansUsage; }
+      if (data.umansUserId !== undefined) { _umansUserId = data.umansUserId; updateUmansAccountBadge(); }
       if (data.umansConcurrency !== undefined) { _umansState.concurrency = data.umansConcurrency; if (_umansState.concurrency && _umansState.concurrency.user_id) _umansUserId = _umansState.concurrency.user_id; updateUmansAccountBadge(); }
       if (data.workspaceData) {
         _wsData = data.workspaceData;
@@ -1367,8 +1327,9 @@
         updateSupermavenStatus(data.supermaven.initialized, data.supermaven.binaryPath);
       }
       if (data.githubSettings) applyGithubSettings(data.githubSettings);
-      if (data.umans) { _umansState = { ..._umansState, ...data.umans }; if (_umansState.concurrency && _umansState.concurrency.user_id) _umansUserId = _umansState.concurrency.user_id; updateUmansAccountBadge(); }
-      if (data.umansUsage !== undefined) { _umansState.usage = data.umansUsage; updateUmansAccountBadge(); }
+      if (data.umans) { _umansState = { ..._umansState, ...data.umans }; if (_umansState.userId) _umansUserId = _umansState.userId; updateUmansAccountBadge(); }
+      if (data.umansUsage !== undefined) { _umansState.usage = data.umansUsage; }
+      if (data.umansUserId !== undefined) { _umansUserId = data.umansUserId; updateUmansAccountBadge(); }
       if (data.umansConcurrency !== undefined) { _umansState.concurrency = data.umansConcurrency; if (_umansState.concurrency && _umansState.concurrency.user_id) _umansUserId = _umansState.concurrency.user_id; updateUmansAccountBadge(); }
       if (data.workspaceData) {
         _wsData = data.workspaceData;
@@ -1540,7 +1501,6 @@
       const prompt = source === 'ai' ? document.getElementById('wallpaperPromptInput').value.trim() : undefined;
       if (source === 'ai' && !prompt) { useDefaultWallpaperPrompt(); }
       wsSend('setWallpaper', { source, prompt: source === 'ai' ? (prompt || DEFAULT_WALLPAPER_PROMPT) : undefined });
-      if (source === 'ai') showToast(t('wp_generating', 'Generating...'), 'info');
     }
     function applyWallpaper(source) {
       setWallpaperActive(source);
@@ -1576,6 +1536,8 @@
     function saveWallpaperPrompt() {
       const val = document.getElementById('wallpaperPromptInput').value.trim();
       if (!val) { showToast(t('toast_wallpaper_error', 'Wallpaper error: {error}').replace('{error}', 'Prompt is required'), 'warning'); return; }
+      const status = document.getElementById('wallpaperStatus');
+      if (status) status.textContent = t('wp_status_generating', 'Generating via FreeGen (takes 30s)...');
       setWallpaper('ai');
     }
 
@@ -1588,11 +1550,15 @@
     function handleWSProgress(data, silent) {
       if (!data.kind) return;
       updateGenButtonLabel(data.kind, data.progress);
-      if (data.progress >= 100 && data.kind === 'image') {
+      const status = document.getElementById('wallpaperStatus');
+      if (data.kind === 'image' && data.progress > 0 && data.progress < 100) {
+        if (status) status.textContent = t('wp_status_generating', 'Generating via FreeGen (takes 30s)...');
+      } else if (data.progress >= 100 && data.kind === 'image') {
+        if (status) status.textContent = '';
         if (_wallpaperDataUri) {
           document.body.style.setProperty('background', 'url(' + _wallpaperDataUri + ') center/cover no-repeat fixed', 'important');
         }
-        if (!silent) showToast('Wallpaper generated!', 'success');
+        if (!silent) showToast(t('toast_wallpaper_applied', 'Wallpaper applied.'), 'success');
       }
     }
 
@@ -1600,13 +1566,13 @@
       const saveBtn = document.getElementById('wallpaperGenerateBtn');
       if (!saveBtn) return;
       if (progress >= 100) {
-        saveBtn.textContent = 'Save';
+        saveBtn.textContent = t('wp_save', 'Generate');
         saveBtn.style.opacity = '1';
       } else if (progress > 0) {
         saveBtn.textContent = progress + '%';
         saveBtn.style.opacity = '0.7';
       } else {
-        saveBtn.textContent = 'Generating...';
+        saveBtn.textContent = t('wp_generating', 'Generating...');
         saveBtn.style.opacity = '0.6';
       }
     }
@@ -1868,20 +1834,21 @@
       if (!container) return;
       const account = _umansState.account || {};
       const email = account.email || '';
+      const displayId = _umansUserId || email || '';
       const userIdRow = _umansUserId ? '<div class="mt-1 d-flex align-items-center gap-2" style="font-size:0.7rem;color:rgba(255,255,255,0.55)">' +
-        '<span><i class="bi bi-person-badge me-1"></i>User ID:</span>' +
+        '<span><i class="bi bi-person-badge me-1"></i>' + t('label_user_id', 'User ID') + ':</span>' +
         '<code style="font-size:0.7rem;color:rgba(255,255,255,0.85);background:rgba(255,255,255,0.05);padding:1px 4px;border-radius:4px;word-break:break-all">' + escapeHtml(_umansUserId) + '</code>' +
-        '<button class="btn btn-sm p-0 ms-auto" style="background:transparent;border:none;color:rgba(255,255,255,0.5);font-size:0.65rem" onclick="copyUserId()" title="Copy User ID"><i class="bi bi-clipboard"></i></button>' +
+        '<button class="btn btn-sm p-0 ms-auto" style="background:transparent;border:none;color:rgba(255,255,255,0.5);font-size:0.65rem" onclick="copyUserId()" title="' + t('btn_copy_user_id', 'Copy User ID') + '"><i class="bi bi-clipboard"></i></button>' +
         '</div>' : '';
       if (_umansState.loggedIn) {
         container.innerHTML = '<div class="d-flex justify-content-between align-items-center">' +
-          '<div><div style="font-size:12px;color:rgba(255,255,255,0.7)"><i class="bi bi-person-circle me-1"></i>' + escapeHtml(email || 'Logged in') + '</div>' + userIdRow + '</div>' +
-          '<button class="btn btn-sm" style="background:rgba(220,53,69,0.2);color:#dc3545;border:none;font-size:0.7rem;padding:2px 10px" onclick="openUmansLogoutModal()"><i class="bi bi-box-arrow-right me-1"></i>Logout</button>' +
+          '<div><div style="font-size:12px;color:rgba(255,255,255,0.7)"><i class="bi bi-person-circle me-1"></i>' + escapeHtml(displayId) + '</div>' + userIdRow + '</div>' +
+          '<button class="btn btn-sm" style="background:rgba(220,53,69,0.2);color:#dc3545;border:none;font-size:0.7rem;padding:2px 10px" onclick="openUmansLogoutModal()"><i class="bi bi-box-arrow-right me-1"></i>' + t('btn_logout', 'Logout') + '</button>' +
           '</div>';
       } else {
         container.innerHTML = '<div class="d-flex justify-content-between align-items-center">' +
-          '<div><div style="font-size:12px;color:rgba(255,255,255,0.7)"><i class="bi bi-person me-1"></i>Not logged in</div>' + userIdRow + '</div>' +
-          '<button class="btn btn-sm" style="background:rgba(40,167,69,0.2);color:#28a745;border:none;font-size:0.7rem;padding:2px 10px" onclick="openPlatformLoginModal()"><i class="bi bi-box-arrow-in-right me-1"></i>Login</button>' +
+          '<div><div style="font-size:12px;color:rgba(255,255,255,0.7)"><i class="bi bi-person me-1"></i>' + t('status_not_logged_in', 'Not logged in') + '</div></div>' +
+          '<button class="btn btn-sm" style="background:rgba(40,167,69,0.2);color:#28a745;border:none;font-size:0.7rem;padding:2px 10px" onclick="openPlatformLoginModal()"><i class="bi bi-box-arrow-in-right me-1"></i>' + t('btn_login', 'Login') + '</button>' +
           '</div>';
       }
     }
@@ -1892,28 +1859,23 @@
       const keys = (_umansState.keys || []);
       const real = keys.filter(k => k.key);
       if (real.length === 0) {
-        container.innerHTML = '<p class="text-muted text-center py-3">No UMANS API keys configured.</p>';
+        container.innerHTML = '<p class="text-muted text-center py-3">' + t('msg_no_umans_keys', 'No UMANS API keys configured.') + '</p>';
       } else {
         container.innerHTML = real.map((k) => {
           const i = keys.indexOf(k);
           if (_umansEditingIndex === i) {
             return '<div class="pool-card">' +
-              '<div class="mb-2"><label class="form-label" style="font-size:10px">Name</label><input type="text" class="form-control form-control-sm" id="editKeyName" value="' + escapeHtml(k.name || '') + '"></div>' +
-              '<div class="mb-2"><label class="form-label" style="font-size:10px">Key</label><input type="text" class="form-control form-control-sm" id="editKeyKey" value="' + escapeHtml(k.key || '') + '"></div>' +
-              '<div class="d-flex gap-2"><button class="btn btn-sm btn-success" onclick="saveEditKey(' + i + ')"><i class="bi bi-check me-1"></i>Save</button><button class="btn btn-sm btn-secondary" onclick="cancelEditKey()">Cancel</button></div>' +
+              '<div class="mb-2"><label class="form-label" style="font-size:10px">' + t('label_name', 'Name') + '</label><input type="text" class="form-control form-control-sm" id="editKeyName" value="' + escapeHtml(k.name || '') + '"></div>' +
+              '<div class="mb-2"><label class="form-label" style="font-size:10px">' + t('label_key', 'Key') + '</label><input type="text" class="form-control form-control-sm" id="editKeyKey" value="' + escapeHtml(k.key || '') + '"></div>' +
+              '<div class="d-flex gap-2"><button class="btn btn-sm btn-success" onclick="saveEditKey(' + i + ')"><i class="bi bi-check me-1"></i>' + t('btn_save', 'Save') + '</button><button class="btn btn-sm btn-secondary" onclick="cancelEditKey()">' + t('btn_cancel', 'Cancel') + '</button></div>' +
               '</div>';
           }
           const mk = k.key ? (k.key.substring(0, 4) + '...' + k.key.substring(k.key.length - 4)) : 'no key';
-          return '<div class="pool-card"><div class="pool-header"><div class="pool-name">' + escapeHtml(k.name || 'Unnamed') + '</div>' +
-            '<div><button class="btn btn-sm btn-outline-action me-1" onclick="startEditKey(' + i + ')" title="Edit"><i class="bi bi-pencil"></i></button>' +
-            '<button class="btn btn-sm" style="background:rgba(220,53,69,0.2);color:#dc3545;border:none" onclick="startDeleteKey(' + i + ')" title="Delete"><i class="bi bi-trash"></i></button></div></div>' +
+          return '<div class="pool-card"><div class="pool-header"><div class="pool-name">' + escapeHtml(k.name || t('label_unnamed', 'Unnamed')) + '</div>' +
+            '<div><button class="btn btn-sm btn-outline-action me-1" onclick="startEditKey(' + i + ')" title="' + t('btn_edit', 'Edit') + '"><i class="bi bi-pencil"></i></button>' +
+            '<button class="btn btn-sm" style="background:rgba(220,53,69,0.2);color:#dc3545;border:none" onclick="startDeleteKey(' + i + ')" title="' + t('btn_delete', 'Delete') + '"><i class="bi bi-trash"></i></button></div></div>' +
             '<div style="font-size:0.8rem;color:rgba(255,255,255,0.7)"><span title="' + escapeHtml(k.key) + '">' + escapeHtml(mk) + '</span></div></div>';
         }).join('');
-      }
-      const select = document.getElementById('umansModalKeySelect');
-      if (select) {
-        const current = _umansState.currentKeyIndex || 0;
-        select.innerHTML = keys.map((k, i) => '<option value="' + i + '"' + (i === current ? ' selected' : '') + '>' + escapeHtml(k.name || 'Key ' + (i + 1)) + '</option>').join('');
       }
     }
 
@@ -1949,7 +1911,7 @@
       const groupedModels = window._groupedModels || {};
       const umansModels = (groupedModels.umans || []);
       if (umansModels.length === 0) {
-        container.innerHTML = '<p class="text-muted text-center py-2">No UMANS models loaded.</p>';
+        container.innerHTML = '<p class="text-muted text-center py-2">' + t('msg_no_umans_models', 'No UMANS models loaded.') + '</p>';
         return;
       }
       container.innerHTML = umansModels.map(m => {
@@ -2023,7 +1985,7 @@
       const editIdx = parseInt(document.getElementById('umansEditKeyIndex').value, 10);
       const name = document.getElementById('newKeyName').value.trim();
       const key = document.getElementById('newKeyKey').value.trim();
-      if (!key) { showToast('Key required', 'warning'); return; }
+      if (!key) { showToast(t('msg_key_required', 'Key required'), 'warning'); return; }
       if (editIdx >= 0) {
         wsSend('umansUpdateKey', { index: editIdx, name, key });
         showToast('Key updated', 'success');
@@ -2034,8 +1996,8 @@
       document.getElementById('newKeyName').value = '';
       document.getElementById('newKeyKey').value = '';
       document.getElementById('umansEditKeyIndex').value = '-1';
-      document.getElementById('umansKeyFormLabel').textContent = 'Add New Key';
-      document.getElementById('umansKeyFormBtn').innerHTML = '<i class="bi bi-plus-circle me-1"></i>Add Key';
+      document.getElementById('umansKeyFormLabel').textContent = t('umans_add_new_key', 'Add New Key');
+      document.getElementById('umansKeyFormBtn').innerHTML = '<i class="bi bi-plus-circle me-1"></i>' + t('btn_add_key', 'Add Key');
       document.getElementById('umansKeyFormCancel').style.display = 'none';
     }
 
@@ -2048,8 +2010,8 @@
       document.getElementById('umansEditKeyIndex').value = String(i);
       document.getElementById('newKeyName').value = k.name || '';
       document.getElementById('newKeyKey').value = k.key || '';
-      document.getElementById('umansKeyFormLabel').textContent = 'Edit Key';
-      document.getElementById('umansKeyFormBtn').innerHTML = '<i class="bi bi-check me-1"></i>Save';
+      document.getElementById('umansKeyFormLabel').textContent = t('umans_edit_key', 'Edit Key');
+      document.getElementById('umansKeyFormBtn').innerHTML = '<i class="bi bi-check me-1"></i>' + t('btn_save', 'Save');
       document.getElementById('umansKeyFormCancel').style.display = '';
     }
 
@@ -2058,8 +2020,8 @@
       document.getElementById('umansEditKeyIndex').value = '-1';
       document.getElementById('newKeyName').value = '';
       document.getElementById('newKeyKey').value = '';
-      document.getElementById('umansKeyFormLabel').textContent = 'Add New Key';
-      document.getElementById('umansKeyFormBtn').innerHTML = '<i class="bi bi-plus-circle me-1"></i>Add Key';
+      document.getElementById('umansKeyFormLabel').textContent = t('umans_add_new_key', 'Add New Key');
+      document.getElementById('umansKeyFormBtn').innerHTML = '<i class="bi bi-plus-circle me-1"></i>' + t('btn_add_key', 'Add Key');
       document.getElementById('umansKeyFormCancel').style.display = 'none';
       renderUmansKeys();
     }
@@ -2067,14 +2029,14 @@
     function saveEditKey(i) {
       const name = document.getElementById('editKeyName').value.trim();
       const key = document.getElementById('editKeyKey').value.trim();
-      if (!key) { showToast('Key required', 'warning'); return; }
+      if (!key) { showToast(t('msg_key_required', 'Key required'), 'warning'); return; }
       wsSend('umansUpdateKey', { index: i, name, key });
       _umansEditingIndex = -1;
       showToast('Key updated', 'success');
     }
 
     function startDeleteKey(i) {
-      if (!confirm('Delete this key?')) return;
+      if (!confirm(t('confirm_delete_key', 'Delete this key?'))) return;
       wsSend('umansDeleteKey', { index: i });
       _umansEditingIndex = -1;
       showToast('Key deleted', 'success');
@@ -2101,30 +2063,12 @@
     function updateUmansAccountBadge() {
       renderUmansAccount();
       renderUmansKeys();
-      renderUmansUsage();
       renderUmansModels();
       updateUmansTopBar();
-      updateUmansWindowTopBar();
-      updateUmans90DaysTopBar();
     }
 
     function updateUmansWindowTopBar() {
-      const winReqEl = document.getElementById('windowRequests');
-      const winTokEl = document.getElementById('windowTokens');
-      if (!winReqEl || !winTokEl) return;
-      const usage = _umansState && _umansState.usage;
-      let winReqs = 0, winTokens = 0;
-      if (usage && usage.window) {
-        const w = usage.window;
-        winReqs = w.requests_in_window || 0;
-        winTokens = (w.tokens_in || 0) + (w.tokens_out || 0);
-      } else if (usage && usage.usage) {
-        const u = usage.usage;
-        winReqs = u.requests_in_window || 0;
-        winTokens = (u.tokens_in || 0) + (u.tokens_out || 0);
-      }
-      winReqEl.textContent = winReqs ? winReqs.toLocaleString() : '--';
-      winTokEl.textContent = winTokens ? winTokens.toLocaleString() : '--';
+      // Window top bar removed; placeholder kept for any legacy callers.
     }
 
     function updateUmans90DaysTopBar() {
@@ -2150,22 +2094,20 @@
     }
 
     function updateUmansTopBar() {
-      const keys = (_umansState.keys || []).filter(k => k.key);
       const accountLabel = document.getElementById('umansAccountTopLabel');
       const keysLabel = document.getElementById('umansKeysTopLabel');
       const activeKeysBlock = document.getElementById('activeKeysBlock');
       if (accountLabel) {
-        if (_umansState.loggedIn && _umansState.account && _umansState.account.email) {
-          accountLabel.textContent = obfuscateEmail(_umansState.account.email);
-          accountLabel.setAttribute('title', escapeHtml(_umansState.account.email));
+        if (_umansState.loggedIn) {
+          accountLabel.textContent = _umansUserId || t('status_logged_in', 'Logged in');
+          accountLabel.setAttribute('title', escapeHtml(_umansState.account && _umansState.account.email ? _umansState.account.email : ''));
         } else {
-          accountLabel.textContent = 'Login';
+          accountLabel.textContent = t('btn_login', 'Login');
           accountLabel.setAttribute('title', '');
         }
       }
-      const countText = String(keys.length);
-      if (keysLabel) keysLabel.textContent = countText;
-      if (activeKeysBlock) activeKeysBlock.textContent = countText;
+      if (keysLabel) keysLabel.style.display = 'none';
+      if (activeKeysBlock) activeKeysBlock.textContent = String(_wsData.length);
     }
 
     function copyUserId() {
@@ -2786,6 +2728,9 @@
     let testChatHistory = [];
     let testChatBusy = false;
     let _pendingTestChat = null;
+    let _testChatStreamEl = null;
+    let _testChatFullContent = '';
+    let _testChatFirstLatency = null;
     let testChatContextEnabled = true;
     let testChatStreamEnabled = true;
     let testChatAbort = null;
@@ -2799,7 +2744,11 @@
       const d = new Date(ts);
       if (isNaN(d.getTime())) return '';
       const pad = n => n < 10 ? '0' + n : '' + n;
-      return pad(d.getHours()) + ':' + pad(d.getMinutes());
+      let h = d.getHours();
+      const ampm = h >= 12 ? 'PM' : 'AM';
+      h = h % 12;
+      if (h === 0) h = 12;
+      return pad(h) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()) + ' ' + ampm;
     }
 
     function formatChatText(text) {
@@ -2900,16 +2849,13 @@
       return TEST_CHAT_PROVIDER_NAMES[opt?.dataset?.pt || ''] || opt?.dataset?.pt || '';
     }
 
-    function makeTestChatRole(ts, ms, pt, modelName) {
-      var line1 = '<div class="test-chat-msg-role-line">';
-      if (ts) line1 += '<span class="test-chat-msg-time">' + formatLocalTime(ts) + '</span>';
-      if (ms != null) line1 += '<span class="test-chat-msg-dur"> \u00b7 ' + ms + 'ms</span>';
-      line1 += '</div>';
-      var line2 = '<div class="test-chat-msg-role-line">';
-      if (modelName) line2 += '<span class="test-chat-msg-model">' + escapeHtml(modelName) + '</span>';
-      if (pt) line2 += '<span class="test-chat-msg-prov"> \u00b7 ' + escapeHtml(pt) + '</span>';
-      line2 += '</div>';
-      return line1 + line2;
+    function makeTestChatRole(ts, ms, pt, modelName, roleName) {
+      var line = '<div class="test-chat-msg-role-line">';
+      line += '<span>' + escapeHtml(roleName || modelName || (pt ? 'Assistant' : 'You')) + '</span>';
+      if (ts) line += '<span class="test-chat-msg-time">' + formatLocalTime(ts) + '</span>';
+      if (ms != null) line += '<span class="test-chat-msg-dur">(<span class="test-chat-msg-ms">' + ms + 'ms</span>)</span>';
+      line += '</div>';
+      return line;
     }
 
     function getTestChatEls() {
@@ -2956,7 +2902,7 @@
       const html = pairs.map(p => {
         const userHtml = p.user ? (() => {
           const cls = 'test-chat-msg user';
-          return '<div class="' + cls + '"><div class="test-chat-msg-role"><div class="test-chat-msg-role-line"><span class="test-chat-msg-time">' + formatLocalTime(p.user.ts) + '</span> \u00b7 <span>You</span></div></div><div class="test-chat-msg-content">' + formatChatText(p.user.content || '') + '</div></div>';
+          return '<div class="' + cls + '"><div class="test-chat-msg-role">' + makeTestChatRole(p.user.ts, null, null, null, 'You') + '</div><div class="test-chat-msg-content">' + formatChatText(p.user.content || '') + '</div></div>';
         })() : '';
         const assistantHtml = p.assistant ? (() => {
           const isError = !!p.assistant.error;
@@ -2987,7 +2933,7 @@
       if (!pair) return null;
       const div = document.createElement('div');
       div.className = 'test-chat-msg assistant test-chat-thinking-wrap';
-      div.innerHTML = '<div class="test-chat-msg-role">' + makeTestChatRole(null, null, getTestChatProviderTag(), getTestChatModelName()) + '</div><div class="test-chat-msg-content"><span class="test-chat-thinking"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span></div>';
+      div.innerHTML = '<div class="test-chat-msg-role">' + makeTestChatRole(null, null, null, getTestChatModelName(), getTestChatModelName()) + '</div><div class="test-chat-msg-content"><span class="test-chat-thinking"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span></div>';
       pair.appendChild(div);
       scrollTestChatToBottom();
       return div;
@@ -3001,13 +2947,71 @@
       scrollTestChatToBottom();
     }
 
+    function _handleTestChatChunk(rawSse, reqId, latencyMs) {
+      if (_pendingTestChat && _pendingTestChat.reqId === reqId) {
+        if (_testChatFirstLatency === null && latencyMs != null) _testChatFirstLatency = latencyMs;
+        if (!_testChatStreamEl) {
+          const pair = prependUserBubble(null, _pendingTestChat.userTs);
+          _testChatStreamEl = appendAssistantThinking(pair);
+        }
+        const lines = (rawSse || '').split(/\r?\n/);
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const data = line.slice(6).trim();
+          if (data === '[DONE]') continue;
+          try {
+            const parsed = JSON.parse(data);
+            const delta = parsed.choices?.[0]?.delta;
+            let text = '';
+            if (typeof delta?.content === 'string') text = delta.content;
+            else if (delta?.role === 'assistant' && typeof delta.content === 'string') text = delta.content;
+            if (text) _testChatFullContent += text;
+          } catch {}
+        }
+        if (_testChatStreamEl) {
+          _testChatStreamEl.querySelector('.test-chat-msg-content').innerHTML = formatChatText(_testChatFullContent || '');
+          scrollTestChatToBottom();
+        }
+      }
+    }
+
+    function _finishTestChatStream(reqId, latencyMs, elapsedMs) {
+      if (_pendingTestChat && _pendingTestChat.reqId === reqId) {
+        if (_testChatFirstLatency === null && latencyMs != null) _testChatFirstLatency = latencyMs;
+        const ms = elapsedMs ?? _testChatFirstLatency ?? (Date.now() - _pendingTestChat.startMs);
+        const pt = getTestChatProviderTag();
+        const modelName = getTestChatModelName();
+        const content = _testChatFullContent || '(empty response)';
+        setAssistantBubble(_testChatStreamEl, content, Date.now(), false, ms, pt, modelName);
+        testChatHistory.push({ role: 'assistant', content: content, ts: Date.now(), ms: ms, providerTag: pt, modelName: modelName });
+        _cleanupTestChatStream();
+      }
+    }
+
+    function _finishTestChat(data, reqId) {
+      if (_pendingTestChat && _pendingTestChat.reqId === reqId) {
+        const cb = _pendingTestChat.callback;
+        _cleanupTestChatStream();
+        cb(data);
+      }
+      if (reqId && _wsCallbacks[reqId]) { var cb2 = _wsCallbacks[reqId]; delete _wsCallbacks[reqId]; cb2.resolve(data); }
+    }
+
+    function _cleanupTestChatStream() {
+      _testChatStreamEl = null;
+      _testChatFullContent = '';
+      _testChatFirstLatency = null;
+      _pendingTestChat = null;
+      setTestChatBusy(false);
+    }
+
     function prependUserBubble(text, ts) {
       const { transcript } = getTestChatEls();
       if (!transcript) return null;
       if (transcript.querySelector('.test-chat-empty')) transcript.innerHTML = '';
       const pair = document.createElement('div');
       pair.className = 'test-chat-pair';
-      pair.innerHTML = '<div class="test-chat-msg user"><div class="test-chat-msg-role"><div class="test-chat-msg-role-line"><span class="test-chat-msg-time">' + formatLocalTime(ts) + '</span> \u00b7 <span>You</span></div></div><div class="test-chat-msg-content">' + escapeHtml(text) + '</div></div>';
+      pair.innerHTML = '<div class="test-chat-msg user"><div class="test-chat-msg-role">' + makeTestChatRole(ts, null, null, null, 'You') + '</div><div class="test-chat-msg-content">' + escapeHtml(text || '') + '</div></div>';
       transcript.appendChild(pair);
       scrollTestChatToBottom();
       return pair;
@@ -3035,32 +3039,43 @@
       setTestChatBusy(true);
       const thinkingEl = appendAssistantThinking(pair);
       const startMs = Date.now();
+      const reqId = 'testchat-' + Date.now();
+      _testChatStreamEl = thinkingEl;
+      _testChatFullContent = '';
+      _testChatFirstLatency = null;
       try {
-        const messagesToSend = ctxOn
-          ? testChatHistory.filter(m => (m.role === 'user' || m.role === 'assistant') && !m.error).map(m => ({ role: m.role, content: m.content }))
-          : [{ role: 'user', content: text }];
-        const data = await wsCall(
-          'testChat',
-          { model: testChatModel, messages: messagesToSend, stream: streamOn, _id: 'testchat-' + Date.now() },
-          { signal: testChatAbort.signal, timeout: 180000 }
-        );
-        const ms = Date.now() - startMs;
-        const pt = getTestChatProviderTag();
-        const modelName = getTestChatModelName();
-        let assistantMsg;
-        if (data.error) {
-          assistantMsg = { role: 'assistant', content: data.error, error: true, ts: Date.now(), ms: 0, providerTag: pt, modelName: modelName };
+        if (!streamOn) {
+          const messagesToSend = ctxOn
+            ? testChatHistory.filter(m => (m.role === 'user' || m.role === 'assistant') && !m.error).map(m => ({ role: m.role, content: m.content }))
+            : [{ role: 'user', content: text }];
+          const data = await wsCall(
+            'testChat',
+            { model: testChatModel, messages: messagesToSend, stream: false, _id: reqId },
+            { signal: testChatAbort.signal, timeout: 180000 }
+          );
+          const ms = typeof data.elapsedMs === 'number' ? data.elapsedMs : (typeof data.ms === 'number' ? data.ms : (Date.now() - startMs));
+          const pt = getTestChatProviderTag();
+          const modelName = getTestChatModelName();
+          const content = data.error ? data.error : (data?.choices?.[0]?.message?.content ?? '(empty response)');
+          const isError = !!data.error;
+          setAssistantBubble(thinkingEl, content, Date.now(), isError, isError ? 0 : ms, pt, modelName);
+          testChatHistory.push({ role: 'assistant', content: content, error: isError, ts: Date.now(), ms: isError ? 0 : ms, providerTag: pt, modelName: modelName });
         } else {
-          const reply = data?.choices?.[0]?.message?.content;
-          assistantMsg = { role: 'assistant', content: (reply === '' || reply == null) ? '(empty response)' : reply, ts: Date.now(), ms: ms, providerTag: pt, modelName: modelName };
+          const messagesToSend = ctxOn
+            ? testChatHistory.filter(m => (m.role === 'user' || m.role === 'assistant') && !m.error).map(m => ({ role: m.role, content: m.content }))
+            : [{ role: 'user', content: text }];
+          const streamPromise = new Promise(function(resolve) {
+            _pendingTestChat = { reqId: reqId, startMs: startMs, userTs: ts, callback: resolve };
+          });
+          wsSend('testChat', { model: testChatModel, messages: messagesToSend, stream: true, _id: reqId });
+          await streamPromise;
         }
-        setAssistantBubble(thinkingEl, assistantMsg.content, assistantMsg.ts, !!assistantMsg.error, assistantMsg.ms, pt, modelName);
-        testChatHistory.push(assistantMsg);
         if (testChatHistory.length > TEST_CHAT_HISTORY_LIMIT) {
           testChatHistory = testChatHistory.slice(-TEST_CHAT_HISTORY_LIMIT);
           renderTestChatMessages();
         }
       } catch (e) {
+        _cleanupTestChatStream();
         if (e && e.name === 'AbortError') {
           setAssistantBubble(thinkingEl, 'Aborted', Date.now(), true, Date.now() - startMs, getTestChatProviderTag(), getTestChatModelName());
         } else {
