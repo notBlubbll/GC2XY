@@ -31,7 +31,7 @@ import {
 import { getModelIds } from "../models.ts";
 import { getTps, restoreTerminal, setEnabledModelIds } from "../split-console.ts";
 import { fetchAllWorkspacesWithKeysAndUsage, WorkspaceWithKeys } from "../opencode-workspace.ts";
-import { ensureI18nForLocale, buildI18nBundle, getDashboardLocale, setUmansTranslationApiKey } from "../i18n.ts";
+import { ensureI18nForLocale, buildI18nBundle, getDashboardLocale, getForcedLocale, getUmansTranslationKey, setForcedLocale, setUmansTranslationApiKey } from "../i18n.ts";
 
 // ── WebSocket Server (dedicated http.Server — handles upgrades natively) ──
 export const WS_PORT = parseInt(process.env.gc2xy_WS_PORT || "3441");
@@ -1090,6 +1090,7 @@ function loadConfig() {
         _supermavenEnabled = c.supermavenEnabled;
         setSupermavenEnabled(_supermavenEnabled);
       }
+      if (c.locale) setForcedLocale(c.locale);
       if (c.workspaceKeyStates && typeof c.workspaceKeyStates === "object") _workspaceKeyStates = c.workspaceKeyStates;
       if (c.umans) {
         _umansState = { ..._umansState, ...c.umans };
@@ -1128,6 +1129,7 @@ function saveConfig() {
     existing.providers = _activeProviders;
     existing.completionsModel = _completionsModel;
     existing.supermavenEnabled = _supermavenEnabled;
+    existing.locale = getForcedLocale();
     existing.githubSettings = { skuMode: getGithubSku(), username: getGithubUsername(), displayName: getGithubDisplayName() };
     existing.umans = {
       loggedIn: !!getUmansConfig().appSession || _umansState.loggedIn,
@@ -1434,20 +1436,22 @@ export async function handleDashboard(req: HandlerInput): Promise<HandlerResult>
     const hasKey = !!getUmansTranslationKey();
     if (urlObj.searchParams.get("config") === "1") {
       const nav = getDashboardLocale(urlObj);
-      const fallbackLocale = hasKey ? nav || "en" : "en";
-      return { handled: true, response: jsonResponse({ has_key: hasKey, forced_locale: null, fallback_locale: fallbackLocale }) };
+      const forced = getForcedLocale();
+      const fallbackLocale = forced || (hasKey ? nav || "en" : "en");
+      return { handled: true, response: jsonResponse({ has_key: hasKey, forced_locale: forced, fallback_locale: fallbackLocale }) };
     }
     const locale = getDashboardLocale(urlObj);
+    const forced = getForcedLocale();
     if (!hasKey || locale === "en") {
       const bundle = buildI18nBundle("en");
-      return { handled: true, response: jsonResponse({ ...bundle, has_key: hasKey, forced_locale: null, fallback_locale: "en" }) };
+      return { handled: true, response: jsonResponse({ ...bundle, has_key: hasKey, forced_locale: forced, fallback_locale: "en" }) };
     }
     if (urlObj.searchParams.get("generate") === "1") {
       const bundle = await ensureI18nForLocale(locale);
-      return { handled: true, response: jsonResponse({ ...bundle, has_key: true, forced_locale: null, fallback_locale: locale }) };
+      return { handled: true, response: jsonResponse({ ...bundle, has_key: true, forced_locale: forced, fallback_locale: locale }) };
     } else {
       const bundle = buildI18nBundle(locale);
-      return { handled: true, response: jsonResponse({ ...bundle, has_key: true, forced_locale: null, fallback_locale: locale }) };
+      return { handled: true, response: jsonResponse({ ...bundle, has_key: true, forced_locale: forced, fallback_locale: locale }) };
     }
   }
 

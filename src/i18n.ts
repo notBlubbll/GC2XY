@@ -299,7 +299,14 @@ export async function ensureI18nForLocale(locale: string): Promise<{ locale: str
   }
 }
 
+let _forcedLocale: string | null = null;
+export function setForcedLocale(locale: string | null) {
+  _forcedLocale = locale ? String(locale).toLowerCase().split(/[-_]/)[0].slice(0, 8) : null;
+}
+export function getForcedLocale(): string | null { return _forcedLocale; }
+
 export function getDashboardLocale(url: { searchParams: URLSearchParams }): string {
+  if (_forcedLocale) return _forcedLocale;
   const queryLocale = url.searchParams.get("locale");
   if (queryLocale) return String(queryLocale).toLowerCase().split(/[-_]/)[0].slice(0, 8);
   const nav = url.searchParams.get("nav");
