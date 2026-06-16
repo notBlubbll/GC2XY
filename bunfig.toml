@@ -1,13 +1,10 @@
 # gc2xy bunfig — optimized for proxy workload
 
 # Disable telemetry and update checks for faster startup
-[telemetry]
-enable = false
+telemetry = false
 
 # Small heap mode: lower memory footprint for long-running proxy
-[run]
-smol = true
+run.smol = true
 
 # No need for install cache — we only run, never install at runtime
-[install]
-cache = false
+install.cache = false

@@ -3,16 +3,15 @@ import { readFileSync } from "node:fs";
 import { jsonResponse, HandlerInput, HandlerResult, countConsecutiveNags, stripNagMessages, RECENTLY_COMPLETED, RECENT_BODIES, injectIdentity, compactIdentity, scrubTaskComplete, compressToolDefinitions, stripCopilotGreeting } from "../../shared.ts";
 import { chatCompletion as opencodeChat, detectSessionSignal, extractUserPrompt, getModelDisplayName, getModelProviderTag } from "../opencode-client.ts";
 import { chatCompletion as freebuffChat } from "../freebuff-client.ts";
-import { chatCompletion as pollChat } from "../pollinations-client.ts";
 import { chatCompletion as agnesChat } from "../agnes-client.ts";
 import { chatCompletion as codestralChat } from "../codestral-client.ts";
 import { chatCompletion as bitnetChat } from "../bitnet-client.ts";
-import { chatCompletion as featherlessChat } from "../featherless-client.ts";
 import { addModels } from "../../models.ts";
 import { handleVSModels, VS_MODELS } from "./models.ts";
 import { recordTps, reqLog, agentTag } from "../../split-console.ts";
 import { trackRequest } from "../../usage-tracker.ts";
 import { anthropicToOpenAIRequest } from "../anthropic-bridge.ts";
+import { filterModelsByConfig } from "../dashboard-handler.ts";
 import {
   repairToolCalls,
   detectApologyText,
@@ -176,7 +175,7 @@ function _salvageAnthropicResponse(data: any, bridgeMessages: any[], model: stri
 const FAKE_MODELS: any[] = [];
 let _lastModelIds: string[] = [];
 let _rebuilding = false;
-let _lastRealModel = "codestral/codestral-latest";
+let _lastRealModel = "deepseek-v4-pro";
 
 function _extractText(raw: any): string {
   if (typeof raw === "string") return raw;
@@ -266,7 +265,8 @@ function modelLimits(id: string): any {
 
 async function ensureModels() {
   if (_rebuilding) return;
-  const models = await addModels();
+  let models = await addModels();
+  models = filterModelsByConfig(models);
 
   const changed = models.length !== _lastModelIds.length ||
     models.some((id, i) => id !== _lastModelIds[i]);
@@ -463,7 +463,7 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
 
       const lastUserMsg = [...bridge.messages].reverse().find((m: any) => m.role === "user");
       const vsTag = agentTag(headers);
-const vsProvider = model.startsWith("pol/") ? "poll" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("featherless/") ? "featherless" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral/") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "go";
+      const vsProvider = model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "go";
       const messagesPreview = lastUserMsg ? (
         typeof lastUserMsg.content === "string" ? lastUserMsg.content :
         Array.isArray(lastUserMsg.content) ? lastUserMsg.content.filter((c: any) => c.type === "text").map((c: any) => c.text || "").join(" ") : ""
@@ -471,32 +471,23 @@ const vsProvider = model.startsWith("pol/") ? "poll" : model.startsWith("freebuf
       const messagesComplete = reqLog({ tag: vsTag, provider: vsProvider, model, preview: messagesPreview, body: parsed });
 
       const isFb = bridge.model.startsWith("freebuff/");
-      const isPol = bridge.model.startsWith("pol/");
-      const isFeath = bridge.model.startsWith("featherless/");
       const isAg = bridge.model.startsWith("agnes");
-      const isCs = bridge.model.startsWith("codestral/");
+      const isCd = bridge.model.startsWith("codestral");
       const isBn = bridge.model === "bitnet-demo" || bridge.model.startsWith("bitnet/");
       const resp = isFb
         ? await freebuffChat(bridge.model, bridge.messages, bridge.tools, bridge.stream, {
         max_tokens: bridge.max_tokens,
         ...parsed,
       })
-        : isPol
-        ? await pollChat(bridge.model, bridge.messages, bridge.tools, bridge.stream, {
-        max_tokens: bridge.max_tokens,
-      })
-        : isFeath
-        ? await featherlessChat(bridge.model, bridge.messages, bridge.tools, bridge.stream, {
-        max_tokens: bridge.max_tokens,
-      })
         : isAg
         ? await agnesChat(bridge.model, bridge.messages, bridge.tools, bridge.stream, {
         max_tokens: bridge.max_tokens,
         ...parsed,
       })
-        : isCs
+        : isCd
         ? await codestralChat(bridge.model, bridge.messages, bridge.tools, bridge.stream, {
         max_tokens: bridge.max_tokens,
+        ...parsed,
       })
         : isBn
         ? await bitnetChat(bridge.model, bridge.messages, bridge.tools, bridge.stream, {
@@ -806,23 +797,17 @@ const vsProvider = model.startsWith("pol/") ? "poll" : model.startsWith("freebuf
       }
 
       const vsTag = agentTag(headers);
-      const vsProvider = model.startsWith("pol/") ? "poll" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("featherless/") ? "featherless" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral/") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "go";
+      const vsProvider = model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "go";
 
       const isFb2 = model.startsWith("freebuff/");
-      const isPol2 = model.startsWith("pol/");
-      const isFeath2 = model.startsWith("featherless/");
       const isAg2 = model.startsWith("agnes");
-      const isCs2 = model.startsWith("codestral/");
+      const isCd2 = model.startsWith("codestral");
       const isBn2 = model === "bitnet-demo" || model.startsWith("bitnet/");
       const resp = isFb2
         ? await freebuffChat(model, cleanMessages, cleanToolsBn, isStream, { max_tokens: parsed.max_tokens, temperature: parsed.temperature, top_p: parsed.top_p, ...parsed })
-        : isPol2
-        ? await pollChat(model, cleanMessages, cleanToolsBn, isStream, { max_tokens: parsed.max_tokens, temperature: parsed.temperature, top_p: parsed.top_p })
-        : isFeath2
-        ? await featherlessChat(model, cleanMessages, cleanToolsBn, isStream, { max_tokens: parsed.max_tokens, temperature: parsed.temperature, top_p: parsed.top_p })
         : isAg2
         ? await agnesChat(model, cleanMessages, cleanToolsBn, isStream, { ...parsed })
-        : isCs2
+        : isCd2
         ? await codestralChat(model, cleanMessages, cleanToolsBn, isStream, { max_tokens: parsed.max_tokens, temperature: parsed.temperature, top_p: parsed.top_p })
         : isBn2
         ? await bitnetChat(model, cleanMessages, cleanToolsBn, isStream, { max_tokens: parsed.max_tokens, ...parsed })
@@ -981,23 +966,17 @@ const vsProvider = model.startsWith("pol/") ? "poll" : model.startsWith("freebuf
     try {
       const vsTag = agentTag(headers);
       const lastUserMsg = [...chatMessages].reverse().find((m: any) => m.role === "user");
-      const vsProvider = model.startsWith("pol/") ? "poll" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("featherless/") ? "featherless" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral/") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "go";
+      const vsProvider = model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "go";
 
       const isFb3 = model.startsWith("freebuff/");
-      const isPol3 = model.startsWith("pol/");
-      const isFeath3 = model.startsWith("featherless/");
       const isAg3 = model.startsWith("agnes");
-      const isCs3 = model.startsWith("codestral/");
+      const isCd3 = model.startsWith("codestral");
       const isBn3 = model === "bitnet-demo" || model.startsWith("bitnet/");
       const resp = isFb3
         ? await freebuffChat(model, chatMessages, chatToolsBn, isStream, { max_tokens: maxTokens, temperature: parsed.temperature, top_p: parsed.top_p, ...parsed })
-        : isPol3
-        ? await pollChat(model, chatMessages, chatToolsBn, isStream, { max_tokens: maxTokens, temperature: parsed.temperature, top_p: parsed.top_p })
-        : isFeath3
-        ? await featherlessChat(model, chatMessages, chatToolsBn, isStream, { max_tokens: maxTokens, temperature: parsed.temperature, top_p: parsed.top_p })
         : isAg3
         ? await agnesChat(model, chatMessages, chatToolsBn, isStream, { max_tokens: maxTokens, ...parsed })
-        : isCs3
+        : isCd3
         ? await codestralChat(model, chatMessages, chatToolsBn, isStream, { max_tokens: maxTokens, temperature: parsed.temperature, top_p: parsed.top_p })
         : isBn3
         ? await bitnetChat(model, chatMessages, chatToolsBn, isStream, { max_tokens: maxTokens, ...parsed })

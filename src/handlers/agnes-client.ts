@@ -3,17 +3,28 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import * as os from "node:os";
 import { getProjectRoot, normalizeTool, normalizeToolChoice } from "../shared.ts";
 import { isDebug } from "../split-console.ts";
 
 const BASE = "https://apihub.agnes-ai.com/v1";
+const AGNES_PROXY_DIR = "C:\\Users\\Administrator\\Desktop\\AGNES-PROXY";
 
 function getAgnesKey(): string {
+  if (_apiKey) return _apiKey;
   try {
     const p = path.join(getProjectRoot(), ".config", "config.json");
     if (fs.existsSync(p)) {
       const c = JSON.parse(fs.readFileSync(p, "utf-8"));
-      return c.agnesKey || "";
+      if (c.agnesKey) return c.agnesKey;
+    }
+    // Fallback to AGNES-PROXY config key
+    const proxyCfg = path.join(AGNES_PROXY_DIR, ".config", "config.json");
+    if (fs.existsSync(proxyCfg)) {
+      const c = JSON.parse(fs.readFileSync(proxyCfg, "utf-8"));
+      if (c.API_KEY) return c.API_KEY;
+      if (Array.isArray(c.KEYS) && c.KEYS[0]?.key) return c.KEYS[0].key;
+      if (Array.isArray(c.API_KEYS) && c.API_KEYS[0]) return c.API_KEYS[0];
     }
   } catch {}
   return "";
@@ -46,6 +57,54 @@ function saveCachedModels(ids: string[]) {
   } catch {}
 }
 
+function loadAgnesProxyModels(): string[] {
+  try {
+    const cfgPath = path.join(AGNES_PROXY_DIR, ".config", "config.json");
+    if (!fs.existsSync(cfgPath)) {
+      if (isDebug()) console.log(`\n[AGNES] proxy config not found at ${cfgPath}`);
+      return [];
+    }
+    const c = JSON.parse(fs.readFileSync(cfgPath, "utf-8"));
+    let ids: string[] = [];
+
+    // Primary source: ENABLED_MODELS list
+    if (Array.isArray(c.ENABLED_MODELS) && c.ENABLED_MODELS.length > 0) {
+      ids = c.ENABLED_MODELS.filter((m: any) => typeof m === "string" && m.length > 0);
+    }
+
+    // Also include hardcoded AGNES_MODELS from proxy.js if present and newer
+    const proxyJs = path.join(AGNES_PROXY_DIR, "proxy.js");
+    if (fs.existsSync(proxyJs)) {
+      const js = fs.readFileSync(proxyJs, "utf-8");
+      const match = js.match(/const\s+AGNES_MODELS\s*=\s*\[([\s\S]*?)\]/);
+      if (match) {
+        const hardcoded = match[1]
+          .split("\n")
+          .map((l: string) => {
+            const m = l.match(/['"]([^'"]+)['"]/);
+            return m ? m[1] : "";
+          })
+          .filter((id: string) => id.length > 0);
+        for (const id of hardcoded) {
+          if (!ids.includes(id)) ids.push(id);
+        }
+      }
+    }
+
+    if (ids.length > 0) {
+      if (isDebug()) console.log(`\n[AGNES] loaded ${ids.length} models from AGNES-PROXY`);
+      saveCachedModels(ids);
+    }
+    return ids;
+  } catch (e: any) {
+    if (isDebug()) console.log(`\n[AGNES] proxy load error: ${e.message}`);
+    return [];
+  }
+}
+
+let _apiKey = "";
+export function setApiKey(key: string) { _apiKey = key || ""; }
+
 // ── Model Init ──
 let _cachedIds: string[] | null = null;
 let _initialized = false;
@@ -77,6 +136,25 @@ async function fetchModels(): Promise<string[]> {
 export async function initModels(): Promise<string[]> {
   if (_initialized && _cachedIds) return _cachedIds;
 
+  // Prefer live fetch (uses AGNES-PROXY key fallback if needed)
+  const fetched = await fetchModels();
+  if (fetched.length > 0) {
+    _cachedIds = fetched;
+    _initialized = true;
+    if (isDebug()) console.log(`\n[AGNES] init complete: ${_cachedIds.length} models`);
+    return _cachedIds;
+  }
+
+  // Fallback 1: AGNES-PROXY config/models registry (local override)
+  const proxyModels = loadAgnesProxyModels();
+  if (proxyModels.length > 0) {
+    _cachedIds = proxyModels;
+    _initialized = true;
+    if (isDebug()) console.log(`\n[AGNES] loaded ${proxyModels.length} from AGNES-PROXY`);
+    return _cachedIds;
+  }
+
+  // Fallback 2: locally cached Agnes models
   const disk = loadCachedModels();
   if (disk && disk.length > 0) {
     _cachedIds = disk;
@@ -85,13 +163,11 @@ export async function initModels(): Promise<string[]> {
     return disk;
   }
 
-  const fetched = await fetchModels();
-  if (fetched.length > 0) {
-    _cachedIds = fetched;
-  }
+  // Fallback 3: hardcoded AGNES-PROXY registry
+  // Empty initialized so callers know we tried.
   _initialized = true;
-  if (isDebug()) console.log(`\n[AGNES] init complete: ${_cachedIds?.length || 0} models`);
-  return _cachedIds || [];
+  if (isDebug()) console.log(`\n[AGNES] init complete: 0 models`);
+  return [];
 }
 
 export function getModelIds(): string[] {

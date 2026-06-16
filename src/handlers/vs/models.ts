@@ -6,6 +6,7 @@ import { getModelCtx, getModelDisplayName, getModelProviderTag } from "../openco
 
 import { addModels } from "../../models.ts";
 import { isDebug } from "../../split-console.ts";
+import { filterModelsByConfig } from "../dashboard-handler.ts";
 
 const VS_MODELS: any[] = [];
 let _lastModelIds: string[] = [];
@@ -31,7 +32,7 @@ function isThinkingModel(id: string): boolean {
 }
 
 function isFreeModel(id: string): boolean {
-  return id.startsWith("pol/") || id.startsWith("agnes");
+  return id.startsWith("agnes");
 }
 
 // ── Free model lightweight tuning ──
@@ -46,7 +47,7 @@ function getBilling(id: string, ctx: number): any {
   return {
     is_premium: true,
     multiplier: ctx,
-    restricted_to: ["pro_plus", "business", "enterprise", "max"],
+    restricted_to: ["pro", "pro_plus", "business", "enterprise", "max"],
   };
 }
 
@@ -140,21 +141,7 @@ export function getThinkingModes(id: string): string[] {
 async function ensureModels() {
   if (_rebuilding) return;
   let models = await addModels();
-
-  // Filter out disabled models and inactive providers from config.json
-  const PROVIDER_MAP: Record<string, string> = { opencode: "go", zen: "zen", freebuff: "freebuff", agnes: "agnes", codestral: "codestral", featherless: "featherless", bitnet: "bitnet", deepseek: "deepseek" };
-  try {
-    const cp = join(getProjectRoot(), ".config", "config.json");
-    if (existsSync(cp)) {
-      const cfg = JSON.parse(readFileSync(cp, "utf-8"));
-      const activeProviders: string[] = cfg.providers || ["opencode"];
-      const activeTags = new Set(activeProviders.map((pr: string) => PROVIDER_MAP[pr] || pr));
-      models = models.filter(id => activeTags.has(getModelProviderTag(id)));
-      const dm: Record<string, string[]> = cfg.disabledModels || {};
-      const disabledSet = new Set(Object.values(dm).flat() as string[]);
-      models = models.filter(id => !disabledSet.has(id));
-    }
-  } catch {}
+  models = filterModelsByConfig(models);
 
   const changed = models.length !== _lastModelIds.length ||
     models.some((id, i) => id !== _lastModelIds[i]);
@@ -169,7 +156,7 @@ async function ensureModels() {
     if (seen.has(id)) return;
     seen.add(id);
     const free = isFreeModel(id);
-    const prefix = id.startsWith("pol/") ? "🐝" : id.startsWith("freebuff/") ? "🇫🇷ᴇᴇ" : id.startsWith("agnes") ? "💜" : id.startsWith("codestral/") ? "🔷" : "✨";
+    const prefix = id.startsWith("freebuff/") ? "🇫🇷ᴇᴇ" : id.startsWith("agnes") ? "💜" : id.startsWith("codestral/") ? "🌀" : "✨";
     let name = getModelDisplayName(id);
     if (name.length > 17) name = name.replace(/\s/g, "");
     const fullName = `${prefix}￤${name}`;
@@ -243,9 +230,9 @@ async function ensureModels() {
   const template = VS_MODELS.find((m: any) => !m.id.startsWith("_cat_") && !m.id.includes("["));
   if (template && VS_MODELS.length > 0) {
     const PROVIDER_NAMES: Record<string, string> = {
-      go: "\u200D✨ ⸻ OpenCode Go:", poll: "\u200D\u200D🐝 ⸻ Pollinations.ai:", freebuff: "\u200D\u200D\u200D🇫🇷ᴇᴇ ⸻ FreeBuff:", codestral: "\u200D\u200D\u200D\u200D🔷 ⸻ Codestral:", agnes: "\u200D\u200D\u200D\u200D\u200D💜 ⸻ AgnesAI:", featherless: "\u200D\u200D\u200D\u200D\u200D\u200D✨ ⸻ Featherless:", bitnet: "\u200D\u200D\u200D\u200D\u200D\u200D\u200D✨ ⸻ Bitnet:", deepseek: "\u200D\u200D\u200D\u200D\u200D\u200D\u200D\u200D✨ ⸻ DeepSeek:", openrouter: "\u200D\u200D\u200D\u200D\u200D\u200D\u200D\u200D\u200D✨ ⸻ OpenRouter:", zen: "\u200D\u200D\u200D\u200D\u200D\u200D\u200D\u200D\u200D\u200D⸻ ZEN:",
+      go: "\u200D✨ ⸻ OpenCode Go:", freebuff: "\u200D\u200D🇫🇷ᴇᴇ ⸻ FreeBuff:", agnes: "\u200D\u200D\u200D💜 ⸻ AgnesAI:", codestral: "\u200D\u200D\u200D\u200D🌀 ⸻ Codestral:", bitnet: "\u200D\u200D\u200D\u200D\u200D✨ ⸻ Bitnet:", deepseek: "\u200D\u200D\u200D\u200D\u200D\u200D✨ ⸻ DeepSeek:", openrouter: "\u200D\u200D\u200D\u200D\u200D\u200D\u200D✨ ⸻ OpenRouter:", zen: "\u200D\u200D\u200D\u200D\u200D\u200D\u200D\u200D⸻ ZEN:",
     };
-    const SEP_ORDER = ["go", "poll", "freebuff", "codestral", "agnes", "featherless", "bitnet", "deepseek", "openrouter", "zen"];
+    const SEP_ORDER = ["go", "codestral", "freebuff", "agnes", "bitnet", "deepseek", "openrouter", "zen"];
     // Header banner at very top
     VS_MODELS.splice(0, 0, {
       ...template,

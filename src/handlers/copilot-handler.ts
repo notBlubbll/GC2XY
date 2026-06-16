@@ -5,12 +5,10 @@ import { jsonResponse, HandlerInput, HandlerResult, countConsecutiveNags, stripN
 import { chatCompletion as opencodeChat, getKeyStatus, storeReasoning, getModelCtx, modelHasVision, detectSessionSignal, extractUserPrompt, getModelDisplayName, getModelProviderTag } from "./opencode-client.ts";
 import { addModels } from "../models.ts";
 import { chatCompletion as freebuffChat, getFreebuffModelPremium } from "./freebuff-client.ts";
-import { chatCompletion as pollChat } from "./pollinations-client.ts";
 import { chatCompletion as agnesChat } from "./agnes-client.ts";
-import { chatCompletion as codestralChat, completions as codestralCompletions } from "./codestral-client.ts";
-import { getCompletionsModel } from "./dashboard-handler.ts";
+import { getCompletionsModel, filterModelsByConfig } from "./dashboard-handler.ts";
+import { chatCompletion as codestralChat, completions as codestralFim } from "./codestral-client.ts";
 import { chatCompletion as bitnetChat } from "./bitnet-client.ts";
-import { chatCompletion as featherlessChat } from "./featherless-client.ts";
 import { isSupermavenEnabled, isSupermavenReady, supermavenCodeComplete } from "./supermaven-client.ts";
 import { reqLog, agentTag } from "../split-console.ts";
 import { trackRequest } from "../usage-tracker.ts";
@@ -111,20 +109,7 @@ function modelLimits(id: string): any {
 async function ensureModels() {
   if (_rebuilding) return;
   let modelIds = await addModels();
-
-  const PROVIDER_MAP: Record<string, string> = { opencode: "go", zen: "zen", freebuff: "freebuff", agnes: "agnes", codestral: "codestral", featherless: "featherless", bitnet: "bitnet", deepseek: "deepseek" };
-  try {
-    const cp = join(getProjectRoot(), ".config", "config.json");
-    if (existsSync(cp)) {
-      const cfg = JSON.parse(readFileSync(cp, "utf-8"));
-      const activeProviders: string[] = cfg.providers || ["opencode"];
-      const activeTags = new Set(activeProviders.map((pr: string) => PROVIDER_MAP[pr] || pr));
-      modelIds = modelIds.filter(id => activeTags.has(getModelProviderTag(id)));
-      const dm: Record<string, string[]> = cfg.disabledModels || {};
-      const disabledSet = new Set(Object.values(dm).flat() as string[]);
-      modelIds = modelIds.filter(id => !disabledSet.has(id));
-    }
-  } catch {}
+  modelIds = filterModelsByConfig(modelIds);
 
   const changed = modelIds.length !== _lastModelIds.length ||
     modelIds.some((id, i) => id !== _lastModelIds[i]);
@@ -138,7 +123,7 @@ async function ensureModels() {
   const addModel = (id: string) => {
     if (seen.has(id)) return;
     seen.add(id);
-    const prefix = id.startsWith("pol/") ? "🐝" : id.startsWith("freebuff/") ? "🇫🇷ᴇᴇ" : id.startsWith("agnes") ? "💜" : id.startsWith("codestral/") ? "🔷" : "✨";
+    const prefix = id.startsWith("freebuff/") ? "🇫🇷ᴇᴇ" : id.startsWith("agnes") ? "💜" : id.startsWith("codestral/") ? "🌀" : "✨";
     let displayName = getModelDisplayName(id);
     if (displayName.length > 17) displayName = displayName.replace(/\s/g, "");
     const name = `${prefix}￤${displayName}`;
@@ -152,7 +137,7 @@ async function ensureModels() {
       model_picker_enabled: true,
       is_chat_default: true,
       is_chat_fallback: true,
-      billing: { is_premium: true, multiplier: id.startsWith("pol/") ? 1 : (getModelCtx(id) || limits.max_context_window_tokens), restricted_to: ["pro", "pro_plus", "business", "enterprise", "max"] },
+      billing: { is_premium: true, multiplier: getModelCtx(id) || limits.max_context_window_tokens, restricted_to: ["pro", "pro_plus", "business", "enterprise", "max"] },
       policy: { state: "enabled", terms: `Enable access to the ${id} model. [Learn more](https://opencode.ai)` },
       supported_endpoints: ["/chat/completions", "/v1/messages"],
       capabilities: {
@@ -194,9 +179,9 @@ async function ensureModels() {
   const template = FAKE_MODELS.find((m: any) => !m.id.startsWith("cat_") && !m.id.startsWith("_cat_") && !m.id.includes("-lo") && !m.id.includes("-md") && !m.id.includes("-hi") && !m.id.includes("-mx"));
   if (template && FAKE_MODELS.length > 0) {
     const PROVIDER_NAMES: Record<string, string> = {
-      go: "\u200D✨ ⸻ OpenCode Go:", poll: "\u200D\u200D🐝 ⸻ Pollinations.ai:", freebuff: "\u200D\u200D\u200D🇫🇷ᴇᴇ ⸻ FreeBuff:", codestral: "\u200D\u200D\u200D\u200D🔷 ⸻ Codestral:", agnes: "\u200D\u200D\u200D\u200D\u200D💜 ⸻ AgnesAI:", featherless: "\u200D\u200D\u200D\u200D\u200D\u200D✨ ⸻ Featherless:", bitnet: "\u200D\u200D\u200D\u200D\u200D\u200D\u200D✨ ⸻ Bitnet:", deepseek: "\u200D\u200D\u200D\u200D\u200D\u200D\u200D\u200D✨ ⸻ DeepSeek:", openrouter: "\u200D\u200D\u200D\u200D\u200D\u200D\u200D\u200D\u200D✨ ⸻ OpenRouter:", zen: "\u200D\u200D\u200D\u200D\u200D\u200D\u200D\u200D\u200D\u200D⸻ ZEN:",
+      go: "\u200D✨ ⸻ OpenCode Go:", freebuff: "\u200D\u200D🇫🇷ᴇᴇ ⸻ FreeBuff:", agnes: "\u200D\u200D\u200D💜 ⸻ AgnesAI:", codestral: "\u200D\u200D\u200D\u200D🌀 ⸻ Codestral:", bitnet: "\u200D\u200D\u200D\u200D\u200D✨ ⸻ Bitnet:", deepseek: "\u200D\u200D\u200D\u200D\u200D\u200D✨ ⸻ DeepSeek:", openrouter: "\u200D\u200D\u200D\u200D\u200D\u200D\u200D✨ ⸻ OpenRouter:", zen: "\u200D\u200D\u200D\u200D\u200D\u200D\u200D\u200D⸻ ZEN:",
     };
-    const SEP_ORDER = ["go", "poll", "freebuff", "codestral", "agnes", "featherless", "bitnet", "deepseek", "openrouter", "zen"];
+    const SEP_ORDER = ["go", "freebuff", "agnes", "codestral", "bitnet", "deepseek", "openrouter", "zen"];
     // Header banner at very top
     FAKE_MODELS.splice(0, 0, {
       ...template,
@@ -441,14 +426,14 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
 
     const modelOverrides: Record<string, string> = {
       "gpt-4o": "", "gpt-4": "", "gpt-3.5-turbo": "", "gpt-4-turbo": "",
-      "claude-haiku-4.5": "", "gpt-5-mini": "", "gpt-4.1": "", "pol/openai-fast": "", "qwen3.5-plus": "",
+      "claude-haiku-4.5": "", "gpt-5-mini": "", "gpt-4.1": "", "qwen3.5-plus": "",
     };
     await ensureModels();
     if (modelOverrides[model] !== undefined) {
       const real = FAKE_MODELS.find((m: any) => m.id.startsWith("deepseek") && !m.id.includes("-embedding"))
         || FAKE_MODELS.find((m: any) => {
           const v = detectVendor(m.id);
-          return !m.id?.startsWith("pol/") && !m.id?.includes("-embedding") && v !== "MiniMax" && v !== "Moonshot AI" && v !== "Zhipu AI" && v !== "Alibaba Cloud";
+          return !m.id?.includes("-embedding") && v !== "MiniMax" && v !== "Moonshot AI" && v !== "Zhipu AI" && v !== "Alibaba Cloud";
         });
       model = real?.id || model;
     }
@@ -477,7 +462,7 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
       Array.isArray(lastUserMsg.content) ? lastUserMsg.content.filter((c: any) => c.type === "text").map((c: any) => c.text || "").join(" ") : ""
     ) : "";
     const tag = agentTag(headers);
-    const provider = model.startsWith("pol/") ? "poll" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("featherless/") ? "featherless" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral/") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "go";
+    const provider = model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "go";
     const completeLog = reqLog({ tag, provider, model, preview: queryPreview, body: parsed });
     const startTime = Date.now();
 
@@ -551,21 +536,15 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
       bridge.tools = scrubbed1.tools;
       bridge.tools = compressToolDefinitions(bridge.tools);
       const isFb = bridge.model.startsWith("freebuff/");
-      const isPol = bridge.model.startsWith("pol/");
-      const isFeath = bridge.model.startsWith("featherless/");
       const isAg = bridge.model.startsWith("agnes");
-      const isCs = bridge.model.startsWith("codestral/");
+      const isCd = bridge.model.startsWith("codestral");
       const isBn = bridge.model === "bitnet-demo" || bridge.model.startsWith("bitnet/");
       const resp = isFb
         ? await freebuffChat(bridge.model, bridge.messages, bridge.tools, false, { max_tokens: bridge.max_tokens, ...parsed })
-        : isPol
-        ? await pollChat(bridge.model, bridge.messages, bridge.tools, false, { max_tokens: bridge.max_tokens })
-        : isFeath
-        ? await featherlessChat(bridge.model, bridge.messages, bridge.tools, false, { max_tokens: bridge.max_tokens })
         : isAg
         ? await agnesChat(bridge.model, bridge.messages, bridge.tools, false, { max_tokens: bridge.max_tokens, ...parsed })
-        : isCs
-        ? await codestralChat(bridge.model, bridge.messages, bridge.tools, false, { max_tokens: bridge.max_tokens })
+        : isCd
+        ? await codestralChat(bridge.model, bridge.messages, bridge.tools, false, { max_tokens: bridge.max_tokens, ...parsed })
         : isBn
         ? await bitnetChat(bridge.model, bridge.messages, bridge.tools, false, { max_tokens: bridge.max_tokens })
         : await opencodeChat(bridge.model, bridge.messages, bridge.tools, false, { max_tokens: bridge.max_tokens, ...parsed });
@@ -828,13 +807,13 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
     // Map common VS/Copilot model names to real opencode models
     const modelOverrides: Record<string, string> = {
       "gpt-4o": "", "gpt-4": "", "gpt-3.5-turbo": "", "gpt-4-turbo": "",
-      "claude-haiku-4.5": "", "gpt-5-mini": "", "gpt-4.1": "", "pol/openai-fast": "", "qwen3.5-plus": "",
+      "claude-haiku-4.5": "", "gpt-5-mini": "", "gpt-4.1": "", "qwen3.5-plus": "",
     };
     if (modelOverrides[model] !== undefined) {
       const real = FAKE_MODELS.find((m: any) => m.id.startsWith("deepseek") && !m.id.includes("-embedding"))
         || FAKE_MODELS.find((m: any) => {
           const v = detectVendor(m.id);
-          return !m.id?.startsWith("pol/") && !m.id?.includes("-embedding") && v !== "MiniMax" && v !== "Moonshot AI" && v !== "Zhipu AI" && v !== "Alibaba Cloud";
+          return !m.id?.includes("-embedding") && v !== "MiniMax" && v !== "Moonshot AI" && v !== "Zhipu AI" && v !== "Alibaba Cloud";
         });
       model = real?.id || model;
       console.log(`\n[MODEL] Aliased ${rawModel2} → ${model}`);
@@ -845,7 +824,7 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
       const real = FAKE_MODELS.find((m: any) => m.id.startsWith("deepseek") && !m.id.includes("-embedding"))
         || FAKE_MODELS.find((m: any) => {
           const v = detectVendor(m.id);
-          return !m.id?.startsWith("pol/") && !m.id?.includes("-embedding") && v !== "MiniMax" && v !== "Moonshot AI" && v !== "Zhipu AI" && v !== "Alibaba Cloud";
+          return !m.id?.includes("-embedding") && v !== "MiniMax" && v !== "Moonshot AI" && v !== "Zhipu AI" && v !== "Alibaba Cloud";
         });
       model = real?.id || (FAKE_MODELS.length > 0 ? FAKE_MODELS[0].id : "big-pickle");
       console.log(`\n[MODEL] ${rawModel2} not found, picked ${model}`);
@@ -887,7 +866,7 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
       Array.isArray(lastUserMsg.content) ? lastUserMsg.content.filter((c: any) => c.type === "text").map((c: any) => c.text || "").join(" ") : ""
     ) : "";
     const tag = agentTag(headers);
-    const provider = model.startsWith("pol/") ? "poll" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("featherless/") ? "featherless" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral/") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "go";
+    const provider = model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "go";
     const completeLog = reqLog({ tag, provider, model, preview: chatPreview, body: parsed });
     const startTime = Date.now();
 
@@ -903,20 +882,14 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
       const cleanTools2 = scrubbed2.tools;
       const cleanTools2Compressed = compressToolDefinitions(cleanTools2);
       const isFb2 = model.startsWith("freebuff/");
-      const isPol2 = model.startsWith("pol/");
-      const isFeath2 = model.startsWith("featherless/");
       const isAg2 = model.startsWith("agnes");
-      const isCs2 = model.startsWith("codestral/");
+      const isCd2 = model.startsWith("codestral");
       const isBn2 = model === "bitnet-demo" || model.startsWith("bitnet/");
       const resp = isFb2
         ? await freebuffChat(model, cleanMsgs2, cleanTools2, isStream, { max_tokens: parsed.max_tokens, temperature: parsed.temperature, top_p: parsed.top_p, ...parsed })
-        : isPol2
-        ? await pollChat(model, cleanMsgs2, cleanTools2, isStream, { max_tokens: parsed.max_tokens, temperature: parsed.temperature, top_p: parsed.top_p })
-        : isFeath2
-        ? await featherlessChat(model, cleanMsgs2, cleanTools2, isStream, { max_tokens: parsed.max_tokens, temperature: parsed.temperature, top_p: parsed.top_p })
         : isAg2
         ? await agnesChat(model, cleanMsgs2, cleanTools2, isStream, { ...parsed })
-        : isCs2
+        : isCd2
         ? await codestralChat(model, cleanMsgs2, cleanTools2, isStream, { max_tokens: parsed.max_tokens, temperature: parsed.temperature, top_p: parsed.top_p })
         : isBn2
         ? await bitnetChat(model, cleanMsgs2, cleanTools2, isStream, { max_tokens: parsed.max_tokens, temperature: parsed.temperature, top_p: parsed.top_p })
@@ -1213,13 +1186,13 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
     await ensureModels();
     const modelOverrides: Record<string, string> = {
       "gpt-4o": "", "gpt-4": "", "gpt-3.5-turbo": "", "gpt-4-turbo": "",
-      "claude-haiku-4.5": "", "gpt-5-mini": "", "gpt-4.1": "", "pol/openai-fast": "", "qwen3.5-plus": "",
+      "claude-haiku-4.5": "", "gpt-5-mini": "", "gpt-4.1": "", "qwen3.5-plus": "",
     };
     if (modelOverrides[model] !== undefined) {
       const real = FAKE_MODELS.find((m: any) => m.id.startsWith("deepseek") && !m.id.includes("-embedding"))
         || FAKE_MODELS.find((m: any) => {
           const v = detectVendor(m.id);
-          return !m.id?.startsWith("pol/") && !m.id?.includes("-embedding") && v !== "MiniMax" && v !== "Moonshot AI" && v !== "Zhipu AI" && v !== "Alibaba Cloud";
+          return !m.id?.includes("-embedding") && v !== "MiniMax" && v !== "Moonshot AI" && v !== "Zhipu AI" && v !== "Alibaba Cloud";
         });
       model = real?.id || model;
     }
@@ -1227,7 +1200,7 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
       const real = FAKE_MODELS.find((m: any) => m.id.startsWith("deepseek") && !m.id.includes("-embedding"))
         || FAKE_MODELS.find((m: any) => {
           const v = detectVendor(m.id);
-          return !m.id?.startsWith("pol/") && !m.id?.includes("-embedding") && v !== "MiniMax" && v !== "Moonshot AI" && v !== "Zhipu AI" && v !== "Alibaba Cloud";
+          return !m.id?.includes("-embedding") && v !== "MiniMax" && v !== "Moonshot AI" && v !== "Zhipu AI" && v !== "Alibaba Cloud";
         });
       model = real?.id || (FAKE_MODELS.length > 0 ? FAKE_MODELS[0].id : "big-pickle");
     }
@@ -1238,7 +1211,7 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
     ];
 
     const tag = agentTag(headers);
-    const provider = model.startsWith("pol/") ? "poll" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "go";
+    const provider = model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "go";
     const completeLog = reqLog({ tag, provider, model, preview: userContent, body: parsed });
     const startTime = Date.now();
 
@@ -1248,18 +1221,15 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
       const cleanTools3 = scrubbed3.tools;
       const cleanTools3Compressed = compressToolDefinitions(cleanTools3);
       const isFb3 = model.startsWith("freebuff/");
-      const isPol3 = model.startsWith("pol/");
-      const isFeath3 = model.startsWith("featherless/");
       const isAg3 = model.startsWith("agnes");
+      const isCd3 = model.startsWith("codestral");
       const isBn3 = model === "bitnet-demo" || model.startsWith("bitnet/");
       const resp = isFb3
         ? await freebuffChat(model, cleanMsgs3, cleanTools3, isStream, { max_tokens: parsed.max_tokens, temperature: parsed.temperature, top_p: parsed.top_p, ...parsed })
-        : isPol3
-        ? await pollChat(model, cleanMsgs3, cleanTools3, isStream, { max_tokens: parsed.max_tokens, temperature: parsed.temperature, top_p: parsed.top_p })
-        : isFeath3
-        ? await featherlessChat(model, cleanMsgs3, cleanTools3, isStream, { max_tokens: parsed.max_tokens, temperature: parsed.temperature, top_p: parsed.top_p })
         : isAg3
         ? await agnesChat(model, cleanMsgs3, cleanTools3, isStream, { ...parsed })
+        : isCd3
+        ? await codestralChat(model, cleanMsgs3, cleanTools3, isStream, { max_tokens: parsed.max_tokens, temperature: parsed.temperature, top_p: parsed.top_p })
         : isBn3
         ? await bitnetChat(model, cleanMsgs3, cleanTools3, isStream, { max_tokens: parsed.max_tokens, temperature: parsed.temperature, top_p: parsed.top_p })
         : await opencodeChat(model, cleanMsgs3, cleanTools3, isStream, { ...parsed });
@@ -1805,47 +1775,19 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
       }
     }
 
-    // 2) Fallback: Mistral FIM if key available
-    if (!completion) {
-      const completionsModel = getCompletionsModel();
-      if (completionsModel) {
-        try {
-          const resp = await codestralCompletions(prompt, parsed.suffix || "", completionsModel, {
-            max_tokens: parsed.max_tokens,
-            temperature: parsed.temperature,
-            top_p: parsed.top_p,
-            stop: parsed.stop,
-            stream: isStream,
-          });
-
-          if (isStream) {
-            const sock = req.clientSocket;
-            if (sock) {
-              const respHead = `HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-store\r\naccess-control-allow-origin: *\r\nx-accel-buffering: no\r\nconnection: close\r\n\r\n`;
-              sock.write(respHead);
-              const reader = resp.body!.getReader();
-              const decoder = new TextDecoder();
-              let len = 0;
-              while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                const chunk = decoder.decode(value, { stream: true });
-                sock.write(chunk);
-                len += chunk.length;
-              }
-              sock.end();
-              if (completionsComplete) completionsComplete(Date.now() - completionsStart);
-              return { handled: true, response: { statusCode: 200, headers: {}, body: Buffer.alloc(0), _streamed: true } };
-            }
-          }
-
+    // 2) Try dashboard completions model (e.g. codestral) using legacy FIM
+    const completionsModel = getCompletionsModel();
+    if (!completion && completionsModel && completionsModel.startsWith("codestral")) {
+      try {
+        const suffix = parsed.suffix || "";
+        const resp = await codestralFim(prompt, suffix, completionsModel, { max_tokens: parsed.max_tokens ?? 500, temperature: parsed.temperature ?? 0.2, top_p: parsed.top_p ?? 1, stream: false });
+        if (resp.ok) {
           const data: any = await resp.json();
-          if (completionsComplete) completionsComplete(Date.now() - completionsStart);
-          console.log(`[CODESTRAL] ${tag} completions → ${data.choices?.length || 0} choices`);
-          return { handled: true, response: jsonResponse(data) };
-        } catch (e: any) {
-          console.log(`[CODESTRAL] ${tag} completions error: ${e.message}`);
+          completion = data.choices?.[0]?.text || data.choices?.[0]?.message?.content || "";
+          if (completion) console.log(`[CODESTRAL FIM] ${tag} result: "${completion.substring(0, 80)}"`);
         }
+      } catch (e: any) {
+        console.log(`[CODESTRAL FIM] ${tag} error: ${e.message}`);
       }
     }
 

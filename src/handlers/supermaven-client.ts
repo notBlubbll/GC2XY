@@ -295,6 +295,17 @@ export class SupermavenClient {
     return completion || "No completion available";
   }
 
+  async chatCompletion(prompt: string, options: { model?: string } = {}): Promise<string> {
+    await this.initialize();
+    if (!this.binaryPath || !this.binaryProcess) {
+      throw new Error("Supermaven sm-agent binary not available.");
+    }
+    console.log(`[Supermaven] chatCompletion prompt (${prompt.length} chars): "${prompt.substring(0, 80)}..."`);
+    const completion = await this.getCompletion(prompt, prompt.length);
+    console.log(`[Supermaven] chatCompletion result: "${(completion || "").substring(0, 80)}"`);
+    return completion || "";
+  }
+
   cleanup(): void {
     if (this.binaryProcess) {
       this.binaryProcess.kill();
@@ -319,6 +330,14 @@ export async function initSupermaven(): Promise<void> {
 export async function supermavenCodeComplete(prompt: string): Promise<string> {
   const client = getSupermavenClient();
   return client.codeComplete(prompt);
+}
+
+// New: simple chat via the Supermaven sm-agent binary. The agent
+// is not a real chat model — it performs completion on the whole
+// conversation-turn text. We still expose it as a test-chat option.
+export async function supermavenChatComplete(prompt: string, options: { model?: string } = {}): Promise<string> {
+  const client = getSupermavenClient();
+  return client.chatCompletion(prompt, options);
 }
 
 export function getSupermavenStatus(): { enabled: boolean; initialized: boolean; binaryPath: string | null } {

@@ -1,5 +1,5 @@
 import forge from "node-forge";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -152,7 +152,7 @@ export function setMode(m: ProxyMode) {
     const configPath = join(configDir, "config.json");
     const cfg = existsSync(configPath) ? JSON.parse(readFileSync(configPath, "utf-8")) : {};
     cfg.mode = m;
-    if (!existsSync(configDir)) try { writeFileSync(join(configDir, ".gitkeep"), ""); } catch {}
+    if (!existsSync(configDir)) try { mkdirSync(configDir, { recursive: true }); } catch {}
     writeFileSync(configPath, JSON.stringify(cfg, null, 2));
     const envPath = join(configDir, ".env");
     if (existsSync(envPath)) {
@@ -377,7 +377,7 @@ export function stripCopilotGreeting(text: string): string {
 export function killPortProcess(port: number): void {
   try {
     spawnSync("powershell", ["-NoP", "-Command",
-      `Get-NetTCPConnection -LocalPort ${port} -ErrorAction SilentlyContinue | Select -ExpandProperty OwningProcess | ForEach-Object { taskkill /F /PID $_ 2>$null }`
+      `Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort ${port} -ErrorAction SilentlyContinue | Select -ExpandProperty OwningProcess | ForEach-Object { taskkill /F /PID $_ 2>$null }`
     ], { timeout: 5000, windowsHide: true });
   } catch {}
 }

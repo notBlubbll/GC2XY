@@ -326,8 +326,16 @@ export function handleAuth(req: HandlerInput): HandlerResult {
     return { handled: true, response: jsonResponse({ error: "invalid_request", error_description: "Missing grant_type or device_code" }, 400) };
   }
 
-  // GET /login - Login page (redirect to account picker or device flow)
+  // GET /login - Login page (redirect to account picker or device flow, or to return_to)
   if (method === "GET" && (url === "/login" || url.startsWith("/login?"))) {
+    const qIdx = url.indexOf("?");
+    const params = qIdx >= 0 ? new URLSearchParams(url.slice(qIdx + 1)) : new URLSearchParams();
+    const returnTo = params.get("return_to");
+    if (returnTo) {
+      const target = /^https?:\/\//.test(returnTo) ? returnTo : "https://github.com" + returnTo;
+      console.log(`[FAKE LOGIN] /login?return_to= redirecting to ${target}`);
+      return { handled: true, response: { statusCode: 307, headers: { location: target, "cache-control": "no-store" }, body: Buffer.alloc(0) } };
+    }
     console.log("\n[FAKE DEVICE LOGIN] Login page request, redirecting to account picker...");
     return { handled: true, response: { statusCode: 302, headers: { location: "/login/device/select_account", "cache-control": "no-store" }, body: Buffer.alloc(0) } };
   }

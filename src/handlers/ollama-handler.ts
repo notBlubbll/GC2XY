@@ -30,7 +30,7 @@ function normalizeToOpenCodeModel(raw: string): string {
   const aliases: Record<string, string> = {
     "gpt-4o": "deepseek-v4-pro", "gpt-4": "deepseek-v4-flash", "gpt-3.5-turbo": "qwen3.5-plus",
     "gpt-4-turbo": "deepseek-v4-pro", "claude-haiku-4.5": "qwen3.5-plus",
-    "gpt-5-mini": "minimax-m2.5", "gpt-4.1": "deepseek-v4-flash", "pol/openai-fast": "qwen3.5-plus",
+    "gpt-5-mini": "minimax-m2.5", "gpt-4.1": "deepseek-v4-flash",
   };
   return aliases[l] || model;
 }

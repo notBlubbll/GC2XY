@@ -32,6 +32,8 @@ if exist .dist (
 )
 mkdir .dist 2>nul
 if not exist .dist mkdir .dist
+mkdir .dist\src 2>nul
+if not exist .dist\src mkdir .dist\src
 
 :: -- Step 1: Copy source files --
 echo [1/5] Copying source files...
@@ -76,6 +78,18 @@ mkdir .dist\.certs 2>nul
 if exist certs xcopy /s /i /q /y certs .dist\.certs >nul 2>&1
 if exist .certs xcopy /s /i /q /y .certs .dist\.certs >nul 2>&1
 
+:: Compile tray watcher if sources exist / no compiled exe yet
+if exist src\tray-watcher.cs (
+    copy /y src\tray-watcher.cs .dist\src\tray-watcher.cs >nul 2>&1
+    if not exist .dist\gc2xy-tray.exe (
+        if exist "%SystemRoot%\Microsoft.NET\Framework64\v4.0.30319\csc.exe" (
+            "%SystemRoot%\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /target:winexe /platform:anycpu /out:.dist\gc2xy-tray.exe .dist\src\tray-watcher.cs >nul 2>&1
+        ) else if exist "%SystemRoot%\Microsoft.NET\Framework\v4.0.30319\csc.exe" (
+            "%SystemRoot%\Microsoft.NET\Framework\v4.0.30319\csc.exe" /nologo /target:winexe /platform:anycpu /out:.dist\gc2xy-tray.exe .dist\src\tray-watcher.cs >nul 2>&1
+        )
+    )
+)
+
 :: -- Step 3b: Create start scripts --
 echo [3/5] Creating mode-specific launchers...
 
@@ -93,7 +107,7 @@ echo if errorlevel 1 goto :run_direct >> .dist\start-mock.cmd
 echo if not "%%WT_SESSION%%"=="" goto :run_direct >> .dist\start-mock.cmd
 echo. >> .dist\start-mock.cmd
 echo :: Relaunch in Windows Terminal >> .dist\start-mock.cmd
-echo wt.exe new-tab --title "gc2xy - MOCK" cmd /k "cd /d \"%%~dp0\" ^&^& \"%%~dp0service-mock.exe\"" >> .dist\start-mock.cmd
+echo wt.exe new-tab --title "gc2xy - MOCK" cmd /k cd /d "%%~dp0" ^&^& "%%~dp0service-mock.exe" >> .dist\start-mock.cmd
 echo exit /b 0 >> .dist\start-mock.cmd
 echo. >> .dist\start-mock.cmd
 echo :run_direct >> .dist\start-mock.cmd
@@ -113,7 +127,7 @@ echo if errorlevel 1 goto :run_direct >> .dist\start-hybrid.cmd
 echo if not "%%WT_SESSION%%"=="" goto :run_direct >> .dist\start-hybrid.cmd
 echo. >> .dist\start-hybrid.cmd
 echo :: Relaunch in Windows Terminal >> .dist\start-hybrid.cmd
-echo wt.exe new-tab --title "gc2xy - HYBRID" cmd /k "cd /d \"%%~dp0\" ^&^& \"%%~dp0service-hybrid.exe\"" >> .dist\start-hybrid.cmd
+echo wt.exe new-tab --title "gc2xy - HYBRID" cmd /k cd /d "%%~dp0" ^&^& "%%~dp0service-hybrid.exe" >> .dist\start-hybrid.cmd
 echo exit /b 0 >> .dist\start-hybrid.cmd
 echo. >> .dist\start-hybrid.cmd
 echo :run_direct >> .dist\start-hybrid.cmd
@@ -133,7 +147,7 @@ echo if errorlevel 1 goto :run_direct >> .dist\start-proxy.cmd
 echo if not "%%WT_SESSION%%"=="" goto :run_direct >> .dist\start-proxy.cmd
 echo. >> .dist\start-proxy.cmd
 echo :: Relaunch in Windows Terminal >> .dist\start-proxy.cmd
-echo wt.exe new-tab --title "gc2xy - PROXY" cmd /k "cd /d \"%%~dp0\" ^&^& \"%%~dp0service-proxy.exe\"" >> .dist\start-proxy.cmd
+echo wt.exe new-tab --title "gc2xy - PROXY" cmd /k cd /d "%%~dp0" ^&^& "%%~dp0service-proxy.exe" >> .dist\start-proxy.cmd
 echo exit /b 0 >> .dist\start-proxy.cmd
 echo. >> .dist\start-proxy.cmd
 echo :run_direct >> .dist\start-proxy.cmd
@@ -194,12 +208,14 @@ echo   Type:   Node.js portable distribution
 echo   OS:     Any Windows (Server 2016+)
 echo   Run:    .dist\service-mock.exe   OR   .dist\start-mock.cmd
 echo.
-echo   Contents:
-echo     node                    Node.js runtime
-echo     src/                    TypeScript source files
-echo     node_modules/           Production dependencies
-echo     .config\                Configuration files
-echo     service-mock.exe        Launcher ^(MOCK mode^)
+    echo   Contents:
+    echo     node                    Node.js runtime
+    echo     src/                    TypeScript source files
+    echo     node_modules/           Production dependencies
+    echo     .config\                Configuration files
+    echo     gc2xy-tray.exe          Tray watcher ^(minimize to tray^)
+    echo     service-mock.exe        Launcher ^(MOCK mode^)
+
 echo     service-hybrid.exe      Launcher ^(HYBRID mode^)
 echo     service-proxy.exe Launcher ^(PROXY mode^)
 echo     start-mock.cmd          One-shot MOCK launcher
@@ -271,8 +287,15 @@ class ServiceWrapper
         SafeSetTitle("gc2xy - " + mode.ToUpper());
         StopExistingInstances();
 
+        string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+
         // Auto-detect Windows Terminal: relaunch in WT unless ENFORCE_CMD=1 or already in WT
         if (TryLaunchInWT())
+            return 0;
+
+        // When launched standalone, optionally host in a tray watcher that hides
+        // the console window on minimize. Skipped when running as a Windows Service.
+        if (TryLaunchInTray(baseDir))
             return 0;
 
         return RunServerLoop(interactive: true);
@@ -529,6 +552,38 @@ class ServiceWrapper
                 Arguments = "new-tab --title \"gc2xy - " + mode.ToUpper() + "\" --startingDirectory \"" + baseDir + "\" cmd /k \"\\\"" + exePath + "\\\"\"",
                 UseShellExecute = true,
             };
+            Process.Start(psi);
+            return true;
+        }
+        catch { }
+        return false;
+    }
+
+    static bool TryLaunchInTray(string baseDir)
+    {
+        if (Environment.GetEnvironmentVariable("ENFORCE_CMD") == "1")
+            return false;
+        if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("WT_SESSION")))
+            return false;
+
+        string trayPath = Path.Combine(baseDir, "gc2xy-tray.exe");
+        if (!File.Exists(trayPath))
+            return false;
+
+        try
+        {
+            string exePath = Process.GetCurrentProcess().MainModule.FileName;
+            if (Environment.GetEnvironmentVariable("gc2xy_TRAY_DONE") == "1")
+                return false;
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = trayPath,
+                Arguments = "\"" + exePath + "\"",
+                WorkingDirectory = baseDir,
+                UseShellExecute = false,
+            };
+            psi.EnvironmentVariables["TRAY_WATCH_TITLE"] = "gc2xy - " + mode.ToUpper();
             Process.Start(psi);
             return true;
         }

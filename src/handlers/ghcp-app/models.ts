@@ -3,6 +3,7 @@ import { getModelCtx, modelHasVision, getModelDisplayName } from "../opencode-cl
 import { getFreebuffModelPremium } from "../freebuff-client.ts";
 import { addModels } from "../../models.ts";
 import { isDebug } from "../../split-console.ts";
+import { filterModelsByConfig } from "../dashboard-handler.ts";
 
 const GHCP_MODELS: any[] = [];
 let _lastModelIds: string[] = [];
@@ -80,12 +81,13 @@ function modelLimits(id: string): any {
 }
 
 function isFreeModel(id: string): boolean {
-  return id.startsWith("pol/") || id.startsWith("agnes");
+  return id.startsWith("agnes");
 }
 
 async function ensureModels() {
   if (_rebuilding) return;
-  const modelIds = await addModels();
+  let modelIds = await addModels();
+  modelIds = filterModelsByConfig(modelIds);
 
   const changed = modelIds.length !== _lastModelIds.length ||
     modelIds.some((id, i) => id !== _lastModelIds[i]);
@@ -114,7 +116,7 @@ async function ensureModels() {
       model_picker_enabled: true,
       is_chat_default: true,
       is_chat_fallback: true,
-      billing: free ? { token_prices: { batch_size: 1000000, cache_price: 0, input_price: 0, output_price: 0 } } : { is_premium: true, multiplier: id.startsWith("pol/") ? 1 : (getModelCtx(id) || limits.max_context_window_tokens), restricted_to: ["pro", "pro_plus", "business", "enterprise", "max"] },
+      billing: free ? { token_prices: { batch_size: 1000000, cache_price: 0, input_price: 0, output_price: 0 } } : { is_premium: true, multiplier: getModelCtx(id) || limits.max_context_window_tokens, restricted_to: ["pro", "pro_plus", "business", "enterprise", "max"] },
       policy: { state: "enabled", terms: `Enable access to the ${id} model. [Learn more](https://opencode.ai)` },
       supported_endpoints: ["/chat/completions", "/v1/messages"],
       capabilities: {

@@ -588,7 +588,7 @@ export function salvageToolCall(tc: any): any | null {
       }
     }
     if (/^lookup_vs$/i.test(name)) {
-      const terms: string[] = [];
+      let terms: string[] = [];
       const tArr = new RegExp('"terms"\\s*:\\s*\\[(.*?)(?:\\]|$)', "s").exec(src);
       if (tArr) {
         const inner = tArr[1];

@@ -24,9 +24,7 @@ for /f %%p in (.cache\proxy-host-pid) do (
 del .cache\proxy-host-pid >nul 2>&1
 :skip_pid_kill
 
-taskkill /F /IM bun.exe >nul 2>&1
-taskkill /F /IM node.exe >nul 2>&1
-timeout /t 1 /nobreak >nul
+
 
 echo [2/4] Removing hosts file redirect entries...
 set "HOSTS=C:\Windows\System32\drivers\etc\hosts"
@@ -57,19 +55,19 @@ echo   CA certificate removed.
 echo [4/4] Releasing ports...
 sc query w3svc | findstr "RUNNING" >nul 2>&1
 if %ERRORLEVEL% EQU 0 goto :iis_cleanup
-echo   Releasing ports 80 and 443
-powershell -NoProfile "Get-NetTCPConnection -LocalPort 80 -ErrorAction SilentlyContinue | Select -ExpandProperty OwningProcess | ForEach-Object { taskkill /F /PID $_ 2>$null }" >nul 2>&1
-powershell -NoProfile "Get-NetTCPConnection -LocalPort 443 -ErrorAction SilentlyContinue | Select -ExpandProperty OwningProcess | ForEach-Object { taskkill /F /PID $_ 2>$null }" >nul 2>&1
+echo   Releasing ports 80 and 443 on 127.0.0.1
+powershell -NoProfile "Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort 80 -ErrorAction SilentlyContinue | Select -ExpandProperty OwningProcess | ForEach-Object { taskkill /F /PID $_ 2>$null }" >nul 2>&1
+powershell -NoProfile "Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort 443 -ErrorAction SilentlyContinue | Select -ExpandProperty OwningProcess | ForEach-Object { taskkill /F /PID $_ 2>$null }" >nul 2>&1
 goto :clean_done
 
 :iis_cleanup
-echo   IIS detected - cleaning SSL bindings + port 80
+echo   IIS detected - cleaning SSL bindings + port 80 on 127.0.0.1
 for %%h in (github.com www.github.com api.github.com api.githubcopilot.com copilot-proxy.githubusercontent.com api.individual.githubcopilot.com origin-tracker.individual.githubcopilot.com proxy.individual.githubcopilot.com telemetry.individual.githubcopilot.com) do (
     netsh http delete sslcert "hostnameport=%%h:443" >nul 2>&1
 )
 netsh http delete sslcert "ipport=0.0.0.0:443" >nul 2>&1
 netsh http delete sslcert "ipport=[::]:443" >nul 2>&1
-powershell -NoProfile "Get-NetTCPConnection -LocalPort 80 -ErrorAction SilentlyContinue | Select -ExpandProperty OwningProcess | ForEach-Object { taskkill /F /PID $_ 2>$null }" >nul 2>&1
+powershell -NoProfile "Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort 80 -ErrorAction SilentlyContinue | Select -ExpandProperty OwningProcess | ForEach-Object { taskkill /F /PID $_ 2>$null }" >nul 2>&1
 
 :clean_done
 echo.

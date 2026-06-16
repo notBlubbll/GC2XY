@@ -70,7 +70,7 @@ sc failure w3svc reset= 86400 actions= restart/5000/restart/10000/restart/30000
 | `!REMOVE.cmd` | Kill proxy, clean hosts, remove CA cert (IIS-aware port cleanup) |
 | `mitm-proxy.ts` | Main proxy: TLS/HTTP servers, hosts redirect, interceptor engine, request forwarding, cache integration, **deletes `package-lock.json` on startup** (avoids stale lock) |
 | `cache.ts` | Auto-cache: saves upstream responses to `cache/<sanitized-url>.json`; loads before fake handlers in mock mode |
-| `split-console.ts` | Console dashboard TUI: status banner with model column (grouped by provider: POLL / FREEBUFF / FEATHERLESS / OC-GO / OTHER), log buffer, keyboard commands, debug/record/restart toggles, mode switching, terminal resize handling, **Windows Terminal tab color** via `settings.json` hot-reload |
+| `split-console.ts` | Console dashboard TUI: status banner with model column (grouped by provider: FREEBUFF / CODESTRAL / OC-GO / OTHER), log buffer, keyboard commands, debug/record/restart toggles, mode switching, terminal resize handling, **Windows Terminal tab color** via `settings.json` hot-reload |
 | `handlers/anthropic-bridge.ts` | Anthropic→OpenAI request conversion via `llm-bridge` library (system prompt, tool_use/tool_result, thinking blocks) |
 | `handlers/freebuff-client.ts` | Freebuff provider: embedded Codebuff free-tier pipeline. Session management, token pool, run chains, dynamic model registry (fetches from Codebuff GitHub + hardcoded fallback), dynamic User-Agent version detection, chat completion forwarding |
 | `handlers/device-login-emulator.ts` | Route dispatcher: vs-auth → auth → repo → ghcp-app → vs → copilot → catch-all (`handleVSAuth` runs first so VS gets enterprise plan) |
@@ -155,7 +155,7 @@ The proxy supports **5 upstream model providers** determined by model ID prefix.
    - Freebuff models from Codebuff's GitHub TypeScript sources (`freebuff-models.ts`, `free-agents.ts`, `model-config.ts`) with hardcoded fallback (7 models: DeepSeek V4 Pro, DeepSeek V4 Flash, MiMo 2.5, MiMo 2.5 Pro, Kimi K2.6, MiniMax M2.7, MiniMax M3)
    - Cached to `.cache/models-{go,poll}.json`
 
-4. **Dashboard grouping**: The dashboard WebSocket snapshot includes `providerTag` for each model ("go", "poll", "freebuff", "agnes", "zen", "bitnet", "codestral", "featherless", "openrouter") and renders them grouped by provider with headers: **OC-GO**, **POLL**, **FREEBUFF**, **AGNES**, **BITNET**, **CODESTRAL**, **FEATHERLESS**, **OPENROUTER**, **OC-ZEN**.
+4. **Dashboard grouping**: The dashboard WebSocket snapshot includes `providerTag` for each model ("go", "poll", "freebuff", "agnes", "zen", "bitnet", "openrouter") and renders them grouped by provider with headers: **OC-GO**, **POLL**, **FREEBUFF**, **AGNES**, **BITNET**, **OPENROUTER**, **OC-ZEN**.
 
 5. **Provider toggles**: The dashboard Proxy Config section includes **checkbox toggles** for each provider (OC-GO, FREEBUFF, AGNES). Multiple providers can be active simultaneously. Active providers are persisted to `.config/config.json` as an array. **AGNES auto-activation**: When an AGNES API key is saved (via dashboard or directly in `config.json`), the `"agnes"` provider is automatically added to `_activeProviders` — no need to manually check the AGNES checkbox.
 
@@ -459,9 +459,9 @@ The dashboard Proxy Configuration section includes a **Wallpaper** radio group w
 - **None** — plain black background
 - **Bing** — daily Bing wallpaper, cached to `.cache/wallpaper-bing.jpg`
 - **Wallhaven** — random SFW wallpaper from Wallhaven's monthly top list (page 3), cached to `.cache/wallpaper-haven.jpg`
-- **AI** — Agnes image generation (gated on Agnes API key being set). Prompt input + **Save** button shown only when an Agnes key is configured.
+- **AI (FreeGen)** — AI-generated wallpaper from a user prompt via `freegen.app` pipeline (prompt signer + image generator + WebSocket bridge). Cached to `.cache/wallpaper-freegen.jpg` with an atomic pending/current swap. Default prompt is `epic cinematic landscape, mountains at sunset, vibrant colors, ultra detailed, 16:9 wallpaper`.
 
-Wallpapers are fetched on-demand when the WebSocket connects and cached for **1 hour**. The cached image is base64-encoded and pushed to the client as a **WebSocket `wallpaperData` message** with a `dataUri` field — the client applies it as a CSS background directly, no HTTP roundtrip. A `/api/bg` HTTP fallback endpoint exists server-side but is no longer used by the dashboard. Wallhaven uses the API at `https://wallhaven.cc/api/v1/search?categories=100&purity=100&topRange=1M&sorting=toplist&order=desc&page=3` and picks a random result.
+Wallpapers are fetched on-demand when the WebSocket connects and cached for **1 hour** (FreeGen uses its own generation state and background refresh). The cached image is base64-encoded and pushed to the client as a **WebSocket `wallpaperData` message** with a `dataUri` field — the client applies it as a CSS background directly, no HTTP roundtrip. A `/api/bg` HTTP fallback endpoint exists server-side but is no longer used by the dashboard. Wallhaven uses the API at `https://wallhaven.cc/api/v1/search?categories=100&purity=100&topRange=1M&sorting=toplist&order=desc&page=3` and picks a random result.
 
 The wallpaper source is stored in `localStorage` (`gc2xy_wallpaper`) and in `.config/config.json` (`wallpaper` field). On initial snapshot load, the radio button is auto-selected. The client stores the current `dataUri` in a global `_wallpaperDataUri` variable; when empty, non-AI wallpaper selections fall back to `/api/bg`.
 
@@ -477,11 +477,22 @@ The wallpaper source is stored in `localStorage` (`gc2xy_wallpaper`) and in `.co
 
 The 1-hour cache on `.cache/ai-paper.jpg` (via `fetchAiWallpaper()`) means successful Agnes generations are reused; the Bing fallback also lands in this file and is reused until the next generation attempt or prompt change (which calls `unlinkSync` to clear it).
 
+#### FreeGen Wallpaper Flow
+
+`generateFreegenWallpaperToDisk()` in `dashboard-handler.ts:
+
+1. **Prompt signing** — `POST https://prompt-signer.freegen.app/api/test` obtains `{ ts, sig }`.
+2. **Image generation** — `POST https://image-generator.freegen.app/api/test` with `{ prompt, ts, sig, ratio_id: "16:9" }`. Either returns `image_data_url` immediately or `job_id` for async jobs.
+3. **WebSocket bridge** — if `job_id` is returned, subscribes via native WebSocket to `wss://websocket-bridge.freegen.app/ws` (Origin: `https://freegen.app`) and waits for `{type: "result", image_data: <url>}` or `{type: "error"}`.
+4. **Download + atomic swap** — the image is downloaded to `.cache/wallpaper-freegen.pending.jpg`, then `renameSync` to `.cache/wallpaper-freegen.jpg` (prevents partial image exposure).
+5. **Background refresh** — after serving `/dashboard` with the current FreeGen wallpaper embedded, a background refresh is queued to generate the next wallpaper for the following visit.
+
 | WS Action | Purpose |
 |-----------|---------|
 | `setWallpaper` | Set wallpaper source, cache the image, push `wallpaperData` to client |
 | `getBingBg` | Get current wallpaper (legacy name, works for all sources), push `wallpaperData` to client |
-| `wallpaperError` | (Server → client) Real Agnes failure (auth/rate-limit/parse); client shows red toast |
+| `generateFreegenWallpaper` | Start FreeGen generation with prompt/ratio; broadcasts `wallpaperData` and progress |
+| `wallpaperError` | (Server → client) Real Agnes/FreeGen failure (auth/rate-limit/parse); client shows red toast |
 | `wallpaperFallback` | (Server → client) Agnes succeeded but CDN blocked; client shows warning toast, Bing image is displayed |
 
 ### API Endpoints
@@ -493,13 +504,13 @@ All read/status data is delivered via WebSocket push (delta-based, only on chang
 | `/dashboard` or `/` | GET | Serve dashboard HTML page |
 | `/api/init` | GET | Initial snapshot (status, models, keys, health) — called once on page load |
 
-All mutations (toggle model, CRUD keys, set mode/provider, save/clear sessions, restart, fetch wallpaper/zen stats/workspace usage) are sent as **WebSocket action messages** to `ws://127.0.0.1:3441/ws` (piped through `wss://host/ws` from TLS handler).
+All mutations (toggle model, CRUD keys, set mode/provider, save/clear sessions, restart, generate FreeGen wallpaper, fetch wallpaper/zen stats/workspace usage) are sent as **WebSocket action messages** to `ws://127.0.0.1:3441/ws` (piped through `wss://host/ws` from TLS handler).
 
 ### Files
 | File | Purpose |
 |------|---------|
 | `dashboard.html` | Web dashboard HTML (project root) |
-| `src/handlers/dashboard-handler.ts` | Dashboard handler: serves HTML + JSON API endpoints. OpenCode key validation, ZEN key CRUD, Freebuff config (URL + API key), provider toggle, session login, stats aggregation, Bearer/cookie two-tier ZEN auth, ZEN model list, OpenCode workspace usage. **AI wallpaper** generation via Agnes API with **Bing fallback** when the Agnes CDN is unreachable (corporate proxy / WAF / self-signed cert). **WebSocket server** on `127.0.0.1:3441` (`gc2xy_WS_PORT`) — snapshot/diff push system pushes delta patches only when data changes, never polling. WS action handler for all mutations (toggle model, save config, key CRUD, restart, set provider, etc.) |
+| `src/handlers/dashboard-handler.ts` | Dashboard handler: serves HTML + JSON API endpoints. OpenCode key validation, ZEN key CRUD, Freebuff config (URL + API key), provider toggle, session login, stats aggregation, Bearer/cookie two-tier ZEN auth, ZEN model list, OpenCode workspace usage. **AI wallpaper** generation via Agnes API with **Bing fallback** when the Agnes CDN is unreachable (corporate proxy / WAF / self-signed cert). **FreeGen wallpaper** generation via `freegen.app` pipeline with atomic pending/current swap and WebSocket delivery. **WebSocket server** on `127.0.0.1:3441` (`gc2xy_WS_PORT`) — snapshot/diff push system pushes delta patches only when data changes, never polling. WS action handler for all mutations (toggle model, save config, key CRUD, restart, set provider, generate FreeGen wallpaper, etc.) |
 | `src/opencode-workspace.ts` | Workspace usage fetcher: extracts workspace IDs + rolling/weekly/monthly usage from opencode.ai `/go` page `$R` data |
 | `src/mitm-proxy.ts` | Routes `/dashboard` and `/api/*` in all modes (mock/hybrid/proxy). Detects `Upgrade: websocket` in TLS handler → pipes upgraded socket to WebSocket server on `WS_PORT` |
 
@@ -786,7 +797,7 @@ See `skills.md` → **Interceptor Development** for detailed handler chain prior
 
 ## Env Variables
 
-> **Always use `.config/config.json` for configs, API keys, and provider settings** (e.g. `opencodeKey`, `codestralKey`, `pollApiKey`, `freebuffTokens`, `wallpaper`, `providers`, `disabledModels`, `workspaceKeyStates`). The `.env` file is reserved for runtime/process flags only (port overrides, mode, IIS auto-detect, ENFORCE_NODE/ENFORCE_CMD). Never put secrets or per-provider keys in `.env` — they are persisted via the dashboard UI or by editing `config.json` directly. Each provider client reads its key from `config.json` (e.g. `getPollKey()` in `pollinations-client.ts`, `getCodestralKey()` in `codestral-client.ts`).
+> **Always use `.config/config.json` for configs, API keys, and provider settings** (e.g. `opencodeKey`, `pollApiKey`, `freebuffTokens`, `wallpaper`, `providers`, `disabledModels`, `workspaceKeyStates`). The `.env` file is reserved for runtime/process flags only (port overrides, mode, IIS auto-detect, ENFORCE_NODE/ENFORCE_CMD). Never put secrets or per-provider keys in `.env` — they are persisted via the dashboard UI or by editing `config.json` directly. Each provider client reads its key from `config.json` (e.g. `getPollKey()` in `pollinations-client.ts`).
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -847,8 +858,7 @@ The dashboard width fills the terminal window (no cap). Resize events trigger an
 │ █▀▀▀ █▀▀▀ █▀▀█ █▀▀█ █▀▀▀ │ POLL: pol/openai-fast                   │
 │ █ ▀█ █      ▀█ █░░█ █░░░ │ OC-GO: minimax-m2.7, kimi-k2.5         │
 │ ▀▀▀▀ ▀▀▀▀ █▄▄█ ▀▀▀▀ ▀▀▀▀ │ deepseek-v4-pro, deepseek-v4-flash    │
-│                           │ OTHER: codestral/codestral-latest,     │
-│                           │ bitnet-demo                            │
+│                           │ OTHER: bitnet-demo                     │
 ├───────────────────────────────────────────────────────────────────┤
 │ github copilot proxy v3 │ Mode: MOCK │ Req: 0 │ ● 0.0 t/s │ Agent: GitHub Copilot Desktop ... │
 ├───────────────────────────────────────────────────────────────────┤
@@ -863,7 +873,7 @@ The status banner right column groups models into colored label rows in this ord
 - **FREEBUFF** (yellow) — `freebuff/*` (Codebuff free-tier)
 - **FEATHERLESS** (magenta) — `featherless/*` (Featherless)
 - **OC-GO** (magenta) — all default `opencode.ai/zen/go` models (catchall)
-- **OTHER** (magenta) — `codestral/*`, `bitnet-demo`, `bitnet/*` (misc non-OC-GO upstreams)
+- **OTHER** (magenta) — `bitnet-demo`, `bitnet/*` (misc non-OC-GO upstreams)
 
 Rows that have no models are omitted entirely (no empty headers).
 

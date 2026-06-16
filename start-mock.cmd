@@ -58,7 +58,7 @@ goto :detect_runtime
 :no_iis
 set WAIT=0
 :wait_ports_mock
-netstat -ano | findstr ":80 " | findstr "LISTENING" >nul 2>&1
+netstat -ano | findstr "127.0.0.1:80 " | findstr "LISTENING" >nul 2>&1
 if %ERRORLEVEL% equ 0 goto :ports_free_mock
 timeout /t 1 /nobreak >nul
 set /a WAIT+=1

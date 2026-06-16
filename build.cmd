@@ -72,8 +72,15 @@ class ServiceWrapper
         SafeSetTitle("gc2xy - " + mode.ToUpper());
         StopExistingInstances();
 
+        string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+
         // Auto-detect Windows Terminal: relaunch in WT unless ENFORCE_CMD=1 or already in WT
         if (TryLaunchInWT())
+            return 0;
+
+        // When launched standalone, optionally host in a tray watcher that hides
+        // the console window on minimize. Skipped when running as a Windows Service.
+        if (TryLaunchInTray(baseDir))
             return 0;
 
         return RunServerLoop(interactive: true);
@@ -354,6 +361,38 @@ static void StopExistingInstances()
                 Arguments = "new-tab --title \"gc2xy - " + mode.ToUpper() + "\" --startingDirectory \"" + baseDir + "\" cmd /k \"\\\"" + exePath + "\\\"\"",
                 UseShellExecute = true,
             };
+            Process.Start(psi);
+            return true;
+        }
+        catch { }
+        return false;
+    }
+
+    static bool TryLaunchInTray(string baseDir)
+    {
+        if (Environment.GetEnvironmentVariable("ENFORCE_CMD") == "1")
+            return false;
+        if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("WT_SESSION")))
+            return false;
+
+        string trayPath = Path.Combine(baseDir, "gc2xy-tray.exe");
+        if (!File.Exists(trayPath))
+            return false;
+
+        try
+        {
+            string exePath = Process.GetCurrentProcess().MainModule.FileName;
+            if (Environment.GetEnvironmentVariable("gc2xy_TRAY_DONE") == "1")
+                return false;
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = trayPath,
+                Arguments = "\"" + exePath + "\"",
+                WorkingDirectory = baseDir,
+                UseShellExecute = false,
+            };
+            psi.EnvironmentVariables["TRAY_WATCH_TITLE"] = "gc2xy - " + mode.ToUpper();
             Process.Start(psi);
             return true;
         }

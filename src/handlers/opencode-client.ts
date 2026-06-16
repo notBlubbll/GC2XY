@@ -1,7 +1,7 @@
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { isDebug, setModelsList } from "../split-console.ts";
+import { isDebug } from "../split-console.ts";
 import { getProjectRoot, normalizeTool, normalizeToolChoice } from "../shared.ts";
 
 // Reasoning cache: stores reasoning_content from DeepSeek responses
@@ -381,8 +381,11 @@ function parseRetryAfter(resp: Response): number {
   return 0;
 }
 
-function getModelTier(modelId: string): "go" | "free" | "openrouter" {
+import { chatCompletion as codestralChat } from "./codestral-client.ts";
+
+function getModelTier(modelId: string): "go" | "free" | "openrouter" | "codestral" {
   const l = modelId.toLowerCase();
+  if (l.startsWith("codestral")) return "codestral";
   if (l.startsWith("openrouter/")) return "openrouter";
   if (l.endsWith("-free") || l === "big-pickle" || l === "nemotron-3-super-free" || l === "ring-2.6-1t-free") return "free";
   return "go";
@@ -408,6 +411,9 @@ export async function chatCompletion(modelId: string, messages: any[], tools?: a
 async function _doChatCompletion(modelId: string, messages: any[], tools?: any[], stream = true, extra: Record<string, any> = {}, pinnedKeyIdx?: number, sessionLabel?: string): Promise<Response> {
   loadKeys();
   const tier = getModelTier(modelId);
+  if (tier === "codestral") {
+    return codestralChat(modelId, messages, tools, stream, extra);
+  }
   const isFree = tier === "free";
   const isOpenRouter = tier === "openrouter";
 
@@ -617,7 +623,7 @@ async function fetchGoModels(goKey: string): Promise<string[]> {
     const resp = await fetchWithTimeout("https://opencode.ai/zen/go/v1/models", { headers });
     if (resp.ok) {
       const data: any = await resp.json();
-      return (data?.data || []).map((m: any) => typeof m === "string" ? m : m.id || "").filter((id: string) => id.length > 0 && !id.toLowerCase().includes("owl") && !id.startsWith("codestral/"));
+      return (data?.data || []).map((m: any) => typeof m === "string" ? m : m.id || "").filter((id: string) => id.length > 0 && !id.toLowerCase().includes("owl"));
     }
     if (isDebug()) console.log(`\n[MODEL CACHE:GO] fetch returned ${resp.status}`);
   } catch (e: any) {
@@ -645,7 +651,7 @@ async function fetchModelCtxMap(): Promise<Record<string, number>> {
       const vis = new Set<string>();
       const fam: Record<string, string> = {};
       const nameCache: Record<string, string> = {};
-      for (const ns of ["opencode-go", "opencode"]) {
+      for (const ns of []) {
         for (const [id, info] of Object.entries(md[ns]?.models || {})) {
           const entry = info as any;
           const limit = entry?.limit;
@@ -738,7 +744,7 @@ async function fetchOpenRouterModels(): Promise<string[]> {
 async function initProviderModels(provider: Provider, goKey?: string): Promise<string[]> {
   const diskIds = loadProviderModels(provider);
   if (diskIds && diskIds.length > 0) {
-    const filtered = provider === "go" ? diskIds.filter(id => !id.toLowerCase().includes("owl") && !id.startsWith("codestral/")) : diskIds;
+    const filtered = provider === "go" ? diskIds.filter(id => !id.toLowerCase().includes("owl")) : diskIds;
     if (filtered.length !== diskIds.length && isDebug()) console.log(`\n[MODEL CACHE:GO] filtered ${diskIds.length - filtered.length} non-go models from disk`);
     if (isDebug()) console.log(`\n[MODEL CACHE:${provider.toUpperCase()}] loaded ${filtered.length} from disk`);
     return filtered;
@@ -785,7 +791,6 @@ export async function initModels(): Promise<string[]> {
   _providersInitialized = true;
 
   const allIds = [..._cachedGoIds, ..._cachedOpenRouterIds];
-  setModelsList(allIds);
   if (isDebug()) console.log(`\n[MODEL CACHE] init complete: ${allIds.length} models (${_cachedGoIds.length} go + ${_cachedOpenRouterIds.length} openrouter)`);
   return allIds;
 }
@@ -841,10 +846,8 @@ export function setDisplayNameOverride(id: string, name: string) {
 export function getModelProviderTag(modelId: string): string {
   if (modelId.startsWith("freebuff/")) return "freebuff";
   if (modelId.startsWith("openrouter/")) return "openrouter";
-  if (modelId.startsWith("featherless/")) return "featherless";
   if (modelId.startsWith("agnes")) return "agnes";
-  if (modelId.startsWith("codestral/")) return "codestral";
-  if (modelId.startsWith("pol/")) return "poll";
+  if (modelId.startsWith("codestral")) return "codestral";
   if (modelId.startsWith("bitnet/") || modelId === "bitnet-demo") return "bitnet";
   if (modelId.toLowerCase().includes("deepseek")) return "deepseek";
   if (modelId.endsWith("-free") || modelId === "big-pickle" || modelId === "nemotron-3-super-free" || modelId === "ring-2.6-1t-free") return "zen";

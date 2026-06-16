@@ -315,6 +315,8 @@
       font-variant-numeric: tabular-nums;
     }
     .test-chat-msg.user .test-chat-msg-role { color: rgba(50, 205, 50, 0.7); }
+    .test-chat-toggle { display:flex; align-items:center; gap:4px; min-height:auto; }
+    .test-chat-toggle .form-check-input:checked + .form-check-label { color:#32CD32!important; text-shadow:0 0 6px rgba(50,205,50,0.5); }
     .test-chat-empty {
       font-size: 11px;
       color: rgba(255,255,255,0.4);
@@ -444,12 +446,37 @@
               <div style="font-size:13px;font-weight:600;color:white" id="totalModels">0 / 0</div>
             </div>
             <div style="width:1px;height:24px;background:rgba(255,255,255,0.15)" id="usedTopBarSep1"></div>
+            <div class="d-flex align-items-center gap-2" style="background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.12);border-radius:8px;padding:2px 8px;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)">
+              <div style="font-size:9px;color:rgba(255,255,255,0.55);text-transform:uppercase;letter-spacing:0.6px">Window</div>
+              <div class="d-flex align-items-center gap-2">
+                <div class="text-center" style="line-height:1.1">
+                  <div style="font-size:9px;color:rgba(255,255,255,0.5)">Requests</div>
+                  <div style="font-size:13px;font-weight:600;color:white" id="windowRequests">--</div>
+                </div>
+                <div style="width:1px;height:20px;background:rgba(255,255,255,0.12)"></div>
+                <div class="text-center" style="line-height:1.1">
+                  <div style="font-size:9px;color:rgba(255,255,255,0.5)">Tokens</div>
+                  <div style="font-size:13px;font-weight:600;color:white" id="windowTokens">--</div>
+                </div>
+              </div>
+            </div>
+            <div style="width:1px;height:24px;background:rgba(255,255,255,0.15)" id="usedTopBarSep2"></div>
             <div class="text-center" style="line-height:1.1" id="quotaTopBar">
-              <div style="font-size:9px;color:rgba(255,255,255,0.5)">Quota</div>
+              <div style="font-size:9px;color:rgba(255,255,255,0.5)">90 Days</div>
               <div style="font-size:13px;font-weight:600;color:white" id="quotaDisplay" title="">n/a</div>
             </div>
           </div>
-          <div class="text-end" style="font-size:11px;color:rgba(255,255,255,0.5)" id="versionText">v3.0</div>
+          <div class="d-flex align-items-center gap-2">
+            <div class="text-center" style="line-height:1.1">
+              <div style="font-size:9px;color:rgba(255,255,255,0.5)">Account</div>
+              <div style="font-size:13px;font-weight:600;color:white;cursor:pointer" id="umansAccountTopLabel" onclick="openKeysModal()">Login</div>
+            </div>
+            <div style="width:1px;height:24px;background:rgba(255,255,255,0.15)"></div>
+            <div class="text-center" style="line-height:1.1">
+              <div style="font-size:9px;color:rgba(255,255,255,0.5)">Keys</div>
+              <div style="font-size:13px;font-weight:600;color:white;cursor:pointer" id="umansKeysTopLabel" onclick="openKeysModal()">0</div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -760,7 +787,19 @@
           <div class="card-content">
             <div class="test-chat-header">
               <span><i class="bi bi-chat-dots-fill me-2"></i>TEST CHAT</span>
-              <button class="test-chat-clear" id="testChatClearBtn" onclick="clearTestChat()" title="Clear conversation"><i class="bi bi-trash3"></i></button>
+              <div class="d-flex align-items-start gap-2">
+                <div class="d-flex flex-column gap-1">
+                  <div class="form-check form-switch mb-0 test-chat-toggle" title="Send conversation context with each message">
+                    <input class="form-check-input" type="checkbox" id="testChatContextToggle" style="margin-top:0">
+                    <label class="form-check-label" for="testChatContextToggle" style="font-size:10px;cursor:pointer;color:rgba(255,255,255,0.6)">Ctx</label>
+                  </div>
+                  <div class="form-check form-switch mb-0 test-chat-toggle" title="Stream response in real-time">
+                    <input class="form-check-input" type="checkbox" id="testChatStreamToggle" style="margin-top:0" checked>
+                    <label class="form-check-label" for="testChatStreamToggle" style="font-size:10px;cursor:pointer;color:rgba(255,255,255,0.6)">Stream</label>
+                  </div>
+                </div>
+                <button class="test-chat-clear" id="testChatClearBtn" onclick="clearTestChat()" title="Clear conversation"><i class="bi bi-trash3"></i></button>
+              </div>
             </div>
             <div class="test-chat-body">
               <div class="test-chat-model-wrap mb-2" style="width:100%;max-width:none">
@@ -789,33 +828,62 @@
 
   <div class="toast-container" id="toastContainer"></div>
 
-    <!-- Keys Management Modal -->
+    <!-- UMANS Account/Keys Modal -->
   <div class="modal fade" id="keysModal" tabindex="-1">
-    <div class="modal-dialog">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
       <div class="modal-content" style="background:rgba(0,0,0,0.9);border:1px solid rgba(255,255,255,0.15);backdrop-filter:blur(20px)">
         <div class="modal-header" style="border-bottom:1px solid rgba(255,255,255,0.1)">
-          <h5 class="modal-title" style="color:white"><i class="bi bi-key-fill me-2"></i>Manage Keys</h5>
+          <h5 class="modal-title" style="color:white"><i class="bi bi-person-workspace me-2"></i>UMANS Account</h5>
           <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
         </div>
-        <div class="modal-body">
-          <div class="mb-3" id="providerCookieRow">
-            <label class="form-label">Session Cookie <span id="providerCookieLabel" style="font-size:10px;color:rgba(255,255,255,0.5)">(auth)</span></label>
+        <div class="modal-body" id="keysModalBody">
+          <div class="pool-card mb-3" id="umansAccountCard"></div>
+          <div class="row mb-3">
+            <div class="col-md-6 mb-3 mb-md-0">
+              <div class="card" style="background:transparent;border:1px solid rgba(255,255,255,0.1)">
+                <div class="card-header" style="background:rgba(0,0,0,0.2);border-bottom:1px solid rgba(255,255,255,0.1);font-size:12px"><i class="bi bi-speedometer2 me-1"></i>Usage</div>
+                <div class="card-body" id="umansUsageContainer">
+                  <div id="umansUsageText" class="text-muted" style="font-size:12px">Loading...</div>
+                  <div class="progress mt-2" style="height:8px;background:rgba(255,255,255,0.1);display:none" id="umansUsageBarWrap"><div class="progress-bar" id="umansUsageBar" style="width:0%"></div></div>
+                </div>
+              </div>
+            </div>
+            <div class="col-md-6">
+              <div class="card" style="background:transparent;border:1px solid rgba(255,255,255,0.1)">
+                <div class="card-header" style="background:rgba(0,0,0,0.2);border-bottom:1px solid rgba(255,255,255,0.1);font-size:12px"><i class="bi bi-layers me-1"></i>Concurrency</div>
+                <div class="card-body" id="umansConcurrencyContainer">
+                  <div id="umansConcurrencyText" class="text-muted" style="font-size:12px">Loading...</div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="mb-3">
+            <label class="form-label" style="font-size:12px">Current Key</label>
+            <select class="form-select form-select-sm" id="umansModalKeySelect" onchange="umansModalSetKey(this.value)"></select>
+          </div>
+          <hr style="border-color:rgba(255,255,255,0.1)">
+          <div id="umansKeysList"></div>
+          <hr style="border-color:rgba(255,255,255,0.1)">
+          <div class="mb-3">
+            <label class="form-label" id="umansKeyFormLabel">Add New Key</label>
+            <input type="hidden" id="umansEditKeyIndex" value="-1">
+            <input type="text" class="form-control form-control-sm mb-2" id="newKeyName" placeholder="Key name">
+            <input type="text" class="form-control form-control-sm mb-2" id="newKeyKey" placeholder="UMANS API key (sk-...)">
             <div class="d-flex gap-2">
-              <input type="text" class="form-control form-control-sm" id="providerCookieInput" placeholder="auth=Fe26.2*...">
-              <button class="btn btn-sm btn-outline-action" onclick="saveProviderCookie()" style="font-size:11px;white-space:nowrap">Save</button>
-              <button class="btn btn-sm btn-outline-action" onclick="clearProviderCookie()" style="font-size:11px;white-space:nowrap">Clear</button>
+              <button class="btn btn-success btn-sm" id="umansKeyFormBtn" onclick="addKey()"><i class="bi bi-plus-circle me-1"></i>Add Key</button>
+              <button class="btn btn-secondary btn-sm" id="umansKeyFormCancel" onclick="cancelEditKey()" style="display:none"><i class="bi bi-x me-1"></i>Cancel</button>
             </div>
           </div>
           <hr style="border-color:rgba(255,255,255,0.1)">
-          <div id="keysList"></div>
-          <hr style="border-color:rgba(255,255,255,0.1)">
-          <div class="mb-3">
-            <label class="form-label">Add New Key</label>
-            <input type="text" class="form-control form-control-sm mb-2" id="newKeyName" placeholder="Key name" list="workspaceNamesList">
-            <input type="text" class="form-control form-control-sm mb-2" id="newKeyKey" placeholder="API key">
-            <button class="btn btn-success btn-sm w-100" onclick="addKey()"><i class="bi bi-plus-circle me-1"></i>Add Key</button>
+          <div class="mb-2">
+            <button class="btn btn-outline-action btn-sm" onclick="umansRefreshUsage()"><i class="bi bi-arrow-clockwise me-1"></i>Refresh Usage</button>
+            <button class="btn btn-outline-action btn-sm" onclick="umansRefreshKeys()"><i class="bi bi-key me-1"></i>Refresh Keys</button>
           </div>
-          <datalist id="workspaceNamesList"></datalist>
+          <hr style="border-color:rgba(255,255,255,0.1)">
+          <div class="mb-2" id="umansModelsSection">
+            <label class="form-label" style="font-size:12px"><i class="bi bi-cpu me-1"></i>Enabled Models</label>
+            <div id="umansModelsContainer" style="max-height:240px;overflow-y:auto"></div>
+          </div>
         </div>
         <div class="modal-footer" style="border-top:1px solid rgba(255,255,255,0.1)">
           <button type="button" class="btn btn-outline-action" data-bs-dismiss="modal">Close</button>
@@ -824,7 +892,51 @@
     </div>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <!-- UMANS Login Modal -->
+  <div class="modal fade" id="platformLoginModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content" style="background:rgba(0,0,0,0.9);border:1px solid rgba(255,255,255,0.15);backdrop-filter:blur(20px)">
+        <div class="modal-header" style="border-bottom:1px solid rgba(255,255,255,0.1)">
+          <h5 class="modal-title" style="color:white"><i class="bi bi-person-fill me-2"></i>UMANS Login</h5>
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-3">
+            <label class="form-label" style="font-size:12px">Email</label>
+            <input type="text" class="form-control form-control-sm" id="platLoginUsername" placeholder="email@example.com">
+          </div>
+          <div class="mb-3">
+            <label class="form-label" style="font-size:12px">Password</label>
+            <input type="password" class="form-control form-control-sm" id="platLoginPassword" placeholder="password">
+          </div>
+          <div id="platLoginStatus" style="font-size:11px;color:#dc3545;min-height:16px"></div>
+        </div>
+        <div class="modal-footer" style="border-top:1px solid rgba(255,255,255,0.1)">
+          <button class="btn btn-sm btn-outline-action" data-bs-dismiss="modal">Cancel</button>
+          <button class="btn btn-sm btn-success" onclick="savePlatformLogin()"><i class="bi bi-check-circle me-1"></i>Save & Login</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- UMANS Logout Confirm Modal -->
+  <div class="modal fade" id="umansLogoutModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered modal-sm">
+      <div class="modal-content" style="background:rgba(0,0,0,0.9);border:1px solid rgba(255,255,255,0.15);backdrop-filter:blur(20px)">
+        <div class="modal-header" style="border-bottom:1px solid rgba(255,255,255,0.1)">
+          <h5 class="modal-title" style="color:white"><i class="bi bi-box-arrow-right me-2"></i>Logout</h5>
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body"><p class="text-muted mb-0" style="font-size:13px">Log out from UMANS account?</p></div>
+        <div class="modal-footer" style="border-top:1px solid rgba(255,255,255,0.1)">
+          <button class="btn btn-sm btn-outline-action" data-bs-dismiss="modal">Cancel</button>
+          <button class="btn btn-sm btn-danger" onclick="confirmLogout()"><i class="bi bi-box-arrow-right me-1"></i>Logout</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
   <script>
     // ── WebSocket client — push-based, zero polling ──
     const SURFACE_FNS = { convex_squircle: (x) => Math.pow(1 - Math.pow(1 - x, 4), 0.25) };
@@ -982,7 +1094,7 @@
     var _wsReqId = 0;
     var _wsCallbacks = {};
 
-    function wsCall(action, payload) {
+    function wsCall(action, payload, opts) {
       return new Promise(function(resolve, reject) {
         if (!ws || ws.readyState !== WebSocket.OPEN) {
           reject(new Error('WebSocket not connected'));
@@ -992,9 +1104,16 @@
         _wsCallbacks[id] = { resolve: resolve, reject: reject };
         var p = Object.assign({}, payload || {}, { _id: id });
         ws.send(JSON.stringify({ action: action, payload: p }));
-        setTimeout(function() {
+        var timeoutMs = (opts && opts.timeout) || 60000;
+        var timer = setTimeout(function() {
           if (_wsCallbacks[id]) { delete _wsCallbacks[id]; reject(new Error('WS call timeout')); }
-        }, 60000);
+        }, timeoutMs);
+        if (opts && opts.signal && typeof opts.signal.addEventListener === 'function') {
+          opts.signal.addEventListener('abort', function() {
+            clearTimeout(timer);
+            if (_wsCallbacks[id]) { delete _wsCallbacks[id]; reject({ name: 'AbortError', message: 'aborted' }); }
+          }, { once: true });
+        }
       });
     }
 
@@ -1128,6 +1247,9 @@
         updateSupermavenStatus(data.supermaven.initialized, data.supermaven.binaryPath);
       }
       if (data.githubSettings) applyGithubSettings(data.githubSettings);
+      if (data.umans) { _umansState = { ..._umansState, ...data.umans }; if (_umansState.concurrency && _umansState.concurrency.user_id) _umansUserId = _umansState.concurrency.user_id; updateUmansAccountBadge(); }
+      if (data.umansUsage !== undefined) { _umansState.usage = data.umansUsage; updateUmansAccountBadge(); }
+      if (data.umansConcurrency !== undefined) { _umansState.concurrency = data.umansConcurrency; if (_umansState.concurrency && _umansState.concurrency.user_id) _umansUserId = _umansState.concurrency.user_id; updateUmansAccountBadge(); }
       if (data.workspaceData) {
         _wsData = data.workspaceData;
         renderOpencodeStats();
@@ -1186,6 +1308,9 @@
         updateSupermavenStatus(data.supermaven.initialized, data.supermaven.binaryPath);
       }
       if (data.githubSettings) applyGithubSettings(data.githubSettings);
+      if (data.umans) { _umansState = { ..._umansState, ...data.umans }; if (_umansState.concurrency && _umansState.concurrency.user_id) _umansUserId = _umansState.concurrency.user_id; updateUmansAccountBadge(); }
+      if (data.umansUsage !== undefined) { _umansState.usage = data.umansUsage; updateUmansAccountBadge(); }
+      if (data.umansConcurrency !== undefined) { _umansState.concurrency = data.umansConcurrency; if (_umansState.concurrency && _umansState.concurrency.user_id) _umansUserId = _umansState.concurrency.user_id; updateUmansAccountBadge(); }
       if (data.workspaceData) {
         _wsData = data.workspaceData;
         renderOpencodeStats();
@@ -1504,7 +1629,7 @@
 
     // ── Status Header ──
     function updateStats() {
-      document.getElementById('activeKeysBlock').textContent = _wsData.length;
+      const activeKeysBlock = document.getElementById('activeKeysBlock'); if (activeKeysBlock) activeKeysBlock.textContent = _wsData.length;
       const enabled = models.filter(m => m.enabled !== false).length;
       document.getElementById('totalModels').textContent = enabled + ' / ' + models.length;
     }
@@ -1526,95 +1651,331 @@
       setTimeout(() => initLiquidGlass(), 100);
     }
 
-    // ── Keys Management ──
+    // ── UMANS Account / Keys Management ──
+    let _umansState = { account: {}, keys: [], enabledModels: [], usage: null, concurrency: {}, loggedIn: false };
+    let _umansEditingIndex = -1;
+    let _umansUserId = '';
+
     function addCurrentProviderKey() { openKeysModal(); }
 
-    let _providerCookie = '';
-    let _sessionCookies = { opencode: '', opencodeFull: '' };
-
-    function saveProviderCookie() {
-      const val = document.getElementById('providerCookieInput').value.trim();
-      if (!val) return;
-      _providerCookie = val;
-      let cookie = val;
-      if (cookie.startsWith('auth=')) cookie = cookie.substring(5);
-      if (cookie.startsWith('__session=')) cookie = cookie.substring(10);
-      wsSend('setOcSession', { sessionCookie: cookie });
-      setTimeout(() => wsSend('getWorkspaceUsage'), 500);
-      document.getElementById('providerCookieInput').value = '';
-      showToast('Provider cookie saved', 'success');
+    function openKeysModal() {
+      _umansEditingIndex = -1;
+      cancelEditKey();
+      updateUmansAccountBadge();
+      const modalEl = document.getElementById('keysModal');
+      if (!modalEl) return;
+      bootstrap.Modal.getOrCreateInstance(modalEl).show();
     }
 
-    function clearProviderCookie() {
-      _providerCookie = '';
-      wsSend('clearOcSession', {});
-      document.getElementById('providerCookieInput').value = '';
-      showToast('Provider cookie cleared', 'success');
-    }
-
-    async function openKeysModal() {
-      const cookieRow = document.getElementById('providerCookieRow');
-      cookieRow.style.display = '';
-      const existingCookie = _sessionCookies.opencodeFull || '';
-      const input = document.getElementById('providerCookieInput');
-      input.placeholder = 'auth=Fe26.2*...';
-      input.value = existingCookie || '';
-      editingIndex = -1; deleteIndex = -1;
-      populateWorkspaceNamesList();
-      const kList = document.getElementById('keysList');
-      if (allKeys.length > 0) {
-        renderKeysList(allKeys);
+    function renderUmansAccount() {
+      const container = document.getElementById('umansAccountCard');
+      if (!container) return;
+      const account = _umansState.account || {};
+      const email = account.email || '';
+      const userIdRow = _umansUserId ? '<div class="mt-1 d-flex align-items-center gap-2" style="font-size:0.7rem;color:rgba(255,255,255,0.55)">' +
+        '<span><i class="bi bi-person-badge me-1"></i>User ID:</span>' +
+        '<code style="font-size:0.7rem;color:rgba(255,255,255,0.85);background:rgba(255,255,255,0.05);padding:1px 4px;border-radius:4px;word-break:break-all">' + escapeHtml(_umansUserId) + '</code>' +
+        '<button class="btn btn-sm p-0 ms-auto" style="background:transparent;border:none;color:rgba(255,255,255,0.5);font-size:0.65rem" onclick="copyUserId()" title="Copy User ID"><i class="bi bi-clipboard"></i></button>' +
+        '</div>' : '';
+      if (_umansState.loggedIn) {
+        container.innerHTML = '<div class="d-flex justify-content-between align-items-center">' +
+          '<div><div style="font-size:12px;color:rgba(255,255,255,0.7)"><i class="bi bi-person-circle me-1"></i>' + escapeHtml(email || 'Logged in') + '</div>' + userIdRow + '</div>' +
+          '<button class="btn btn-sm" style="background:rgba(220,53,69,0.2);color:#dc3545;border:none;font-size:0.7rem;padding:2px 10px" onclick="openUmansLogoutModal()"><i class="bi bi-box-arrow-right me-1"></i>Logout</button>' +
+          '</div>';
       } else {
-        kList.innerHTML = '<p class="text-muted text-center py-3">No keys configured</p>';
+        container.innerHTML = '<div class="d-flex justify-content-between align-items-center">' +
+          '<div><div style="font-size:12px;color:rgba(255,255,255,0.7)"><i class="bi bi-person me-1"></i>Not logged in</div>' + userIdRow + '</div>' +
+          '<button class="btn btn-sm" style="background:rgba(40,167,69,0.2);color:#28a745;border:none;font-size:0.7rem;padding:2px 10px" onclick="openPlatformLoginModal()"><i class="bi bi-box-arrow-in-right me-1"></i>Login</button>' +
+          '</div>';
       }
-      const modal = new bootstrap.Modal(document.getElementById('keysModal'));
-      modal.show();
     }
 
-    function populateWorkspaceNamesList() {
-      const dl = document.getElementById('workspaceNamesList');
-      if (!dl) return;
-      const names = new Set();
-      for (const ws of _wsData) {
-        if (ws.name) names.add(ws.name);
-        if (ws.slug) names.add(ws.slug);
+    function renderUmansKeys() {
+      const container = document.getElementById('umansKeysList');
+      if (!container) return;
+      const keys = (_umansState.keys || []);
+      const real = keys.filter(k => k.key);
+      if (real.length === 0) {
+        container.innerHTML = '<p class="text-muted text-center py-3">No UMANS API keys configured.</p>';
+      } else {
+        container.innerHTML = real.map((k) => {
+          const i = keys.indexOf(k);
+          if (_umansEditingIndex === i) {
+            return '<div class="pool-card">' +
+              '<div class="mb-2"><label class="form-label" style="font-size:10px">Name</label><input type="text" class="form-control form-control-sm" id="editKeyName" value="' + escapeHtml(k.name || '') + '"></div>' +
+              '<div class="mb-2"><label class="form-label" style="font-size:10px">Key</label><input type="text" class="form-control form-control-sm" id="editKeyKey" value="' + escapeHtml(k.key || '') + '"></div>' +
+              '<div class="d-flex gap-2"><button class="btn btn-sm btn-success" onclick="saveEditKey(' + i + ')"><i class="bi bi-check me-1"></i>Save</button><button class="btn btn-sm btn-secondary" onclick="cancelEditKey()">Cancel</button></div>' +
+              '</div>';
+          }
+          const mk = k.key ? (k.key.substring(0, 4) + '...' + k.key.substring(k.key.length - 4)) : 'no key';
+          return '<div class="pool-card"><div class="pool-header"><div class="pool-name">' + escapeHtml(k.name || 'Unnamed') + '</div>' +
+            '<div><button class="btn btn-sm btn-outline-action me-1" onclick="startEditKey(' + i + ')" title="Edit"><i class="bi bi-pencil"></i></button>' +
+            '<button class="btn btn-sm" style="background:rgba(220,53,69,0.2);color:#dc3545;border:none" onclick="startDeleteKey(' + i + ')" title="Delete"><i class="bi bi-trash"></i></button></div></div>' +
+            '<div style="font-size:0.8rem;color:rgba(255,255,255,0.7)"><span title="' + escapeHtml(k.key) + '">' + escapeHtml(mk) + '</span></div></div>';
+        }).join('');
       }
-      dl.innerHTML = [...names].sort().map(n => '<option value="' + escapeHtml(n) + '"></option>').join('');
+      const select = document.getElementById('umansModalKeySelect');
+      if (select) {
+        const current = _umansState.currentKeyIndex || 0;
+        select.innerHTML = keys.map((k, i) => '<option value="' + i + '"' + (i === current ? ' selected' : '') + '>' + escapeHtml(k.name || 'Key ' + (i + 1)) + '</option>').join('');
+      }
     }
 
-    function renderKeysList(keys) {
-      const container = document.getElementById('keysList');
-      if (!keys || keys.length === 0) { container.innerHTML = '<p class="text-muted text-center py-3">No keys configured</p>'; return; }
-      container.innerHTML = keys.map((k, i) => {
-        if (editingIndex === i) {
-          return '<div class="pool-card"><div class="mb-2"><label class="form-label" style="font-size:10px">Name</label><input type="text" class="form-control form-control-sm" id="editKeyName" value="' + escapeHtml(k.name || '') + '" list="workspaceNamesList"></div><div class="mb-2"><label class="form-label" style="font-size:10px">Key</label><input type="text" class="form-control form-control-sm" id="editKeyKey" value="' + escapeHtml(k.key || '') + '"></div><div class="d-flex gap-2"><button class="btn btn-sm btn-success" onclick="saveEditKey(' + i + ')"><i class="bi bi-check me-1"></i>Save</button><button class="btn btn-sm btn-secondary" onclick="cancelEditKey()"><i class="bi bi-x me-1"></i>Cancel</button></div></div>';
-        }
-        const maskedKey = maskKey(k.key);
-        const isDeleting = deleteIndex === i;
-        return '<div class="pool-card"><div class="pool-header"><div class="pool-name">' + escapeHtml(k.name || 'Unnamed') + '</div><div><button class="btn btn-sm btn-outline-action me-1" onclick="startEditKey(' + i + ')" title="Edit"><i class="bi bi-pencil"></i></button><button class="btn btn-sm" style="background:rgba(220,53,69,0.2);color:#dc3545;border:none" onclick="startDeleteKey(' + i + ')" title="Delete"><i class="bi bi-trash"></i></button></div></div>            <div style="font-size:0.8rem;color:rgba(255,255,255,0.7)"><div>Key: ' + maskedKey + '</div></div>' + (isDeleting ? '<div class="mt-2 d-flex gap-2 align-items-center" style="font-size:0.85rem;color:#dc3545"><i class="bi bi-exclamation-triangle"></i> Delete this key?</div><div class="d-flex gap-2 mt-1"><button class="btn btn-sm" style="background:#dc3545;color:white;border:none" onclick="confirmDeleteKey(' + i + ')"><i class="bi bi-trash me-1"></i>Delete</button><button class="btn btn-sm btn-secondary" onclick="cancelDeleteKey()">Cancel</button></div>' : '') + '</div>';
+    function renderUmansUsage() {
+      const textEl = document.getElementById('umansUsageText');
+      const barWrap = document.getElementById('umansUsageBarWrap');
+      const bar = document.getElementById('umansUsageBar');
+      const concText = document.getElementById('umansConcurrencyText');
+      const usage = _umansState.usage;
+      if (!usage) {
+        if (textEl) textEl.textContent = 'No usage data';
+        if (barWrap) barWrap.style.display = 'none';
+      } else {
+        const used = usage.used || 0;
+        const limit = usage.limit || 0;
+        const pct = limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0;
+        if (textEl) textEl.innerHTML = '<div><strong>' + formatNum(used) + '</strong> / ' + formatNum(limit) + ' tokens</div><div style="font-size:10px;color:rgba(255,255,255,0.6)">Resets: ' + escapeHtml(usage.reset || '—') + '</div>';
+        if (barWrap) barWrap.style.display = '';
+        if (bar) { bar.style.width = pct + '%'; bar.style.backgroundColor = usageBarColor(pct); }
+      }
+      const conc = _umansState.concurrency || {};
+      if (concText) {
+        const current = conc.concurrent != null ? conc.concurrent : '?';
+        const limit2 = conc.limit != null ? conc.limit : 'unlimited';
+        concText.innerHTML = '<div style="font-size:12px;color:white"><strong>' + current + '</strong> concurrent' + (limit2 !== 'unlimited' ? ' <span style="color:rgba(255,255,255,0.5)">/ ' + limit2 + '</span>' : '') + '</div>';
+      }
+    }
+
+    function renderUmansModels() {
+      const container = document.getElementById('umansModelsContainer');
+      if (!container) return;
+      const enabled = new Set(_umansState.enabledModels || []);
+      const groupedModels = window._groupedModels || {};
+      const umansModels = (groupedModels.umans || []);
+      if (umansModels.length === 0) {
+        container.innerHTML = '<p class="text-muted text-center py-2">No UMANS models loaded.</p>';
+        return;
+      }
+      container.innerHTML = umansModels.map(m => {
+        const id = m.id;
+        const checked = enabled.has(id) ? ' checked' : '';
+        return '<div class="form-check" style="display:inline-block;margin-right:12px;margin-bottom:4px">' +
+          '<input class="form-check-input provider-cb" type="checkbox" id="umans-mod-' + escapeHtml(id) + '"' + checked + ' onchange="toggleUmansModel(\'' + escapeHtml(id) + '\', this.checked)" style="transform:scale(0.8);margin-top:3px">' +
+          '<label class="form-check-label" for="umans-mod-' + escapeHtml(id) + '" style="font-size:11px;cursor:pointer" title="' + escapeHtml(id) + '">' + escapeHtml(m.name || id.replace(/^umans-/i, '')) + '</label>' +
+          '</div>';
       }).join('');
     }
 
-    function addKey() {
-      const name = document.getElementById('newKeyName').value.trim() || ('Key ' + (document.querySelectorAll('#keysList .pool-card').length + 1));
-      const key = document.getElementById('newKeyKey').value.trim();
-      if (!key) { showToast('Key is required', 'warning'); return; }
-      wsSend('addKey', { name, key, session: '' });
-      document.getElementById('newKeyName').value = ''; document.getElementById('newKeyKey').value = '';
-      showToast('Key added', 'success');
+    function toggleUmansModel(id, enabled) {
+      const current = new Set(_umansState.enabledModels || []);
+      if (enabled) current.add(id); else current.delete(id);
+      _umansState.enabledModels = Array.from(current);
+      renderUmansModels();
+      wsSend('umansSetEnabledModels', { models: _umansState.enabledModels });
     }
-    function startEditKey(index) { editingIndex = index; deleteIndex = -1; }
-    function cancelEditKey() { editingIndex = -1; }
-    function saveEditKey(index) {
+
+    function openPlatformLoginModal() {
+      const modalEl = document.getElementById('platformLoginModal');
+      if (!modalEl) return;
+      bootstrap.Modal.getInstance(document.getElementById('keysModal'))?.hide();
+      document.getElementById('platLoginUsername').value = (_umansState.account && _umansState.account.email) || '';
+      document.getElementById('platLoginPassword').value = '';
+      document.getElementById('platLoginStatus').textContent = '';
+      bootstrap.Modal.getOrCreateInstance(modalEl).show();
+    }
+
+    async function savePlatformLogin() {
+      const email = document.getElementById('platLoginUsername').value.trim();
+      const password = document.getElementById('platLoginPassword').value;
+      const statusEl = document.getElementById('platLoginStatus');
+      if (!email || !password) {
+        if (statusEl) { statusEl.textContent = 'Email and password required'; statusEl.style.color = '#dc3545'; }
+        return;
+      }
+      if (statusEl) { statusEl.innerHTML = '<span class="text-info">Logging in...</span>'; statusEl.style.color = 'rgba(13,202,240,0.9)'; }
+      try {
+        const d = await wsCall('umansLogin', { email, password });
+        if (d && d.success) {
+          if (statusEl) { statusEl.innerHTML = '<span class="text-success">Login successful</span>'; statusEl.style.color = '#28a745'; }
+          setTimeout(() => bootstrap.Modal.getInstance(document.getElementById('platformLoginModal'))?.hide(), 700);
+          showToast('Login successful', 'success');
+        } else {
+          const err = (d && d.error) || 'Login failed';
+          if (statusEl) { statusEl.textContent = err; statusEl.style.color = '#dc3545'; }
+          showToast('Login failed: ' + err, 'danger');
+        }
+      } catch (e) {
+        const err = e?.message || 'Login request failed';
+        if (statusEl) { statusEl.textContent = err; statusEl.style.color = '#dc3545'; }
+        showToast('Login error: ' + err, 'danger');
+      }
+    }
+
+    function openUmansLogoutModal() {
+      const modalEl = document.getElementById('umansLogoutModal');
+      if (modalEl) bootstrap.Modal.getOrCreateInstance(modalEl).show();
+    }
+
+    function confirmLogout() {
+      wsSend('umansLogout', {});
+      bootstrap.Modal.getInstance(document.getElementById('umansLogoutModal'))?.hide();
+      updateUmansAccountBadge();
+      showToast('Logged out', 'info');
+    }
+
+    function addKey() {
+      const editIdx = parseInt(document.getElementById('umansEditKeyIndex').value, 10);
+      const name = document.getElementById('newKeyName').value.trim();
+      const key = document.getElementById('newKeyKey').value.trim();
+      if (!key) { showToast('Key required', 'warning'); return; }
+      if (editIdx >= 0) {
+        wsSend('umansUpdateKey', { index: editIdx, name, key });
+        showToast('Key updated', 'success');
+      } else {
+        wsSend('umansAddKey', { name, key });
+        showToast('Key added', 'success');
+      }
+      document.getElementById('newKeyName').value = '';
+      document.getElementById('newKeyKey').value = '';
+      document.getElementById('umansEditKeyIndex').value = '-1';
+      document.getElementById('umansKeyFormLabel').textContent = 'Add New Key';
+      document.getElementById('umansKeyFormBtn').innerHTML = '<i class="bi bi-plus-circle me-1"></i>Add Key';
+      document.getElementById('umansKeyFormCancel').style.display = 'none';
+    }
+
+    function startEditKey(i) {
+      _umansEditingIndex = i;
+      const keys = (_umansState.keys || []);
+      const k = keys[i];
+      if (!k) return;
+      renderUmansKeys();
+      document.getElementById('umansEditKeyIndex').value = String(i);
+      document.getElementById('newKeyName').value = k.name || '';
+      document.getElementById('newKeyKey').value = k.key || '';
+      document.getElementById('umansKeyFormLabel').textContent = 'Edit Key';
+      document.getElementById('umansKeyFormBtn').innerHTML = '<i class="bi bi-check me-1"></i>Save';
+      document.getElementById('umansKeyFormCancel').style.display = '';
+    }
+
+    function cancelEditKey() {
+      _umansEditingIndex = -1;
+      document.getElementById('umansEditKeyIndex').value = '-1';
+      document.getElementById('newKeyName').value = '';
+      document.getElementById('newKeyKey').value = '';
+      document.getElementById('umansKeyFormLabel').textContent = 'Add New Key';
+      document.getElementById('umansKeyFormBtn').innerHTML = '<i class="bi bi-plus-circle me-1"></i>Add Key';
+      document.getElementById('umansKeyFormCancel').style.display = 'none';
+      renderUmansKeys();
+    }
+
+    function saveEditKey(i) {
       const name = document.getElementById('editKeyName').value.trim();
       const key = document.getElementById('editKeyKey').value.trim();
-      wsSend('updateKey', { index, name, key });
-      editingIndex = -1;
+      if (!key) { showToast('Key required', 'warning'); return; }
+      wsSend('umansUpdateKey', { index: i, name, key });
+      _umansEditingIndex = -1;
       showToast('Key updated', 'success');
     }
-    function startDeleteKey(index) { deleteIndex = index; editingIndex = -1; }
-    function cancelDeleteKey() { deleteIndex = -1; }
-    function confirmDeleteKey(index) { wsSend('deleteKey', { index }); deleteIndex = -1; showToast('Key deleted', 'success'); }
+
+    function startDeleteKey(i) {
+      if (!confirm('Delete this key?')) return;
+      wsSend('umansDeleteKey', { index: i });
+      _umansEditingIndex = -1;
+      showToast('Key deleted', 'success');
+    }
+
+    function umansModalSetKey(idx) {
+      const i = parseInt(idx, 10);
+      if (isNaN(i)) return;
+      wsSend('umansSetKey', { index: i });
+      _umansState.currentKeyIndex = i;
+      showToast('Current key set', 'success');
+    }
+
+    function umansRefreshKeys() {
+      wsSend('umansRefresh', {});
+      showToast('Keys refreshed', 'info');
+    }
+
+    function umansRefreshUsage() {
+      wsSend('umansRefreshUsage', {});
+      showToast('Usage refresh requested', 'info');
+    }
+
+    function updateUmansAccountBadge() {
+      renderUmansAccount();
+      renderUmansKeys();
+      renderUmansUsage();
+      renderUmansModels();
+      updateUmansTopBar();
+      updateUmansWindowTopBar();
+      updateUmans90DaysTopBar();
+    }
+
+    function updateUmansWindowTopBar() {
+      const winReqEl = document.getElementById('windowRequests');
+      const winTokEl = document.getElementById('windowTokens');
+      if (!winReqEl || !winTokEl) return;
+      const usage = _umansState && _umansState.usage;
+      let winReqs = 0, winTokens = 0;
+      if (usage && usage.window) {
+        const w = usage.window;
+        winReqs = w.requests_in_window || 0;
+        winTokens = (w.tokens_in || 0) + (w.tokens_out || 0);
+      } else if (usage && usage.usage) {
+        const u = usage.usage;
+        winReqs = u.requests_in_window || 0;
+        winTokens = (u.tokens_in || 0) + (u.tokens_out || 0);
+      }
+      winReqEl.textContent = winReqs ? winReqs.toLocaleString() : '--';
+      winTokEl.textContent = winTokens ? winTokens.toLocaleString() : '--';
+    }
+
+    function updateUmans90DaysTopBar() {
+      const qEl = document.getElementById('quotaDisplay');
+      if (!qEl) return;
+      let histReqs = 0, histTokens = 0;
+      const hist = _umansState && _umansState.usageHistory;
+      const buckets = hist && (hist.buckets || hist.entries || hist.data || []);
+      if (Array.isArray(buckets)) {
+        for (const b of buckets) {
+          histReqs += b.requests || b.request_count || 0;
+          histTokens += (b.tokens_in || 0) + (b.tokens_out || 0);
+        }
+      }
+      if (histReqs || histTokens) {
+        const label = (histReqs.toLocaleString() + ' req' + (histReqs === 1 ? '' : 's')) + ' · ' + histTokens.toLocaleString() + ' tok';
+        qEl.textContent = label;
+        qEl.title = '90-day totals: ' + histReqs.toLocaleString() + ' requests · ' + histTokens.toLocaleString() + ' tokens';
+      } else {
+        qEl.textContent = 'n/a';
+        qEl.title = 'No UMANS usage history';
+      }
+    }
+
+    function updateUmansTopBar() {
+      const keys = (_umansState.keys || []).filter(k => k.key);
+      const accountLabel = document.getElementById('umansAccountTopLabel');
+      const keysLabel = document.getElementById('umansKeysTopLabel');
+      const activeKeysBlock = document.getElementById('activeKeysBlock');
+      if (accountLabel) {
+        if (_umansState.loggedIn && _umansState.account && _umansState.account.email) {
+          accountLabel.textContent = obfuscateEmail(_umansState.account.email);
+          accountLabel.setAttribute('title', escapeHtml(_umansState.account.email));
+        } else {
+          accountLabel.textContent = 'Login';
+          accountLabel.setAttribute('title', '');
+        }
+      }
+      const countText = String(keys.length);
+      if (keysLabel) keysLabel.textContent = countText;
+      if (activeKeysBlock) activeKeysBlock.textContent = countText;
+    }
+
+    function copyUserId() {
+      if (!_umansUserId) return;
+      navigator.clipboard.writeText(_umansUserId).then(() => showToast('User ID copied', 'success')).catch(() => showToast('Copy failed', 'danger'));
+    }
 
     // ── OpenCode Session ──
     function saveOcSession() {
@@ -2105,7 +2466,7 @@
         const r = await fetch('/api/init');
         const data = await r.json();
         if (data.status) {
-          document.getElementById('versionText').textContent = 'v' + (data.health?.runtime ? '3.0' : '3.0');
+          /* versionText removed / UMANS header active */
         }
         applySnapshot(data);
         const modeRadio = document.querySelector('.btn-check[name="proxyMode"][value="' + (data.status?.mode?.toLowerCase() || 'mock') + '"]');
@@ -2182,6 +2543,12 @@
           sendTestChat();
         }
       });
+      document.getElementById('testChatStreamToggle')?.addEventListener('change', function(e) {
+        testChatStreamEnabled = !!e.target.checked;
+      });
+      document.getElementById('testChatContextToggle')?.addEventListener('change', function(e) {
+        testChatContextEnabled = !!e.target.checked;
+      });
 
       // Safety net: re-populate after all async loads settle
       setTimeout(() => populateTestChatModelSelect(), 1000);
@@ -2194,6 +2561,10 @@
     let testChatHistory = [];
     let testChatBusy = false;
     let _pendingTestChat = null;
+    let testChatContextEnabled = true;
+    let testChatStreamEnabled = true;
+    let testChatAbort = null;
+    let testChatReader = null;
     let testChatTranscriptEl = null;
     let testChatScrollEl = null;
     let testChatInputEl = null;
@@ -2417,12 +2788,21 @@
       return pair;
     }
 
+    function abortTestChat() {
+      if (testChatReader) { try { testChatReader.cancel(); } catch {} testChatReader = null; }
+      if (testChatAbort) { try { testChatAbort.abort(); } catch {} testChatAbort = null; }
+    }
+
     async function sendTestChat() {
       const { input } = getTestChatEls();
       if (!input) return;
       const text = input.value.trim();
       if (!text || testChatBusy) return;
       if (!testChatModel) { showToast('Select a model first', 'warning'); return; }
+      abortTestChat();
+      testChatAbort = new AbortController();
+      const streamOn = testChatStreamEnabled;
+      const ctxOn = testChatContextEnabled;
       const ts = Date.now();
       testChatHistory.push({ role: 'user', content: text, ts });
       const pair = prependUserBubble(text, ts);
@@ -2431,10 +2811,14 @@
       const thinkingEl = appendAssistantThinking(pair);
       const startMs = Date.now();
       try {
-        const data = await wsCall('testChat', {
-          model: testChatModel,
-          messages: testChatHistory.map(m => ({ role: m.role, content: m.content })),
-        });
+        const messagesToSend = ctxOn
+          ? testChatHistory.filter(m => (m.role === 'user' || m.role === 'assistant') && !m.error).map(m => ({ role: m.role, content: m.content }))
+          : [{ role: 'user', content: text }];
+        const data = await wsCall(
+          'testChat',
+          { model: testChatModel, messages: messagesToSend, stream: streamOn, _id: 'testchat-' + Date.now() },
+          { signal: testChatAbort.signal, timeout: 180000 }
+        );
         const ms = Date.now() - startMs;
         const pt = getTestChatProviderTag();
         const modelName = getTestChatModelName();
@@ -2442,8 +2826,8 @@
         if (data.error) {
           assistantMsg = { role: 'assistant', content: data.error, error: true, ts: Date.now(), ms: 0, providerTag: pt, modelName: modelName };
         } else {
-          const reply = data?.choices?.[0]?.message?.content || '(no response)';
-          assistantMsg = { role: 'assistant', content: reply, ts: Date.now(), ms: ms, providerTag: pt, modelName: modelName };
+          const reply = data?.choices?.[0]?.message?.content;
+          assistantMsg = { role: 'assistant', content: (reply === '' || reply == null) ? '(empty response)' : reply, ts: Date.now(), ms: ms, providerTag: pt, modelName: modelName };
         }
         setAssistantBubble(thinkingEl, assistantMsg.content, assistantMsg.ts, !!assistantMsg.error, assistantMsg.ms, pt, modelName);
         testChatHistory.push(assistantMsg);
@@ -2452,14 +2836,18 @@
           renderTestChatMessages();
         }
       } catch (e) {
-        const ms = Date.now() - startMs;
-        const pt = getTestChatProviderTag();
-        const modelName = getTestChatModelName();
-        const errText = 'Error: ' + (e?.message || 'request failed');
-        setAssistantBubble(thinkingEl, errText, Date.now(), true, ms, pt, modelName);
-        testChatHistory.push({ role: 'assistant', content: errText, error: true, ts: Date.now(), ms: ms, providerTag: pt, modelName: modelName });
-        if (testChatHistory.length > TEST_CHAT_HISTORY_LIMIT) {
-          testChatHistory = testChatHistory.slice(-TEST_CHAT_HISTORY_LIMIT);
+        if (e && e.name === 'AbortError') {
+          setAssistantBubble(thinkingEl, 'Aborted', Date.now(), true, Date.now() - startMs, getTestChatProviderTag(), getTestChatModelName());
+        } else {
+          const ms = Date.now() - startMs;
+          const pt = getTestChatProviderTag();
+          const modelName = getTestChatModelName();
+          const errText = 'Error: ' + (e?.message || 'request failed');
+          setAssistantBubble(thinkingEl, errText, Date.now(), true, ms, pt, modelName);
+          testChatHistory.push({ role: 'assistant', content: errText, error: true, ts: Date.now(), ms: ms, providerTag: pt, modelName: modelName });
+          if (testChatHistory.length > TEST_CHAT_HISTORY_LIMIT) {
+            testChatHistory = testChatHistory.slice(-TEST_CHAT_HISTORY_LIMIT);
+          }
         }
       } finally {
         setTestChatBusy(false);

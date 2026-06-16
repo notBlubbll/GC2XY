@@ -16,7 +16,6 @@ import { getModelIds as getBitnetModelIds, chatCompletion as bitnetChat } from "
 import { chatCompletion as agnesChat } from "./agnes-client.ts";
 import { chatCompletion as codestralChat } from "./codestral-client.ts";
 import { initSupermaven, getSupermavenStatus, setSupermavenEnabled } from "./supermaven-client.ts";
-import { chatCompletion as featherlessChat, searchModels, initModels as initFeatherless, getModelIds as getFeatherlessIds } from "./featherless-client.ts";
 import { getModelIds } from "../models.ts";
 import { getTps, restoreTerminal, setEnabledModelIds } from "../split-console.ts";
 import { fetchAllWorkspacesWithKeysAndUsage, WorkspaceWithKeys } from "../opencode-workspace.ts";
@@ -66,6 +65,30 @@ export function createWsServer() {
   return _wss;
 }
 
+// ── Test Chat helpers ──
+async function summarizeSseTestChat(rawSse: string, model: string): Promise<any> {
+  const lines = rawSse.split("\n");
+  let content = "";
+  for (const line of lines) {
+    if (!line.startsWith("data: ")) continue;
+    const data = line.slice(6).trim();
+    if (data === "[DONE]") continue;
+    try {
+      const parsed = JSON.parse(data);
+      const delta = parsed.choices?.[0]?.delta?.content || "";
+      if (delta) content += delta;
+    } catch {}
+  }
+  return {
+    id: `chatcmpl-${Date.now()}`,
+    object: "chat.completion",
+    created: Math.floor(Date.now() / 1000),
+    model,
+    choices: [{ index: 0, message: { role: "assistant", content: content || "(empty response)" }, finish_reason: "stop" }],
+    usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+  };
+}
+
 // ── Snapshot / Diff System ──
 let _lastSnapshot: Record<string, any> = {};
 
@@ -111,9 +134,6 @@ function takeSnapshot(): Record<string, any> {
     hasCodestralKey: !!_codestralApiKey,
     pollKey: _pollApiKey ? `${_pollApiKey.slice(0, 5)}...${_pollApiKey.slice(-4)}` : "",
     hasPollKey: !!_pollApiKey,
-    featherlessAddedModels: _featherlessAddedModels,
-    featherlessKey: _featherlessApiKey ? `${_featherlessApiKey.slice(0, 5)}...${_featherlessApiKey.slice(-4)}` : "",
-    hasFeatherlessKey: !!_featherlessApiKey,
     wallpaperProgress: _genProgress,
     githubSettings: {
       skuMode: getGithubSku(),
@@ -411,53 +431,6 @@ async function handleWsMessage(ws: WebSocket, msg: any) {
       pushStatusToWs();
       break;
     }
-    case "setFeatherlessKey": {
-      _featherlessApiKey = payload?.key || "";
-      if (_featherlessApiKey && _activeProviders.indexOf("featherless") === -1) _activeProviders.push("featherless");
-      if (!_featherlessApiKey) {
-        const idx = _activeProviders.indexOf("featherless");
-        if (idx !== -1) _activeProviders.splice(idx, 1);
-      }
-      saveConfig();
-      pushStatusToWs();
-      break;
-    }
-    case "featherlessSearchModels": {
-      try {
-        const q = payload?.query || "";
-        const results = await searchModels(q);
-        ws.send(JSON.stringify({ type: "featherlessSearchResults", data: results, _id: payload?._id }));
-      } catch (e: any) {
-        ws.send(JSON.stringify({ type: "featherlessSearchResults", data: [], error: e.message, _id: payload?._id }));
-      }
-      break;
-    }
-    case "addFeatherlessModel": {
-      try {
-        const modelId = payload?.modelId;
-        if (modelId) {
-          const prefixed = modelId.startsWith("featherless/") ? modelId : `featherless/${modelId}`;
-          if (!_featherlessAddedModels.includes(prefixed)) _featherlessAddedModels.push(prefixed);
-          _modelStates[prefixed] = true;
-          saveConfig();
-          initFeatherless().catch(() => {});
-          pushStatusToWs();
-        }
-      } catch {}
-      break;
-    }
-    case "removeFeatherlessModel": {
-      try {
-        const modelId = payload?.modelId;
-        if (modelId) {
-          _featherlessAddedModels = _featherlessAddedModels.filter(id => id !== modelId);
-          delete _modelStates[modelId];
-          saveConfig();
-          pushStatusToWs();
-        }
-      } catch {}
-      break;
-    }
     case "renameModel": {
       try {
         const modelId = payload?.modelId;
@@ -490,23 +463,16 @@ async function handleWsMessage(ws: WebSocket, msg: any) {
       break;
     }
     case "setProviders": {
-      const valid = ["opencode", "zen", "freebuff", "agnes", "poll", "openrouter", "bitnet", "codestral", "featherless", "deepseek"];
+      const valid = ["umans", "opencode", "zen", "freebuff", "agnes", "poll", "openrouter", "bitnet", "codestral", "deepseek"];
       if (Array.isArray(payload?.providers)) {
         const wasOc = _activeProviders.indexOf("opencode") !== -1;
-        const wasFl = _activeProviders.indexOf("featherless") !== -1;
         let requested = payload.providers.filter((p: string) => valid.includes(p));
         const wantsOc = requested.indexOf("opencode") !== -1;
-        const wantsFl = requested.indexOf("featherless") !== -1;
         if (wantsOc && _keys.length === 0) {
           requested = requested.filter((p: string) => p !== "opencode");
         } else if (!wantsOc && wasOc) {
           for (const ws of _workspaceData) _workspaceKeyStates[ws.id] = [];
           setOcKeys([]);
-        }
-        if (wantsFl && !_featherlessApiKey) {
-          requested = requested.filter((p: string) => p !== "featherless");
-        } else if (!wantsFl && wasFl) {
-          _featherlessApiKey = "";
         }
         _activeProviders = requested;
         saveConfig();
@@ -531,6 +497,7 @@ async function handleWsMessage(ws: WebSocket, msg: any) {
       try {
         const model: string = payload?.model;
         const messages: any[] = payload?.messages;
+        const stream: boolean = payload?.stream === true;
         const reqId = payload?._id;
         if (!model || !Array.isArray(messages)) {
           ws.send(JSON.stringify({ type: "testChatResult", data: { error: "Invalid request" }, _id: reqId }));
@@ -538,18 +505,26 @@ async function handleWsMessage(ws: WebSocket, msg: any) {
         }
         const provider = model.startsWith("pol/") ? "poll" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("featherless/") ? "featherless" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral/") ? "codestral" : (model.startsWith("bitnet/") || model === "bitnet-demo") ? "bitnet" : "go";
         let resp: Response;
-        if (provider === "poll") resp = await pollChat(model, messages, undefined, false);
-        else if (provider === "freebuff") resp = await freebuffChat(model, messages, undefined, false);
-        else if (provider === "agnes") resp = await agnesChat(model, messages, undefined, false);
-        else if (provider === "codestral") resp = await codestralChat(model, messages, undefined, false);
-        else if (provider === "featherless") resp = await featherlessChat(model, messages, undefined, false);
-        else if (provider === "bitnet") resp = await bitnetChat(model, messages, undefined, false);
-        else resp = await chatCompletion(model, messages, undefined, false);
-        if (!resp.ok) {
+        if (provider === "poll") resp = await pollChat(model, messages, undefined, stream, { max_tokens: 2048 });
+        else if (provider === "freebuff") resp = await freebuffChat(model, messages, undefined, stream, { max_tokens: 2048 });
+        else if (provider === "agnes") resp = await agnesChat(model, messages, undefined, stream, { max_tokens: 2048 });
+        else if (provider === "codestral") resp = await codestralChat(model, messages, undefined, stream, { max_tokens: 2048 });
+        else if (provider === "featherless") resp = await featherlessChat(model, messages, undefined, stream, { max_tokens: 2048 });
+        else if (provider === "bitnet") resp = await bitnetChat(model, messages, undefined, stream);
+        else resp = await chatCompletion(model, messages, undefined, stream, { max_tokens: 2048 });
+
+        if (stream && resp.ok && resp.body) {
+          let rawSse = "";
+          for await (const chunk of resp.body as any) { rawSse += chunk.toString("utf8"); }
+          const data = await summarizeSseTestChat(rawSse, model);
+          ws.send(JSON.stringify({ type: "testChatResult", data, _id: reqId }));
+        } else if (!resp.ok) {
           const err: any = await resp.json().catch(() => ({}));
           ws.send(JSON.stringify({ type: "testChatResult", data: { error: err?.error?.message || err?.error || `HTTP ${resp.status}` }, _id: reqId }));
         } else {
           const data: any = await resp.json();
+          const content = data?.choices?.[0]?.message?.content;
+          if (!content) console.log(`[TEST CHAT] empty content from ${model}:`, JSON.stringify(data).slice(0, 500));
           ws.send(JSON.stringify({ type: "testChatResult", data, _id: reqId }));
         }
       } catch (e: any) {
@@ -575,14 +550,16 @@ try {
   }
 } catch (e) {}
 
+const PROVIDER_TAG_MAP: Record<string, string> = { opencode: "go", zen: "zen", freebuff: "freebuff", agnes: "agnes", codestral: "codestral", bitnet: "bitnet", deepseek: "deepseek", umans: "umans" };
+
 let _requestCount = 0;
 
 let _modelStates: Record<string, boolean> = {};
 
 function _pushModelStatesToConsole() {
   const modelIds = getModelIds();
-  const PROVIDER_MAP: Record<string, string> = { opencode: "go", zen: "zen", freebuff: "freebuff", agnes: "agnes", codestral: "codestral", featherless: "featherless", bitnet: "bitnet", deepseek: "deepseek" };
-  const activeTags = new Set(_activeProviders.map(p => PROVIDER_MAP[p] || p));
+
+  const activeTags = new Set(_activeProviders.map(p => PROVIDER_TAG_MAP[p] || p));
   const enabled = new Set(modelIds.filter(id => {
     if (!activeTags.has(getModelProviderTag(id))) return false;
     if (getModelProviderTag(id) === "featherless") return _modelStates[id] === true;
@@ -610,9 +587,6 @@ let _openRouterApiKey = "";
 let _codestralApiKey = "";
 
 let _pollApiKey = "";
-
-let _featherlessApiKey = "";
-let _featherlessAddedModels: string[] = [];
 
 let _aiWallpaperGen = false;
 let _aiWallpaperGenPromise: Promise<boolean> | null = null;
@@ -931,12 +905,10 @@ function loadConfig() {
       if (c.wallpaperPrompt) _wallpaperPrompt = c.wallpaperPrompt;
       if (c.providers && Array.isArray(c.providers)) _activeProviders = c.providers;
       else if (c.provider) _activeProviders = [c.provider]; // migrate old single-value
-      if (c.featherlessAddedModels && Array.isArray(c.featherlessAddedModels)) _featherlessAddedModels = c.featherlessAddedModels;
       if (c.agnesKey) { _agnesApiKey = c.agnesKey; if (_activeProviders.indexOf("agnes") === -1) _activeProviders.push("agnes"); }
       if (c.openrouterKey) { _openRouterApiKey = c.openrouterKey; if (_activeProviders.indexOf("openrouter") === -1) _activeProviders.push("openrouter"); }
       if (c.codestralKey) { _codestralApiKey = c.codestralKey; if (_activeProviders.indexOf("codestral") === -1) _activeProviders.push("codestral"); }
       if (c.pollApiKey) { _pollApiKey = c.pollApiKey; if (_activeProviders.indexOf("poll") === -1) _activeProviders.push("poll"); }
-      if (c.featherlessKey) { _featherlessApiKey = c.featherlessKey; if (_activeProviders.indexOf("featherless") === -1) _activeProviders.push("featherless"); }
       if (c.githubSettings) {
         if (c.githubSettings.skuMode) setGithubSku(c.githubSettings.skuMode);
         if (c.githubSettings.username) setGithubUsername(c.githubSettings.username);
@@ -972,8 +944,6 @@ function saveConfig() {
     existing.openrouterKey = _openRouterApiKey;
     existing.codestralKey = _codestralApiKey;
     existing.pollApiKey = _pollApiKey;
-    existing.featherlessKey = _featherlessApiKey;
-    existing.featherlessAddedModels = _featherlessAddedModels;
     existing.providers = _activeProviders;
     existing.completionsModel = _completionsModel;
     existing.supermavenEnabled = _supermavenEnabled;
@@ -1115,14 +1085,17 @@ function getAgnesModels(): any[] {
 }
 
 function getModels(): any[] {
-  const apiIds = getModelIds().filter(id => !id.startsWith("featherless/"));
-  const modelIds = [...new Set([...apiIds, ..._featherlessAddedModels])];
+  const apiIds = getModelIds();
+  const modelIds = [...new Set([...apiIds])];
   const canShowPremium = _hasValidKey;
   const hasAgnes = !!_agnesApiKey;
   const hasOpenRouter = !!_openRouterApiKey;
-  const hasFeatherless = !!_featherlessApiKey;
-  const PROVIDER_MAP: Record<string, string> = { opencode: "go", zen: "zen", freebuff: "freebuff", agnes: "agnes", codestral: "codestral", featherless: "featherless", bitnet: "bitnet", deepseek: "deepseek" };
-  const activeTags = new Set(_activeProviders.map(p => PROVIDER_MAP[p] || p));
+
+  const activeTags = new Set(_activeProviders.map(p => {
+    if (p === "opencode") return "go";
+    if (p === "umans") return "umans";
+    return p;
+  }));
   return modelIds.filter((id: string) => activeTags.has(getModelProviderTag(id))).map((id: string) => {
     const isFree = id.startsWith("pol/") || id.startsWith("freebuff/");
     const isFreebuff = id.startsWith("freebuff/");
@@ -1357,4 +1330,22 @@ export function getAgnesApiKey(): string {
 
 export function getOpenRouterApiKey(): string {
   return _openRouterApiKey;
+}
+
+export function filterModelsByConfig(modelIds: string[]): string[] {
+  const PROVIDER_MAP: Record<string, string> = { opencode: "go", zen: "zen", freebuff: "freebuff", agnes: "agnes", codestral: "codestral", bitnet: "bitnet", deepseek: "deepseek", umans: "umans" };
+  try {
+    const cp = join(getProjectRoot(), ".config", "config.json");
+    if (existsSync(cp)) {
+      const cfg = JSON.parse(readFileSync(cp, "utf-8"));
+      const activeProviders: string[] = cfg.providers || ["umans"];
+      const activeTags = new Set(activeProviders.map((pr: string) => PROVIDER_MAP[pr] || pr));
+      let ids = modelIds.filter(id => activeTags.has(getModelProviderTag(id)));
+      const dm: Record<string, string[]> = cfg.disabledModels || {};
+      const disabledSet = new Set(Object.values(dm).flat() as string[]);
+      ids = ids.filter(id => !disabledSet.has(id));
+      return ids;
+    }
+  } catch {}
+  return modelIds;
 }

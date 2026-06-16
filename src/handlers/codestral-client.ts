@@ -6,7 +6,7 @@ import * as path from "node:path";
 import { getProjectRoot, normalizeTool, normalizeToolChoice } from "../shared.ts";
 import { isDebug } from "../split-console.ts";
 
-const BASE = "https://codestral.mistral.ai/v1";
+const BASE = "https://api.mistral.ai/v1";
 
 function getCodestralKey(): string {
   try {
@@ -17,6 +17,17 @@ function getCodestralKey(): string {
     }
   } catch {}
   return "";
+}
+
+export function setCodestralKey(key: string) {
+  try {
+    const dir = path.join(getProjectRoot(), ".config");
+    const p = path.join(dir, "config.json");
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    const c = fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, "utf-8")) : {};
+    c.codestralKey = key;
+    fs.writeFileSync(p, JSON.stringify(c, null, 2));
+  } catch {}
 }
 
 function ensureCacheDir(): string {
@@ -46,11 +57,25 @@ function saveCachedModels(ids: string[]) {
   } catch {}
 }
 
+function isCodestralFamily(id: string): boolean {
+  const prefix = "codestral/";
+  const lid = id.toLowerCase();
+  if (!lid.startsWith(prefix)) return false;
+  const after = id.slice(prefix.length);
+  if (!after.startsWith("codestral-") && !after.startsWith("devstral-")) return false;
+  return lid.endsWith("-latest");
+}
+
+function filterCodestralFamily(ids: string[]): string[] {
+  return ids.filter(isCodestralFamily);
+}
+
 // Known Codestral models (fallback if API /models is unavailable)
 const KNOWN_MODELS = [
   "codestral/codestral-latest",
-  "codestral/codestral-2505",
-  "codestral/codestral-2405",
+  "codestral/devstral-2512",
+  "codestral/devstral-medium-latest",
+  "codestral/devstral-latest",
 ];
 
 // ── Model Init ──
@@ -66,17 +91,19 @@ async function fetchModels(): Promise<string[]> {
     });
     if (resp.ok) {
       const data: any = await resp.json();
-      const ids: string[] = (data?.data || []).map((m: any) =>
+      const raw: string[] = (data?.data || []).map((m: any) =>
         typeof m === "string" ? m : m.id || ""
-      ).filter((id: string) => id.length > 0).map((id: string) => id.startsWith("codestral/") ? id : `codestral/${id}`);
+      ).filter((id: string) => id.length > 0);
+      const ids: string[] = raw.map((id: string) => id.startsWith("codestral/") ? id : `codestral/${id}`)
+        .filter((id: string) => /codestral|devstral/i.test(id));
       if (ids.length > 0) {
         saveCachedModels(ids);
         return ids;
       }
     }
-    if (isDebug()) console.log(`\n[CODESTRAL] fetch returned ${resp.status}, using known models`);
+    if (isDebug()) console.log(`[CODESTRAL] fetch returned ${resp.status}, using known models`);
   } catch (e: any) {
-    if (isDebug()) console.log(`\n[CODESTRAL] fetch error: ${e.message}, using known models`);
+    if (isDebug()) console.log(`[CODESTRAL] fetch error: ${e.message}, using known models`);
   }
   return KNOWN_MODELS;
 }
@@ -86,26 +113,26 @@ export async function initModels(): Promise<string[]> {
 
   const disk = loadCachedModels();
   if (disk && disk.length > 0) {
-    const migrated = disk.map(id => id.startsWith("codestral/") ? id : `codestral/${id}`);
+    const migrated = disk.map(id => id.startsWith("codestral/") ? id : `codestral/${id}`).filter(isCodestralFamily);
     if (migrated.some((id, i) => id !== disk[i])) saveCachedModels(migrated);
     _cachedIds = migrated;
     _initialized = true;
-    if (isDebug()) console.log(`\n[CODESTRAL] loaded ${migrated.length} from disk`);
+    if (isDebug()) console.log(`[CODESTRAL] loaded ${migrated.length} from disk`);
     return migrated;
   }
 
-  const fetched = await fetchModels();
+  const fetched = filterCodestralFamily(await fetchModels());
   if (fetched.length > 0) {
     _cachedIds = fetched;
     saveCachedModels(fetched);
   }
   _initialized = true;
-  if (isDebug()) console.log(`\n[CODESTRAL] init complete: ${_cachedIds?.length || 0} models`);
-  return _cachedIds || KNOWN_MODELS;
+  if (isDebug()) console.log(`[CODESTRAL] init complete: ${_cachedIds?.length || 0} models`);
+  return _cachedIds || filterCodestralFamily(KNOWN_MODELS);
 }
 
 export function getModelIds(): string[] {
-  return _initialized ? (_cachedIds || KNOWN_MODELS) : KNOWN_MODELS;
+  return _cachedIds || filterCodestralFamily(KNOWN_MODELS);
 }
 
 // ── Legacy Completions (prompt+suffix) ──
@@ -128,9 +155,9 @@ export async function completions(
     max_tokens: extra.max_tokens ?? 500,
     temperature: extra.temperature ?? 0,
     top_p: extra.top_p ?? 1,
-    stop: extra.stop,
     stream: extra.stream ?? false,
   };
+  if (extra.stop !== undefined) body.stop = extra.stop;
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
