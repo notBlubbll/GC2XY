@@ -2,7 +2,7 @@
 // Always intercepted (even in proxy mode) at /dashboard and /api/* paths
 // Status/data pushes to WebSocket clients on change only (delta-based)
 
-import { readFileSync, existsSync, writeFileSync, unlinkSync, statSync } from "node:fs";
+import { readFileSync, existsSync, writeFileSync, unlinkSync, statSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { createServer as createHttpServer } from "node:http";
 import { TextDecoder } from "node:util";
@@ -10,11 +10,15 @@ import { TextDecoder } from "node:util";
 const DASHBOARD_START_TIME = new Date().toISOString();
 import https from "node:https";
 import { WebSocketServer, WebSocket } from "ws";
+
+const FREEGEN_PROMPT_SIGNER = "https://prompt-signer.freegen.app/api/test";
+const FREEGEN_IMAGE_GENERATOR = "https://image-generator.freegen.app/api/test";
+const FREEGEN_WS_BRIDGE = "wss://websocket-bridge.freegen.app/ws";
+
 import { HandlerInput, HandlerResult, jsonResponse, getProjectRoot, getMode, setMode, killPortProcess } from "../shared.ts";
 import { setGithubSku, setGithubUsername, setGithubDisplayName, getGithubSku, getGithubUsername, getGithubDisplayName } from "../shared.ts";
-import { getModelIds as getOcModelIds, getModelFamily, getModelDisplayName, getModelProviderTag, chatCompletion, setKeys as setOcKeys } from "./opencode-client.ts";
+import { getModelFamily, getModelDisplayName, getModelProviderTag, chatCompletion as openAIChat, getModelCtx, modelHasVision } from "./openai-provider.ts";
 import { getFreebuffModelIds, getFreebuffModelPremium, chatCompletion as freebuffChat } from "./freebuff-client.ts";
-import { getModelIds as getPollModelIds, chatCompletion as pollChat } from "./pollinations-client.ts";
 import { getModelIds as getBitnetModelIds, chatCompletion as bitnetChat } from "./bitnet-client.ts";
 import { chatCompletion as agnesChat } from "./agnes-client.ts";
 import { chatCompletion as codestralChat } from "./codestral-client.ts";
@@ -31,7 +35,6 @@ import {
 } from "./umans-client.ts";
 import { getModelIds } from "../models.ts";
 import { getTps, restoreTerminal, setEnabledModelIds } from "../split-console.ts";
-import { fetchAllWorkspacesWithKeysAndUsage, WorkspaceWithKeys } from "../opencode-workspace.ts";
 import { ensureI18nForLocale, buildI18nBundle, getDashboardLocale, getForcedLocale, getUmansTranslationKey, setForcedLocale, setUmansTranslationApiKey } from "../i18n.ts";
 
 // ── WebSocket Server (dedicated http.Server — handles upgrades natively) ──
@@ -108,7 +111,6 @@ let _lastSnapshot: Record<string, any> = {};
 
 function takeSnapshot(): Record<string, any> {
   const models = getModels();
-  const ocKeys = _keys;
   // Group models by provider tag
   const grouped: Record<string, any[]> = {};
   for (const m of models) {
@@ -121,7 +123,6 @@ function takeSnapshot(): Record<string, any> {
       mode: getMode().toUpperCase(),
       requests: _requestCount,
       tps: getTps(),
-      hasValidKey: _hasValidKey,
       modelCount: models.length,
       enabledModelCount: models.filter((m: any) => m.enabled !== false).length,
       workDir: getProjectRoot(),
@@ -129,14 +130,12 @@ function takeSnapshot(): Record<string, any> {
       startedAt: getStartedAt(),
     },
     providers: _activeProviders,
-    models: models.map(m => ({ id: m.id, name: m.name, family: m.family, providerTag: (m as any).providerTag || "go", enabled: m.enabled !== false, free: !!m.free, locked: !!m.locked })),
+    models: models.map(m => ({ id: m.id, name: m.name, family: m.family, providerTag: (m as any).providerTag || "unknown", enabled: m.enabled !== false, free: !!m.free, locked: !!m.locked })),
     groupedModels: grouped,
-    keys: {
-      opencode: ocKeys.map(k => ({ name: k.name, key: k.key, session: !!k.session, valid: _validKeys.has(k.key) })),
-    },
-    health: { status: _hasValidKey ? "ok" : "degraded", runtime: getRuntime(), platform: process.platform },
+    health: { status: "ok", runtime: getRuntime(), platform: process.platform },
     wallpaper: _wallpaperSource,
     wallpaperPrompt: _wallpaperPrompt,
+    freegenPrompt: _wallpaperPrompt,
     agnesKey: _agnesApiKey ? `${_agnesApiKey.slice(0, 5)}...${_agnesApiKey.slice(-4)}` : "",
     hasAgnesKey: !!_agnesApiKey,
     completionsModel: _completionsModel,
@@ -148,26 +147,12 @@ function takeSnapshot(): Record<string, any> {
     hasOpenRouterKey: !!_openRouterApiKey,
     codestralKey: _codestralApiKey ? `${_codestralApiKey.slice(0, 5)}...${_codestralApiKey.slice(-4)}` : "",
     hasCodestralKey: !!_codestralApiKey,
-    pollKey: _pollApiKey ? `${_pollApiKey.slice(0, 5)}...${_pollApiKey.slice(-4)}` : "",
-    hasPollKey: !!_pollApiKey,
     wallpaperProgress: _genProgress,
     githubSettings: {
       skuMode: getGithubSku(),
       username: getGithubUsername(),
       displayName: getGithubDisplayName(),
     },
-    sessionCookie: {
-      opencode: _ocSessionCookie ? `${_ocSessionCookie.slice(0, 12)}...${_ocSessionCookie.slice(-4)}` : "",
-      opencodeFull: _ocSessionCookie || "",
-    },
-    workspaceData: _workspaceData.map(ws => ({
-      id: ws.id,
-      name: ws.name,
-      slug: ws.slug,
-      usage: ws.usage,
-      keyNames: ws.keyNames.map(kn => ({ keyID: kn.keyID, name: kn.name })),
-      enabledKeyIDs: _workspaceKeyStates[ws.id] || [],
-    })),
     umans: _umansState,
     umansUserId: _umansState.userId || (_umansState.concurrency ? _umansState.concurrency.user_id : null) || null,
     umansUsage: _umansUsageCache,
@@ -245,26 +230,6 @@ async function handleWsMessage(ws: WebSocket, msg: any) {
       pushStatusToWs();
       break;
     }
-    case "toggleWorkspaceKey": {
-      if (payload?.workspaceId && payload?.keyID && payload?.enabled !== undefined) {
-        const wsId = payload.workspaceId;
-        const keyID = payload.keyID;
-        if (!_workspaceKeyStates[wsId]) _workspaceKeyStates[wsId] = [];
-        const states = _workspaceKeyStates[wsId];
-        if (payload.enabled) {
-          if (!states.includes(keyID)) states.push(keyID);
-        } else {
-          const idx = states.indexOf(keyID);
-          if (idx !== -1) states.splice(idx, 1);
-        }
-        _workspaceKeyStates[wsId] = states;
-        saveConfig();
-        syncKeysFromWorkspaceStates();
-        validateOpencodeKeys().catch(() => {});
-      }
-      pushStatusToWs();
-      break;
-    }
     case "toggleModel": {
       if (payload?.modelId && payload?.enabled !== undefined) _modelStates[payload.modelId] = payload.enabled;
       saveConfig();
@@ -277,98 +242,18 @@ async function handleWsMessage(ws: WebSocket, msg: any) {
       pushStatusToWs();
       break;
     }
-    case "addKey": {
-      _keys.push({ name: payload?.name || `Key ${_keys.length + 1}`, key: payload?.key || "", session: payload?.session || "" });
-      saveConfig();
-      _workspaceData = [];
-      _workspaceDataTime = 0;
-      validateOpencodeKeys().catch(() => {});
-      pushStatusToWs();
-      break;
-    }
-    case "updateKey": {
-      if (typeof payload?.index === "number" && _keys[payload.index]) {
-        if (payload.name !== undefined) _keys[payload.index].name = payload.name;
-        if (payload.key !== undefined) _keys[payload.index].key = payload.key;
-        if (payload.session !== undefined) _keys[payload.index].session = payload.session;
-        saveConfig();
-        _workspaceData = [];
-        _workspaceDataTime = 0;
-      }
-      validateOpencodeKeys().catch(() => {});
-      pushStatusToWs();
-      break;
-    }
-    case "deleteKey": {
-      if (typeof payload?.index === "number" && _keys[payload.index]) { _keys.splice(payload.index, 1); saveConfig(); }
-      _workspaceData = [];
-      _workspaceDataTime = 0;
-      validateOpencodeKeys().catch(() => {});
-      pushStatusToWs();
-      break;
-    }
-    case "setOcSession": {
-      if (payload?.sessionCookie) {
-        _ocSessionCookie = payload.sessionCookie;
-        for (const k of _keys) { if (!k.session) k.session = payload.sessionCookie; }
-        saveConfig();
-        _workspaceData = [];
-      }
-      pushStatusToWs();
-      break;
-    }
-    case "clearOcSession": {
-      _ocSessionCookie = "";
-      saveConfig();
-      _workspaceData = [];
-      pushStatusToWs();
-      break;
-    }
-    case "validateKeys": {
-      await validateOpencodeKeys();
-      pushStatusToWs();
-      break;
-    }
-    case "getWorkspaceUsage": {
-      try {
-        const result = await getWorkspaceUsage();
-        ws.send(JSON.stringify({ type: "workspaceUsage", data: { cached: result.cached, data: result.data.map(ws => ({
-          id: ws.id,
-          name: ws.name,
-          slug: ws.slug,
-          usage: ws.usage,
-          keyNames: ws.keyNames,
-          enabledKeyIDs: _workspaceKeyStates[ws.id] || [],
-        })) } }));
-      } catch { ws.send(JSON.stringify({ type: "workspaceUsage", data: { cached: false, data: [] } })); }
-      break;
-    }
     case "setWallpaper": {
       if (payload?.source) {
-        if (payload.source === "ai" && !_agnesApiKey) {
-          _wallpaperSource = "none";
-          saveConfig();
-          broadcastProgress();
-          const msg = JSON.stringify({ type: "wallpaperUpdated", data: { source: "none" } });
-          for (const client of _wsClients) {
-            if (client.readyState === WebSocket.OPEN) client.send(msg);
-          }
-          break;
-        }
         _wallpaperSource = payload.source;
         if (payload.prompt !== undefined && payload.prompt !== _wallpaperPrompt) {
           _wallpaperPrompt = payload.prompt;
-          try { unlinkSync(join(getCacheDir(), "ai-paper.jpg")); } catch {}
+          const { current, pending } = freegenWallpaperPaths();
+          try { if (existsSync(current)) unlinkSync(current); } catch {}
+          try { if (existsSync(pending)) unlinkSync(pending); } catch {}
         }
         saveConfig();
         if (_wallpaperSource === "ai") {
-          generateAiWallpaperToDisk().then(() => {
-            const msg2 = JSON.stringify({ type: "wallpaperUpdated", data: { source: _wallpaperSource, prompt: _wallpaperPrompt } });
-            for (const client of _wsClients) {
-              if (client.readyState === WebSocket.OPEN) client.send(msg2);
-            }
-            sendWallpaperData();
-          }).catch(() => {});
+          generateFreegenWallpaperToDisk({ forceApply: true }).catch(() => {});
         } else if (_wallpaperSource !== "none") {
           ensureWallpaperCached(_wallpaperSource).then(() => {
             sendWallpaperData();
@@ -382,17 +267,32 @@ async function handleWsMessage(ws: WebSocket, msg: any) {
       }
       break;
     }
+    case "generateFreegenWallpaper": {
+      if (payload?.prompt && payload.prompt !== _wallpaperPrompt) {
+        _wallpaperPrompt = payload.prompt;
+        const { current, pending } = freegenWallpaperPaths();
+        try { if (existsSync(current)) unlinkSync(current); } catch {}
+        try { if (existsSync(pending)) unlinkSync(pending); } catch {}
+        saveConfig();
+      }
+      _wallpaperSource = "ai";
+      generateFreegenWallpaperToDisk({ forceApply: true }).catch(() => {});
+      break;
+    }
     case "getBingBg": {
       if (payload?.source) _wallpaperSource = payload.source;
-      if (_wallpaperSource !== "none") {
-        ensureWallpaperCached(_wallpaperSource).then(() => {
-          sendWallpaperData(ws);
-        }).catch(() => {});
-      }
       if (_wallpaperSource === "ai") {
-        generateAiWallpaperToDisk().then(() => {
+        const { current } = freegenWallpaperPaths();
+        if (existsSync(current)) {
+          sendWallpaperData(ws);
+        }
+        generateFreegenWallpaperToDisk().then(() => {
           const msg = JSON.stringify({ type: "wallpaperUpdated", data: { source: _wallpaperSource, prompt: _wallpaperPrompt } });
           ws.send(msg);
+          sendWallpaperData(ws);
+        }).catch(() => {});
+      } else if (_wallpaperSource !== "none") {
+        ensureWallpaperCached(_wallpaperSource).then(() => {
           sendWallpaperData(ws);
         }).catch(() => {});
       }
@@ -461,7 +361,6 @@ async function handleWsMessage(ws: WebSocket, msg: any) {
         _dashboardConfig = { ..._dashboardConfig, ...safeBody };
         if (payload.mode) setMode(payload.mode.toLowerCase());
         saveConfig();
-        validateOpencodeKeys().catch(() => {});
       }
       pushStatusToWs();
       break;
@@ -473,9 +372,6 @@ async function handleWsMessage(ws: WebSocket, msg: any) {
       } else if (!_agnesApiKey) {
         const idx = _activeProviders.indexOf("agnes");
         if (idx !== -1) _activeProviders.splice(idx, 1);
-      }
-      if (!_agnesApiKey && _wallpaperSource === "ai") {
-        _wallpaperSource = "none";
       }
       saveConfig();
       pushStatusToWs();
@@ -505,28 +401,16 @@ async function handleWsMessage(ws: WebSocket, msg: any) {
       pushStatusToWs();
       break;
     }
-    case "setPollKey": {
-      _pollApiKey = payload?.key || "";
-      if (_pollApiKey && _activeProviders.indexOf("poll") === -1) {
-        _activeProviders.push("poll");
-      } else if (!_pollApiKey) {
-        const idx = _activeProviders.indexOf("poll");
-        if (idx !== -1) _activeProviders.splice(idx, 1);
-      }
-      saveConfig();
-      pushStatusToWs();
-      break;
-    }
     case "renameModel": {
       try {
         const modelId = payload?.modelId;
         const displayName = payload?.displayName;
         if (modelId) {
           if (displayName) {
-            const { setDisplayNameOverride } = await import("./opencode-client.ts");
+            const { setDisplayNameOverride } = await import("./openai-provider.ts");
             setDisplayNameOverride(modelId, displayName);
           } else {
-            const { setDisplayNameOverride } = await import("./opencode-client.ts");
+            const { setDisplayNameOverride } = await import("./openai-provider.ts");
             setDisplayNameOverride(modelId, "");
           }
           pushStatusToWs();
@@ -538,7 +422,7 @@ async function handleWsMessage(ws: WebSocket, msg: any) {
       try {
         const names = payload?.names as Record<string, string>;
         if (names) {
-          const { setDisplayNameOverride } = await import("./opencode-client.ts");
+          const { setDisplayNameOverride } = await import("./openai-provider.ts");
           for (const [id, name] of Object.entries(names)) {
             if (name) setDisplayNameOverride(id, name);
             else setDisplayNameOverride(id, "");
@@ -549,18 +433,9 @@ async function handleWsMessage(ws: WebSocket, msg: any) {
       break;
     }
     case "setProviders": {
-      const valid = ["umans", "opencode", "zen", "freebuff", "agnes", "poll", "openrouter", "bitnet", "codestral", "deepseek"];
+      const valid = ["umans", "zen", "freebuff", "agnes", "openrouter", "bitnet", "codestral", "deepseek"];
       if (Array.isArray(payload?.providers)) {
-        const wasOc = _activeProviders.indexOf("opencode") !== -1;
-        let requested = payload.providers.filter((p: string) => valid.includes(p));
-        const wantsOc = requested.indexOf("opencode") !== -1;
-        if (wantsOc && _keys.length === 0) {
-          requested = requested.filter((p: string) => p !== "opencode");
-        } else if (!wantsOc && wasOc) {
-          for (const ws of _workspaceData) _workspaceKeyStates[ws.id] = [];
-          setOcKeys([]);
-        }
-        _activeProviders = requested;
+        _activeProviders = payload.providers.filter((p: string) => valid.includes(p));
         saveConfig();
       }
       pushStatusToWs();
@@ -589,17 +464,18 @@ async function handleWsMessage(ws: WebSocket, msg: any) {
           ws.send(JSON.stringify({ type: "testChatResult", data: { error: "Invalid request" }, _id: reqId }));
           break;
         }
-        const provider = model.startsWith("pol/") ? "poll" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral/") ? "codestral" : (model.startsWith("bitnet/") || model === "bitnet-demo") ? "bitnet" : "go";
+        const provider = model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral/") ? "codestral" : (model.startsWith("bitnet/") || model === "bitnet-demo") ? "bitnet" : "go";
         const requestStart = Date.now();
         let resp: Response;
-        if (provider === "poll") resp = await pollChat(model, messages, undefined, stream, { max_tokens: 2048 });
-        else if (provider === "freebuff") resp = await freebuffChat(model, messages, undefined, stream, { max_tokens: 2048 });
+        if (provider === "freebuff") resp = await freebuffChat(model, messages, undefined, stream, { max_tokens: 2048 });
         else if (provider === "agnes") resp = await agnesChat(model, messages, undefined, stream, { max_tokens: 2048 });
         else if (provider === "codestral") resp = await codestralChat(model, messages, undefined, stream, { max_tokens: 2048 });
         else if (provider === "bitnet") resp = await bitnetChat(model, messages, undefined, stream);
-        else resp = await chatCompletion(model, messages, undefined, stream, { max_tokens: 2048 });
+        else resp = await openAIChat(model, messages, undefined, stream, { max_tokens: 2048 });
 
-        if (stream && resp.ok && resp.body) {
+        const responseCt = resp.headers.get("content-type") || "";
+        const isJsonResponse = responseCt.includes("application/json");
+        if (stream && resp.ok && resp.body && !isJsonResponse) {
           // Emit first-byte latency from LLM to server, then stream chunks over WS
           let firstByteLatency: number | null = null;
           const decoder = new TextDecoder();
@@ -806,7 +682,7 @@ try {
   }
 } catch (e) {}
 
-const PROVIDER_TAG_MAP: Record<string, string> = { opencode: "go", zen: "zen", freebuff: "freebuff", agnes: "agnes", codestral: "codestral", bitnet: "bitnet", deepseek: "deepseek", umans: "umans" };
+const PROVIDER_TAG_MAP: Record<string, string> = { zen: "zen", freebuff: "freebuff", agnes: "agnes", codestral: "codestral", bitnet: "bitnet", deepseek: "deepseek", umans: "umans" };
 
 function syncUmansTranslationKey() {
   const cfg = getUmansConfig();
@@ -822,19 +698,9 @@ function _pushModelStatesToConsole() {
   const modelIds = getModelIds();
 
   const activeTags = new Set(_activeProviders.map(p => PROVIDER_TAG_MAP[p] || p));
-  const enabled = new Set(modelIds.filter(id => {
-    if (!activeTags.has(getModelProviderTag(id))) return false;
-    if (getModelProviderTag(id) === "featherless") return _modelStates[id] === true;
-    return _modelStates[id] !== false;
-  }));
+  const enabled = new Set(modelIds.filter(id => activeTags.has(getModelProviderTag(id)) && _modelStates[id] !== false));
   setEnabledModelIds(enabled);
 }
-let _validKeys = new Set<string>();
-let _hasValidKey = false;
-let _keyBalances: Record<string, any> = {};
-
-let _keys: { name: string; key: string; session: string }[] = [];
-let _ocSessionCookie = "";
 let _dashboardCache: any = {};
 let _dashboardCacheTime = 0;
 const DASHBOARD_CACHE_TTL = 30000;
@@ -848,10 +714,9 @@ let _openRouterApiKey = "";
 
 let _codestralApiKey = "";
 
-let _pollApiKey = "";
-
-let _aiWallpaperGen = false;
-let _aiWallpaperGenPromise: Promise<boolean> | null = null;
+let _freegenGenRunning = false;
+let _freegenGenPromise: Promise<string> | null = null;
+let _freegenLastError = "";
 
 let _genProgress: { kind: string | null; progress: number } = { kind: null, progress: 0 };
 let _genResetTimer: ReturnType<typeof setTimeout> | null = null;
@@ -897,14 +762,12 @@ function setGenProgress(kind: string, progress: number) {
 }
 
 // ── Provider / Model Config ──
-let _activeProviders: string[] = ["opencode"]; // ["opencode", "zen", "freebuff", "agnes"]
+let _activeProviders: string[] = ["umans"];
 let _completionsModel: string = "mistral-latest";
 export function getCompletionsModel(): string { return _completionsModel; }
 let _supermavenEnabled = false;
 
-let _workspaceKeyStates: Record<string, string[]> = {};
-let _workspaceData: WorkspaceWithKeys[] = [];
-  let _umansState: any = { loggedIn: false, email: "", keys: [], currentKeyIndex: 0, enabledModels: [], userId: null };
+let _umansState: any = { loggedIn: false, email: "", keys: [], currentKeyIndex: 0, enabledModels: [], userId: null };
 
 let _dashboardConfig: Record<string, any> = {
   mode: "mock",
@@ -915,7 +778,7 @@ let _dashboardConfig: Record<string, any> = {
   wallpaper: "none",
   agnesKey: "",
   openrouterKey: "",
-  providers: ["opencode"],
+  providers: ["umans"],
 };
 
 // ── Wallpaper source and caching ──
@@ -923,23 +786,6 @@ function getCacheDir(): string {
   const d = join(getProjectRoot(), ".cache");
   if (!existsSync(d)) try { writeFileSync(join(d, ".gitkeep"), ""); } catch {}
   return d;
-}
-
-function downloadInsecure(url: string): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const req = https.get(url, { headers: { "User-Agent": "gc2xy/3.0" }, rejectUnauthorized: false }, (res) => {
-      if (res.statusCode && (res.statusCode < 200 || res.statusCode >= 300)) {
-        res.resume();
-        return reject(new Error(`download ${res.statusCode}`));
-      }
-      const chunks: Buffer[] = [];
-      res.on("data", c => chunks.push(c));
-      res.on("end", () => resolve(Buffer.concat(chunks)));
-      res.on("error", reject);
-    });
-    req.on("error", reject);
-    req.setTimeout(60000, () => { req.destroy(new Error("download timeout")); });
-  });
 }
 
 async function fetchBingWallpaper(): Promise<boolean> {
@@ -982,125 +828,175 @@ async function fetchWallhavenWallpaper(): Promise<boolean> {
   } catch { return false; }
 }
 
-async function generateAiWallpaperToDisk(): Promise<boolean> {
-  if (_aiWallpaperGen) {
-    if (_aiWallpaperGenPromise) await _aiWallpaperGenPromise;
-    return existsSync(join(getCacheDir(), "ai-paper.jpg"));
-  }
-  _aiWallpaperGen = true;
-  setGenProgress("image", 0);
-  _aiWallpaperGenPromise = (async () => {
-    let errMsg = "";
-    try {
-      const cachePath = join(getCacheDir(), "ai-paper.jpg");
-      const apiKey = _agnesApiKey;
-      if (!apiKey) throw new Error("no Agnes API key configured");
-
-      const prompt = _wallpaperPrompt || "hdr, polar night, vibrant rainbow colors, trees, mountains, glaciers, stars and dark skies";
-      const body = JSON.stringify({
-        model: "agnes-image-2.1-flash",
-        prompt,
-        n: 1,
-        size: "1024x768",
-        seed: Date.now(),
-      });
-      const headers = {
-        "Authorization": `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-        "User-Agent": "gc2xy/3.0",
-      };
-
-      let data: any = null;
-      let lastError: Error | null = null;
-      const MAX_RETRIES = 3;
-      for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-        try {
-          const resp = await fetch("https://apihub.agnes-ai.com/v1/images/generations", {
-            method: "POST", headers, body, signal: AbortSignal.timeout(60000),
-          });
-          if (resp.ok) { data = await resp.json(); lastError = null; break; }
-          const errBody = await resp.text();
-          lastError = new Error(`upstream ${resp.status}: ${errBody.slice(0, 300)}`);
-          const retryable = resp.status === 429 || resp.status >= 500;
-          console.log(`[AI WALLPAPER] attempt ${attempt}/${MAX_RETRIES} failed: ${lastError.message}`);
-          if (!retryable || attempt === MAX_RETRIES) throw lastError;
-          await new Promise(r => setTimeout(r, 2000 * attempt));
-        } catch (e: any) {
-          if (data) break;
-          lastError = e;
-          if (attempt < MAX_RETRIES) {
-            const delay = 2000 * attempt;
-            await new Promise(r => setTimeout(r, delay));
-          }
-        }
-      }
-      if (!data) throw lastError || new Error("upstream failed");
-
-      let imageUrl = "";
-      let b64Data = "";
-      if (data.data && Array.isArray(data.data) && data.data[0]) {
-        const item = data.data[0];
-        if (item.url) imageUrl = item.url;
-        else if (item.b64_json) b64Data = item.b64_json;
-      }
-
-      if (b64Data) {
-        writeFileSync(cachePath, Buffer.from(b64Data, "base64"));
-      } else if (imageUrl) {
-        try {
-          const buf = await downloadInsecure(imageUrl);
-          writeFileSync(cachePath, buf);
-        } catch (dlErr: any) {
-          console.log("[AI WALLPAPER] CDN download failed, falling back to Bing:", dlErr.message);
-          const bingOk = await fetchBingWallpaper();
-          if (!bingOk) throw new Error("Agnes CDN unreachable and Bing fallback failed: " + dlErr.message);
-          const bingBuf = readFileSync(join(getCacheDir(), "wallpaper-bing.jpg"));
-          writeFileSync(cachePath, bingBuf);
-          const fbMsg = JSON.stringify({ type: "wallpaperFallback", data: { reason: dlErr.message || "Agnes CDN unreachable" } });
-          for (const client of _wsClients) {
-            if (client.readyState === WebSocket.OPEN) client.send(fbMsg);
-          }
-        }
-      } else {
-        throw new Error("no image in response");
-      }
-      console.log("[AI WALLPAPER] generated", cachePath, Buffer.byteLength(b64Data ? Buffer.from(b64Data, "base64") : readFileSync(cachePath)), "bytes");
-      return true;
-    } catch (e: any) {
-      errMsg = e?.message || String(e);
-      console.log("[AI WALLPAPER] generation failed:", errMsg);
-      return false;
-    } finally {
-      _aiWallpaperGen = false;
-      _aiWallpaperGenPromise = null;
-      if (!errMsg) {
-        setGenProgress("image", 100);
-      } else {
-        const errMsg2 = JSON.stringify({ type: "wallpaperError", data: { message: errMsg } });
-        for (const client of _wsClients) {
-          if (client.readyState === WebSocket.OPEN) client.send(errMsg2);
-        }
-        if (_genResetTimer) { clearTimeout(_genResetTimer); _genResetTimer = null; }
-        _genProgress = { kind: null, progress: 0 };
-        broadcastProgress();
-      }
-    }
-  })();
-  return _aiWallpaperGenPromise;
+async function fetchFreegenSigned(prompt: string): Promise<{ ts: number; sig: string }> {
+  const resp = await fetch(FREEGEN_PROMPT_SIGNER, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Accept": "application/json", "User-Agent": "gc2xy/3.0" },
+    body: JSON.stringify({ prompt }),
+    signal: AbortSignal.timeout(30000),
+  });
+  if (!resp.ok) throw new Error(`signer ${resp.status}`);
+  const data: any = await resp.json();
+  if (!data.ts || !data.sig) throw new Error("signer missing ts/sig");
+  return data;
 }
 
-async function fetchAiWallpaper(): Promise<boolean> {
-  const cachePath = join(getCacheDir(), "ai-paper.jpg");
+async function fetchFreegenImageUrl(prompt: string, ratio = "16:9"): Promise<string> {
+  const { ts, sig } = await fetchFreegenSigned(prompt);
+  const resp = await fetch(FREEGEN_IMAGE_GENERATOR, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Accept": "application/json", "User-Agent": "gc2xy/3.0" },
+    body: JSON.stringify({ prompt, ts, sig, ratio_id: ratio }),
+    signal: AbortSignal.timeout(60000),
+  });
+  if (!resp.ok) {
+    let txt = "";
+    try { txt = await resp.text(); } catch {}
+    throw new Error(`generator ${resp.status}: ${txt}`);
+  }
+  const data: any = await resp.json();
+  if (data.image_data_url) return data.image_data_url;
+  if (data.job_id) return await waitFreegenWs(data.job_id);
+  throw new Error("no image_data_url or job_id from freegen");
+}
+
+function waitFreegenWs(jobId: string, timeoutMs = 120000): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let ws: WebSocket | null = null;
+    let done = false;
+    const timer = setTimeout(() => {
+      done = true;
+      try { ws && ws.close(); } catch {}
+      reject(new Error("freegen websocket timeout"));
+    }, timeoutMs);
+    try {
+      ws = new WebSocket(FREEGEN_WS_BRIDGE, [], { headers: { Origin: "https://freegen.app" } } as any);
+    } catch (e) {
+      clearTimeout(timer);
+      reject(e);
+      return;
+    }
+    ws.onopen = () => {
+      try { ws && ws.send(JSON.stringify({ type: "subscribe", job_id: jobId, auth: Date.now().toString() })); } catch (e: any) { clearTimeout(timer); reject(e); }
+    };
+    ws.onmessage = (event: any) => {
+      let msg: any;
+      try { msg = JSON.parse(event.data); } catch { return; }
+      if (msg.type === "result" && msg.image_data) {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        try { ws && ws.close(); } catch {}
+        resolve(msg.image_data);
+      } else if (msg.type === "error") {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        try { ws && ws.close(); } catch {}
+        reject(new Error(msg.message || "freegen generation error"));
+      }
+    };
+    ws.onerror = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      try { ws && ws.close(); } catch {}
+      reject(new Error("freegen websocket error"));
+    };
+    ws.onclose = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      reject(new Error("freegen websocket closed"));
+    };
+  });
+}
+
+async function downloadImageToFile(imageUrl: string, filePath: string): Promise<Buffer> {
+  const resp = await fetch(imageUrl, { headers: { "User-Agent": "gc2xy/3.0" }, signal: AbortSignal.timeout(60000) });
+  if (!resp.ok) throw new Error(`download ${resp.status}`);
+  const buf = Buffer.from(await resp.arrayBuffer());
+  if (!buf || buf.length < 1024) throw new Error("image too small");
+  writeFileSync(filePath, buf);
+  return buf;
+}
+
+function freegenWallpaperPaths() {
+  return {
+    current: join(getCacheDir(), "wallpaper-freegen.jpg"),
+    pending: join(getCacheDir(), "wallpaper-freegen.pending.jpg"),
+  };
+}
+
+async function generateFreegenWallpaperToDisk({ prompt, ratio = "16:9", forceApply = false }: { prompt?: string; ratio?: string; forceApply?: boolean } = {}): Promise<string> {
+  if (_freegenGenRunning) {
+    console.log("[FreeGen] generation already in progress, waiting...");
+    if (_freegenGenPromise) await _freegenGenPromise;
+    return freegenWallpaperPaths().current;
+  }
+  _freegenGenRunning = true;
+  _freegenLastError = "";
+  setGenProgress("image", 0);
+  _freegenGenPromise = (async () => {
+    try {
+      const { current, pending } = freegenWallpaperPaths();
+      const finalPrompt = prompt || _wallpaperPrompt || "epic cinematic landscape, mountains at sunset, vibrant colors, ultra detailed, 16:9 wallpaper";
+      console.log(`[FreeGen] generating wallpaper (ratio ${ratio})...`);
+      const imageUrl = await fetchFreegenImageUrl(finalPrompt, ratio);
+      await downloadImageToFile(imageUrl, pending);
+      if (existsSync(current)) unlinkSync(current);
+      renameSync(pending, current);
+      console.log("[FreeGen] wallpaper saved and activated", current);
+      if (forceApply) {
+        _wallpaperSource = "ai";
+        saveConfig();
+      }
+      setGenProgress("image", 100);
+      const updated = JSON.stringify({ type: "wallpaperUpdated", data: { source: _wallpaperSource, prompt: _wallpaperPrompt } });
+      for (const client of _wsClients) {
+        if (client.readyState === WebSocket.OPEN) client.send(updated);
+      }
+      sendWallpaperData();
+      return current;
+    } catch (e: any) {
+      _freegenLastError = e?.message || String(e);
+      console.log("[FreeGen] generation failed:", _freegenLastError);
+      const errMsg = JSON.stringify({ type: "wallpaperError", data: { message: _freegenLastError } });
+      for (const client of _wsClients) {
+        if (client.readyState === WebSocket.OPEN) client.send(errMsg);
+      }
+      if (_genResetTimer) { clearTimeout(_genResetTimer); _genResetTimer = null; }
+      _genProgress = { kind: null, progress: 0 };
+      broadcastProgress();
+      throw e;
+    } finally {
+      _freegenGenRunning = false;
+      _freegenGenPromise = null;
+    }
+  })();
+  return _freegenGenPromise;
+}
+
+function freegenBackgroundRefresh() {
+  if (_freegenGenRunning || !_wallpaperPrompt) return;
+  console.log("[FreeGen] background refresh queued");
+  generateFreegenWallpaperToDisk({ forceApply: false }).catch(() => {});
+}
+
+async function fetchFreegenWallpaper(): Promise<boolean> {
+  const { current } = freegenWallpaperPaths();
   const oneHour = 60 * 60 * 1000;
-  if (existsSync(cachePath) && Date.now() - statSync(cachePath).mtimeMs < oneHour) return true;
-  return generateAiWallpaperToDisk();
+  if (existsSync(current) && Date.now() - statSync(current).mtimeMs < oneHour) return true;
+  try {
+    await generateFreegenWallpaperToDisk();
+    return true;
+  } catch { return false; }
 }
 
 async function ensureWallpaperCached(source: string): Promise<boolean> {
   if (source === "bing") return fetchBingWallpaper();
   if (source === "wallhaven") return fetchWallhavenWallpaper();
-  if (source === "ai") return fetchAiWallpaper();
+  if (source === "ai") return fetchFreegenWallpaper();
   return false;
 }
 
@@ -1109,7 +1005,7 @@ export function getWallpaperSource(): string { return _wallpaperSource; }
 function getWallpaperPath(source: string): string {
   if (source === "bing") return join(getCacheDir(), "wallpaper-bing.jpg");
   if (source === "wallhaven") return join(getCacheDir(), "wallpaper-haven.jpg");
-  if (source === "ai") return join(getCacheDir(), "ai-paper.jpg");
+  if (source === "ai") return join(getCacheDir(), "wallpaper-freegen.jpg");
   return "";
 }
 
@@ -1132,25 +1028,6 @@ function sendWallpaperData(ws?: WebSocket) {
   } catch {}
 }
 
-// Load keys from env
-try {
-  const envKeys = process.env.OPENCODE_API_KEYS;
-  if (envKeys) {
-    const parsed = JSON.parse(envKeys);
-    if (Array.isArray(parsed)) {
-      parsed.filter((k: string) => k.length > 5).forEach((k: string) => {
-        _keys.push({ name: `Key ${k.slice(0, 8)}...`, key: k, session: "" });
-      });
-    }
-  } else if (process.env.OPENCODE_API_KEY && process.env.OPENCODE_API_KEY.length > 5) {
-    _keys.push({ name: "Primary Key", key: process.env.OPENCODE_API_KEY, session: "" });
-  }
-  const os = process.env.OPENCODE_SESSION;
-  if (os && os.length > 5) {
-    _ocSessionCookie = os;
-  }
-} catch (e) {}
-
 // Load persisted keys from .config/config.json on startup
 loadConfig();
 
@@ -1162,37 +1039,19 @@ function loadConfig() {
     const p = join(getProjectRoot(), ".config", "config.json");
     if (existsSync(p)) {
       const c = JSON.parse(readFileSync(p, "utf-8"));
-      if (c.OPENCODE_SESSION) _ocSessionCookie = c.OPENCODE_SESSION;
-      if (c.KEYS && Array.isArray(c.KEYS)) {
-        for (const t of c.KEYS) {
-          if (t.key && !_keys.find(x => x.key === t.key)) {
-            let name = t.name || "Key";
-            if (name === "Default" || !name.trim()) {
-              name = t.key.slice(0, 8) + "...";
-            }
-            _keys.push({ name, key: t.key, session: t.session || "" });
-            if (t.session && !_ocSessionCookie) _ocSessionCookie = t.session;
-          }
-        }
-      } else if (c.TOKENS && Array.isArray(c.TOKENS)) {
-        for (const t of c.TOKENS) {
-          const k = (t as any).token || (t as any).key;
-          if (k && !_keys.find(x => x.key === k)) {
-            let name = t.name || "Key";
-            if (name === "Default" || !name.trim()) name = k.slice(0, 8) + "...";
-            _keys.push({ name, key: k, session: t.session || "" });
-            if (t.session && !_ocSessionCookie) _ocSessionCookie = t.session;
-          }
-        }
-      }
       if (c.wallpaper) _wallpaperSource = c.wallpaper;
-      if (c.wallpaperPrompt) _wallpaperPrompt = c.wallpaperPrompt;
-      if (c.providers && Array.isArray(c.providers)) _activeProviders = c.providers;
-      else if (c.provider) _activeProviders = [c.provider]; // migrate old single-value
+      if (c.wallpaperPrompt || c.freegenPrompt) _wallpaperPrompt = c.freegenPrompt || c.wallpaperPrompt;
+      if (c.providers && Array.isArray(c.providers)) {
+        _activeProviders = c.providers.filter((p: string) => p !== "opencode");
+      } else if (c.provider) _activeProviders = [c.provider]; // migrate old single-value
       if (c.agnesKey) { _agnesApiKey = c.agnesKey; if (_activeProviders.indexOf("agnes") === -1) _activeProviders.push("agnes"); }
       if (c.openrouterKey) { _openRouterApiKey = c.openrouterKey; if (_activeProviders.indexOf("openrouter") === -1) _activeProviders.push("openrouter"); }
       if (c.codestralKey) { _codestralApiKey = c.codestralKey; if (_activeProviders.indexOf("codestral") === -1) _activeProviders.push("codestral"); }
-      if (c.pollApiKey) { _pollApiKey = c.pollApiKey; if (_activeProviders.indexOf("poll") === -1) _activeProviders.push("poll"); }
+      // migrate legacy providers out of active list
+      if (_activeProviders.some((p: string) => ["opencode", "poll", "featherless"].includes(p))) {
+        _activeProviders = _activeProviders.filter((p: string) => !["opencode", "poll", "featherless"].includes(p));
+        if (_activeProviders.length === 0) _activeProviders = ["umans"];
+      }
       if (c.githubSettings) {
         if (c.githubSettings.skuMode) setGithubSku(c.githubSettings.skuMode);
         if (c.githubSettings.username) setGithubUsername(c.githubSettings.username);
@@ -1204,7 +1063,6 @@ function loadConfig() {
         setSupermavenEnabled(_supermavenEnabled);
       }
       if (c.locale) setForcedLocale(c.locale);
-      if (c.workspaceKeyStates && typeof c.workspaceKeyStates === "object") _workspaceKeyStates = c.workspaceKeyStates;
       if (c.umans) {
         _umansState = { ..._umansState, ...c.umans };
         if (c.umans.email) setUmansEmail(c.umans.email);
@@ -1235,15 +1093,12 @@ function saveConfig() {
     if (!existsSync(dir)) try { writeFileSync(join(dir, ".gitkeep"), ""); } catch {}
     const p = join(dir, "config.json");
     const existing = existsSync(p) ? JSON.parse(readFileSync(p, "utf-8")) : {};
-    existing.OPENCODE_SESSION = _ocSessionCookie;
-    existing.KEYS = _keys;
-    existing.workspaceKeyStates = _workspaceKeyStates;
     existing.wallpaper = _wallpaperSource;
     existing.wallpaperPrompt = _wallpaperPrompt;
+    existing.freegenPrompt = _wallpaperPrompt;
     existing.agnesKey = _agnesApiKey;
     existing.openrouterKey = _openRouterApiKey;
     existing.codestralKey = _codestralApiKey;
-    existing.pollApiKey = _pollApiKey;
     existing.providers = _activeProviders;
     existing.completionsModel = _completionsModel;
     existing.supermavenEnabled = _supermavenEnabled;
@@ -1272,30 +1127,6 @@ function saveConfig() {
     }
     writeFileSync(p, JSON.stringify(existing, null, 2));
   } catch {}
-}
-
-async function validateOpencodeKeys(): Promise<void> {
-  _hasValidKey = false;
-  _validKeys.clear();
-  if (_keys.length === 0) return;
-  let anyValid = false;
-  for (const k of _keys) {
-    try {
-      const resp = await fetch("https://opencode.ai/zen/go/v1/models", {
-        headers: { Authorization: `Bearer ${k.key}` }, signal: AbortSignal.timeout(5000),
-      });
-      if (resp.ok) {
-        _validKeys.add(k.key); anyValid = true;
-        try {
-          const balResp = await fetch("https://opencode.ai/zen/go/v1/dashboard/billing", {
-            headers: { Authorization: `Bearer ${k.key}` }, signal: AbortSignal.timeout(3000),
-          });
-          if (balResp.ok) _keyBalances[k.key] = await balResp.json();
-        } catch {}
-      } else _validKeys.delete(k.key);
-    } catch { _validKeys.delete(k.key); }
-  }
-  _hasValidKey = anyValid;
 }
 
 function getDashboardHtml(): string {
@@ -1336,6 +1167,10 @@ function getDisplayNameOverride(id: string): string | null {
 function formatModelName(id: string): string {
   const override = getDisplayNameOverride(id);
   if (override) return override;
+  if (id.startsWith("umans-")) {
+    const name = getUmansModelDisplayName(id);
+    return `🤖 ${name}`;
+  }
   const isFreebuff = id.startsWith("freebuff/");
   const limTag = isFreebuff && getFreebuffModelPremium(id) ? " [LIM]" : "";
   const parts = getModelDisplayName(id.includes("/") ? id.split("/").pop() || id : id);
@@ -1345,20 +1180,6 @@ function formatModelName(id: string): string {
   const modes = l.includes("deepseek-v4") ? ["low", "medium", "high", "max"] : ["low", "medium", "high"];
   const tagMap: Record<string, string> = { low: toSmallCaps("lo"), medium: toSmallCaps("md"), high: toSmallCaps("hi"), max: toSmallCaps("mx") };
   return `💡 ${parts} [${modes.map(m => tagMap[m] || m).join(", ")}]`;
-}
-
-function getOcModels(): any[] {
-  const modelIds = getModelIds();
-  const canShowPremium = _hasValidKey;
-  return modelIds.filter(id => getModelProviderTag(id) === "go").map((id: string) => {
-    return {
-      id, name: formatModelName(id),
-      family: getModelFamily(id) || "unknown",
-      providerTag: "go",
-      enabled: canShowPremium ? (_modelStates[id] !== false) : false,
-      free: false, locked: !canShowPremium,
-    };
-  });
 }
 
 function getOpenRouterModels(): any[] {
@@ -1377,12 +1198,7 @@ function getOpenRouterModels(): any[] {
 
 function getAgnesModels(): any[] {
   const modelIds = getModelIds();
-  const hasKey = !!_agnesApiKey;
-  const hasOpenRouter = !!_openRouterApiKey;
-  const hasCodestral = !!_codestralApiKey;
-  const canShowPremium = _hasValidKey;
   return modelIds.map((id: string) => {
-    const isFree = id.startsWith("pol/") || id.startsWith("freebuff/");
     const isFreebuff = id.startsWith("freebuff/");
     const isAgnes = id.startsWith("agnes");
     const isOpenRouter = id.startsWith("openrouter/");
@@ -1391,10 +1207,10 @@ function getAgnesModels(): any[] {
     const providerTag = getModelProviderTag(id);
     return {
       id, name: formatModelName(id),
-      family: family || (isOpenRouter ? "openrouter" : isFreebuff ? "freebuff" : isAgnes ? "agnes" : isCodestral ? "codestral" : isFree ? "pollinations" : "unknown"),
+      family: family || (isOpenRouter ? "openrouter" : isFreebuff ? "freebuff" : isAgnes ? "agnes" : isCodestral ? "codestral" : "unknown"),
       providerTag,
       enabled: _modelStates[id] !== false,
-      free: isFree, locked: false,
+      free: isFreebuff, locked: false,
     };
   });
 }
@@ -1402,19 +1218,12 @@ function getAgnesModels(): any[] {
 function getModels(): any[] {
   const apiIds = getModelIds();
   const modelIds = [...new Set([...apiIds])];
-  const canShowPremium = _hasValidKey;
   const hasAgnes = !!_agnesApiKey;
   const hasOpenRouter = !!_openRouterApiKey;
 
-  const activeTags = new Set(_activeProviders.map(p => {
-    if (p === "opencode") return "go";
-    if (p === "umans") return "umans";
-    return p;
-  }));
+  const activeTags = new Set(_activeProviders.map(p => (p === "umans" ? "umans" : p)));
   return modelIds.filter((id: string) => activeTags.has(getModelProviderTag(id))).map((id: string) => {
-    const isFree = id.startsWith("pol/") || id.startsWith("freebuff/");
     const isFreebuff = id.startsWith("freebuff/");
-    const isFeatherless = id.startsWith("featherless/");
     const isAgnes = id.startsWith("agnes");
     const isOpenRouter = id.startsWith("openrouter/");
     const family = getModelFamily(id);
@@ -1422,10 +1231,10 @@ function getModels(): any[] {
     const needsKey = isOpenRouter ? !hasOpenRouter : isAgnes ? !hasAgnes : false;
     return {
       id, name: formatModelName(id),
-      family: family || (isOpenRouter ? "openrouter" : isFreebuff ? "freebuff" : isFeatherless ? "featherless" : isAgnes ? "agnes" : isFree ? "pollinations" : "unknown"),
+      family: family || (isOpenRouter ? "openrouter" : isFreebuff ? "freebuff" : isAgnes ? "agnes" : "unknown"),
       providerTag,
       enabled: _modelStates[id] !== false,
-      free: isFree, locked: needsKey || (!isFree && !canShowPremium),
+      free: isFreebuff, locked: needsKey,
     };
   });
 }
@@ -1442,12 +1251,11 @@ export async function handleDashboard(req: HandlerInput): Promise<HandlerResult>
   // Serve dashboard HTML — always available
   if (pathname === "/dashboard") {
     let html = getDashboardHtml();
-    // Inject wallpaper as inline base64 <style> into </head> (like AGNES-PROXY)
+    // Inject wallpaper as inline base64 <style> into </head> (like UMANS-PROXY)
     const wpMode = _wallpaperSource;
     let wpStyle = "";
     if (wpMode === "bing" || wpMode === "wallhaven" || wpMode === "ai") {
-      await ensureWallpaperCached(wpMode);
-      const cachePath = join(getCacheDir(), wpMode === "bing" ? "wallpaper-bing.jpg" : wpMode === "wallhaven" ? "wallpaper-haven.jpg" : "ai-paper.jpg");
+      const cachePath = join(getCacheDir(), wpMode === "bing" ? "wallpaper-bing.jpg" : wpMode === "wallhaven" ? "wallpaper-haven.jpg" : "wallpaper-freegen.jpg");
       if (existsSync(cachePath)) {
         const imgBuf = readFileSync(cachePath);
         wpStyle = `<style>body{background:url(data:image/jpeg;base64,${imgBuf.toString("base64")}) center/cover no-repeat fixed !important}</style>`;
@@ -1458,9 +1266,11 @@ export async function handleDashboard(req: HandlerInput): Promise<HandlerResult>
     // Set data-wp-mode on <body> for client-side awareness
     html = html.replace("<body>", `<body data-wp-mode="${wpMode}">`);
     if (wpStyle) html = html.replace("</head>", wpStyle + "</head>");
-    // Refresh stale Bing/wallhaven/AI wallpaper in background
-    if (wpMode === "bing" || wpMode === "wallhaven" || wpMode === "ai") {
+    // Refresh stale Bing/wallhaven/AI wallpaper in background (never block page load on AI generation)
+    if (wpMode === "bing" || wpMode === "wallhaven") {
       ensureWallpaperCached(wpMode).catch(() => {});
+    } else if (wpMode === "ai") {
+      freegenBackgroundRefresh();
     }
     return {
       handled: true,
@@ -1472,7 +1282,7 @@ export async function handleDashboard(req: HandlerInput): Promise<HandlerResult>
     };
   }
 
-  // Serve wallpaper image (like AGNES-PROXY /api/bg)
+  // Serve wallpaper image (like UMANS-PROXY /api/bg)
   if (pathname === "/api/bg" && method === "GET") {
     let mode = _wallpaperSource || "none";
     if (mode === "none") {
@@ -1480,22 +1290,19 @@ export async function handleDashboard(req: HandlerInput): Promise<HandlerResult>
     }
     const cacheDir = getCacheDir();
     if (mode === "ai") {
-      if (!_agnesApiKey) { mode = "bing"; }
-      else {
-        const aiFile = join(cacheDir, "ai-paper.jpg");
+      const aiFile = join(cacheDir, "wallpaper-freegen.jpg");
+      if (existsSync(aiFile)) {
+        const imgData = readFileSync(aiFile);
+        return { handled: true, response: { statusCode: 200, headers: { "content-type": "image/jpeg", "cache-control": "no-cache", "content-length": String(imgData.length), "connection": "close", "access-control-allow-origin": "*" }, body: imgData } };
+      }
+      try {
+        await generateFreegenWallpaperToDisk();
         if (existsSync(aiFile)) {
           const imgData = readFileSync(aiFile);
           return { handled: true, response: { statusCode: 200, headers: { "content-type": "image/jpeg", "cache-control": "no-cache", "content-length": String(imgData.length), "connection": "close", "access-control-allow-origin": "*" }, body: imgData } };
         }
-        try {
-          await generateAiWallpaperToDisk();
-          if (existsSync(aiFile)) {
-            const imgData = readFileSync(aiFile);
-            return { handled: true, response: { statusCode: 200, headers: { "content-type": "image/jpeg", "cache-control": "no-cache", "content-length": String(imgData.length), "connection": "close", "access-control-allow-origin": "*" }, body: imgData } };
-          }
-        } catch {}
-        return { handled: true, response: { statusCode: 500, headers: { "content-type": "text/plain", "connection": "close", "access-control-allow-origin": "*" }, body: Buffer.from("generation failed") } };
-      }
+      } catch {}
+      return { handled: true, response: { statusCode: 500, headers: { "content-type": "text/plain", "connection": "close", "access-control-allow-origin": "*" }, body: Buffer.from("generation failed") } };
     }
     if (mode === "bing") {
       const cachePath = join(cacheDir, "wallpaper-bing.jpg");
@@ -1535,16 +1342,8 @@ export async function handleDashboard(req: HandlerInput): Promise<HandlerResult>
     return { handled: true, response: jsonResponse(_genProgress) };
   }
 
-  // Export Agnes API key for external modules (used by opencode-client for routing)
-  if (pathname === "/api/agnes-key" && method === "GET") {
-    return { handled: true, response: jsonResponse({ key: _agnesApiKey }) };
-  }
-
   // Single initial-load endpoint — returns full config + status snapshot
   if (pathname === "/api/init" && method === "GET") {
-    if (_validKeys.size === 0 && _keys.length > 0) {
-      await validateOpencodeKeys().catch(() => {});
-    }
     const snap = takeSnapshot();
     return { handled: true, response: jsonResponse(snap) };
   }
@@ -1577,59 +1376,11 @@ export async function handleDashboard(req: HandlerInput): Promise<HandlerResult>
   return { handled: false };
 }
 
-// ── OpenCode Workspace Usage Cache ──
-let _workspaceDataTime = 0;
-const WORKSPACE_CACHE_TTL = 60 * 60 * 1000;
 let _umansUsageCache: any = null;
 let _umansUsageCacheTime = 0;
 let _umansUsageHistoryCache: any = null;
 let _umansUsageHistoryCacheTime = 0;
 const UMANS_USAGE_CACHE_TTL = 60 * 1000;
-
-async function fetchWorkspaceUsageData(): Promise<WorkspaceWithKeys[]> {
-  const envSession = (process.env.OPENCODE_SESSION || "").trim();
-  if (envSession && !_ocSessionCookie) _ocSessionCookie = envSession;
-  const globalSession = _ocSessionCookie || "";
-  if (!globalSession) return [];
-
-  try {
-    const ws = await fetchAllWorkspacesWithKeysAndUsage(globalSession);
-    console.log(`[WS] workspace-centric: ${ws.length} workspaces`);
-    _workspaceData = ws;
-    syncKeysFromWorkspaceStates();
-    saveConfig();
-    return ws;
-  } catch (e: any) {
-    console.log(`[WS] workspace fetch failed - ${e.message}`);
-    return _workspaceData;
-  }
-}
-
-function syncKeysFromWorkspaceStates() {
-  if (_workspaceData.length === 0) return;
-  const newKeys: { name: string; key: string; session: string }[] = [];
-  for (const ws of _workspaceData) {
-    const hasExplicitState = ws.id in _workspaceKeyStates;
-    const enabledIDs = _workspaceKeyStates[ws.id] || [];
-    for (const kn of ws.keyNames) {
-      const isEnabled = hasExplicitState ? enabledIDs.includes(kn.keyID) : true;
-      if (isEnabled) {
-        const existing = _keys.find(k => k.name === kn.name || k.key.endsWith(kn.keyID));
-        if (existing && !newKeys.find(nk => nk.key === existing.key)) newKeys.push(existing);
-      }
-    }
-  }
-  _keys = newKeys;
-  setOcKeys(newKeys.map(k => k.key));
-  const hasOcKeys = newKeys.length > 0;
-  const hasOcProvider = _activeProviders.indexOf("opencode") !== -1;
-  if (hasOcKeys && !hasOcProvider) {
-    _activeProviders.push("opencode");
-  } else if (!hasOcKeys && hasOcProvider) {
-    _activeProviders.splice(_activeProviders.indexOf("opencode"), 1);
-  }
-  saveConfig();
-}
 
 export function incrementRequests() { _requestCount++; }
 
@@ -1641,34 +1392,6 @@ function obfuscateEmail(email: string): string {
   return user[0] + "*".repeat(user.length - 1) + "@" + maskedDomain;
 }
 
-async function getWorkspaceUsage(): Promise<{ cached: boolean; data: WorkspaceWithKeys[] }> {
-  const now = Date.now();
-  if (_workspaceData.length > 0 && now - _workspaceDataTime < WORKSPACE_CACHE_TTL) {
-    return { cached: true, data: _workspaceData };
-  }
-  try {
-    const data = await fetchWorkspaceUsageData();
-    _workspaceDataTime = now;
-    return { cached: false, data };
-  } catch {
-    return { cached: true, data: _workspaceData };
-  }
-}
-
-export function getSessionDebugInfo(): Record<string, any> {
-  return {
-    ocSessionCookie: _ocSessionCookie ? `${_ocSessionCookie.slice(0, 16)}...${_ocSessionCookie.slice(-8)}` : "(empty)",
-    ocSessionCookieLen: _ocSessionCookie.length,
-    opencodeKeys: _keys.map(k => ({
-      name: k.name,
-      hasSession: !!k.session,
-      sessionPrefix: k.session ? k.session.slice(0, 10) + "..." : "",
-    })),
-    workspaceCacheEntries: _workspaceData.length,
-    workspaceCacheTime: _workspaceDataTime,
-  };
-}
-
 export function getAgnesApiKey(): string {
   return _agnesApiKey;
 }
@@ -1678,7 +1401,7 @@ export function getOpenRouterApiKey(): string {
 }
 
 export function filterModelsByConfig(modelIds: string[]): string[] {
-  const PROVIDER_MAP: Record<string, string> = { opencode: "go", zen: "zen", freebuff: "freebuff", agnes: "agnes", codestral: "codestral", bitnet: "bitnet", deepseek: "deepseek", umans: "umans" };
+  const PROVIDER_MAP: Record<string, string> = { zen: "zen", freebuff: "freebuff", agnes: "agnes", codestral: "codestral", bitnet: "bitnet", deepseek: "deepseek", umans: "umans" };
   try {
     const cp = join(getProjectRoot(), ".config", "config.json");
     if (existsSync(cp)) {

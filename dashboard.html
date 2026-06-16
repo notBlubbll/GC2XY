@@ -432,6 +432,8 @@
     .env-body .input-group button { padding:0.15rem 0.4rem; font-size:0.6rem !important; }
     .env-body .mb-2 { margin-bottom:0.4rem !important; }
     .env-body .text-muted { font-size:0.6rem !important; }
+    .token-blurred { filter:blur(5px); transition:filter 0.2s ease; }
+    .token-blurred:hover { filter:blur(0)!important; }
   </style>
 </head>
 <body>
@@ -486,9 +488,9 @@
               <div style="position:absolute;inset:-6px -12px -4px -12px;background:linear-gradient(135deg,rgba(255,255,255,0.08),rgba(255,255,255,0.02));border-radius:8px;pointer-events:none;backdrop-filter:blur(10px) saturate(160%);-webkit-backdrop-filter:blur(10px) saturate(160%);border:1px solid rgba(255,255,255,0.12);box-shadow:0 4px 16px rgba(0,0,0,0.15)"></div>
               <div class="position-relative" style="font-size:10px;color:rgba(255,255,255,0.55);letter-spacing:0.5px;text-transform:uppercase;writing-mode:vertical-rl;transform:rotate(180deg);padding-right:2px">WINDOW</div>
               <div class="position-relative" style="display:flex;gap:12px;justify-content:center;align-items:stretch;flex:1;padding:0 4px">
-                <div class="text-center" style="flex:1;min-width:70px"><div style="font-size:9px;color:rgba(255,255,255,0.45);text-transform:uppercase">Requests</div><div style="font-size:13px;font-weight:600;color:white" id="windowRequests">n/a</div></div>
+                <div class="text-center" style="flex:1;min-width:70px"><div style="font-size:9px;color:rgba(255,255,255,0.45);text-transform:uppercase">Requests</div><div style="font-size:13px;font-weight:600;color:white;white-space:nowrap" id="windowRequests">n/a</div></div>
                 <div style="width:1px;height:24px;background:rgba(255,255,255,0.15);align-self:center"></div>
-                <div class="text-center" style="flex:1;min-width:90px"><div style="font-size:9px;color:rgba(255,255,255,0.45);text-transform:uppercase">Tokens</div><div style="font-size:13px;font-weight:600;color:white" id="windowTokens">n/a</div></div>
+                <div class="text-center" style="flex:1;min-width:90px"><div style="font-size:9px;color:rgba(255,255,255,0.45);text-transform:uppercase">Tokens</div><div style="font-size:13px;font-weight:600;color:white;white-space:nowrap" id="windowTokens">n/a</div></div>
               </div>
             </div>
           </div>
@@ -503,22 +505,6 @@
     </div>
 
 
-
-    <div id="ocLoginRow" class="row text-center align-items-stretch mb-3" style="display:none">
-      <div class="col-12"><div class="card" data-glass><div class="glass-panel"></div><div class="card-content" style="padding:15px">
-        <div class="d-flex flex-wrap align-items-center justify-content-center gap-2">
-          <span style="color:rgba(255,255,255,0.6);font-size:14px">OpenCode session cookie</span>
-          <a href="https://opencode.ai/workspace" target="_blank" class="btn btn-white-bg btn-sm" style="font-size:12px">Open opencode.ai</a>
-          <span style="color:rgba(255,255,255,0.4);font-size:12px">paste <code>auth</code> cookie value:</span>
-          <input type="text" id="ocSessionInput" placeholder="Fe26.2*..." class="zen-input" />
-          <button class="btn btn-sm btn-outline-action" onclick="saveOcSession()" style="font-size:11px">Save</button>
-          <button class="btn btn-sm" style="background:rgba(220,53,69,0.2);color:#dc3545;border:none;font-size:11px" onclick="logoutOc()">Clear</button>
-        </div>
-        <div style="margin-top:6px;font-size:11px;color:rgba(255,255,255,0.4);text-align:center">
-          DevTools → Application → Cookies → <code style="background:rgba(255,255,255,0.05);padding:1px 4px;border-radius:3px">https://opencode.ai</code> → copy <code style="background:rgba(255,255,255,0.05);padding:1px 4px;border-radius:3px">auth</code> value
-        </div>
-      </div></div></div>
-    </div>
 
     <div class="row">
        <div class="col-lg-8">
@@ -540,44 +526,6 @@
       </div>
 
       <div class="col-lg-4">
-        <div class="card" data-glass data-section="keys-and-usage">
-          <div class="glass-panel"></div>
-          <div class="card-content">
-            <div class="card-header collapsible-header d-flex justify-content-between align-items-center" onclick="toggleSection('keys-and-usage')">
-              <span>
-                <i class="bi bi-chevron-down toggle-icon me-1"></i>
-                <i class="bi bi-bar-chart-fill me-2"></i><span data-i18n="section_opencode_stats">OPENCODE STATS</span>
-              </span>
-              <span class="d-flex align-items-stretch gap-2" style="height:100%">
-                <span class="badge bg-secondary d-flex align-items-center" id="keysCountBadge">0</span>
-                <button class="btn btn-sm btn-outline-action rounded-0" id="addKeyBtn" style="font-size:11px"><i class="bi bi-pencil me-1"></i><span data-i18n="btn_manage">Manage</span></button>
-              </span>
-            </div>
-            <div class="card-body collapse-section" id="section-keys-and-usage">
-              <div id="apiKeysContainer"></div>
-            </div>
-          </div>
-        </div>
-
-        <div class="card" data-glass data-section="featherless">
-          <div class="glass-panel"></div>
-          <div class="card-content">
-            <div class="card-header collapsible-header" onclick="toggleSection('featherless')">
-              <i class="bi bi-chevron-down toggle-icon collapsed me-1"></i>
-              <i class="bi bi-feather me-2"></i><span data-i18n="section_featherless">Featherless Models</span>
-            </div>
-            <div class="card-body collapse-section collapsed" id="section-featherless">
-              <div class="mb-2">
-                <label class="form-label" style="font-size:10px">Search & Add</label>
-                <div class="d-flex gap-2" style="align-items:stretch">
-                  <input type="text" class="form-control" id="addModelInput" placeholder="Search Featherless model..." style="font-size:0.8rem;flex:1;min-width:0" oninput="debounceSearchModel()">
-                </div>
-                <div id="addModelResults" style="margin-top:4px;max-height:200px;overflow-y:auto;display:none"></div>
-              </div>
-            </div>
-          </div>
-        </div>
-
         <div class="card" data-glass data-section="config">
           <div class="glass-panel"></div>
           <div class="card-content">
@@ -603,8 +551,8 @@
                 <label class="form-label" data-i18n="label_providers">Providers</label>
                 <div class="d-flex gap-3 flex-wrap" id="providerToggles">
                   <div class="form-check">
-                    <input class="form-check-input provider-cb" type="checkbox" id="prov-opencode" value="opencode" checked>
-                    <label class="form-check-label" for="prov-opencode"><i class="bi bi-cloud-fill me-1"></i><span data-i18n="provider_opencode">OC-GO</span></label>
+                    <input class="form-check-input provider-cb" type="checkbox" id="prov-umans" value="umans" checked>
+                    <label class="form-check-label" for="prov-umans"><i class="bi bi-person-workspace me-1"></i><span data-i18n="provider_umans">UMANS</span></label>
                   </div>
                   <div class="form-check">
                     <input class="form-check-input provider-cb" type="checkbox" id="prov-freebuff" value="freebuff">
@@ -621,20 +569,12 @@
                   </div>
                   -->
                   <div class="form-check">
-                    <input class="form-check-input provider-cb" type="checkbox" id="prov-poll" value="poll">
-                    <label class="form-check-label" for="prov-poll"><i class="bi bi-globe me-1"></i><span data-i18n="provider_poll">POLL</span></label>
-                  </div>
-                  <div class="form-check">
                     <input class="form-check-input provider-cb" type="checkbox" id="prov-codestral" value="codestral">
                     <label class="form-check-label" for="prov-codestral"><i class="bi bi-code-slash me-1"></i><span data-i18n="provider_codestral">CODESTRAL</span></label>
                   </div>
                   <div class="form-check">
                     <input class="form-check-input provider-cb" type="checkbox" id="prov-bitnet" value="bitnet">
                     <label class="form-check-label" for="prov-bitnet"><i class="bi bi-cpu me-1"></i><span data-i18n="provider_bitnet">BITNET</span></label>
-                  </div>
-                  <div class="form-check">
-                    <input class="form-check-input provider-cb" type="checkbox" id="prov-featherless" value="featherless">
-                    <label class="form-check-label" for="prov-featherless"><i class="bi bi-feather me-1"></i><span data-i18n="provider_featherless">FEATHERLESS</span></label>
                   </div>
                 </div>
               </div>
@@ -647,15 +587,6 @@
                 </div>
                 <div style="font-size:10px;color:rgba(255,255,255,0.4);margin-top:4px">Required for Agnes model. Key shown as <span id="agnesKeyStatus">not set</span></div>
               </div>
-              <div class="mb-3" id="pollConfigRow" style="display:none">
-                <label class="form-label" data-i18n="label_poll_key">Pollinations API Key</label>
-                <div class="d-flex gap-2">
-                  <input type="text" class="form-control" id="pollKeyInput" placeholder="sk_..." style="font-size:0.85rem">
-                  <button class="btn btn-sm btn-outline-action" onclick="savePollKey()" style="white-space:nowrap"><i class="bi bi-check-lg"></i></button>
-                  <button class="btn btn-sm btn-outline-action" onclick="clearPollKey()" style="white-space:nowrap"><i class="bi bi-x-lg"></i></button>
-                </div>
-                <div style="font-size:10px;color:rgba(255,255,255,0.4);margin-top:4px">Bypasses the 1-req/IP free-tier limit. Get a key at <a href="https://enter.pollinations.ai" target="_blank" style="color:rgba(120,200,255,0.8)">enter.pollinations.ai</a>. Key shown as <span id="pollKeyStatus">not set</span></div>
-              </div>
               <div class="mb-3" id="codestralConfigRow" style="display:none">
                 <label class="form-label" data-i18n="label_codestral_key">Codestral API Key</label>
                 <div class="d-flex gap-2">
@@ -664,15 +595,6 @@
                   <button class="btn btn-sm btn-outline-action" onclick="clearCodestralKey()" style="white-space:nowrap"><i class="bi bi-x-lg"></i></button>
                 </div>
                 <div style="font-size:10px;color:rgba(255,255,255,0.4);margin-top:4px">Required for Codestral models. Key shown as <span id="codestralKeyStatus">not set</span></div>
-              </div>
-              <div class="mb-3" id="featherlessConfigRow" style="display:none">
-                <label class="form-label" data-i18n="label_featherless_key">Featherless API Key</label>
-                <div class="d-flex gap-2">
-                  <input type="text" class="form-control" id="featherlessKeyInput" placeholder="sk-..." style="font-size:0.85rem">
-                  <button class="btn btn-sm btn-outline-action" onclick="saveFeatherlessKey()" style="white-space:nowrap"><i class="bi bi-check-lg"></i></button>
-                  <button class="btn btn-sm btn-outline-action" onclick="clearFeatherlessKey()" style="white-space:nowrap"><i class="bi bi-x-lg"></i></button>
-                </div>
-                <div style="font-size:10px;color:rgba(255,255,255,0.4);margin-top:4px">Required for Featherless models. Key shown as <span id="featherlessKeyStatus">not set</span></div>
               </div>
               <!-- OpenRouter hidden for now
               <div class="mb-3" id="openrouterConfigRow" style="display:none">
@@ -779,6 +701,15 @@
                 <div class="col-6 mb-2"><small class="text-muted" data-i18n="label_started_at">Started At</small><div class="fw-medium" id="startedAt">-</div></div>
                 <div class="col-6 mb-2"><small class="text-muted" data-i18n="label_platform">Platform</small><div class="fw-medium" id="platform">-</div></div>
               </div>
+              <div class="row">
+                <div class="col-6 mb-2">
+                  <small class="text-muted" data-i18n="env_ss_mode">SS Mode</small>
+                  <div class="form-check form-switch" id="ssModeSwitch" style="margin:0;min-height:0;padding:0;display:flex;align-items:center">
+                    <input class="form-check-input" type="checkbox" id="blurTokensEnv" onchange="toggleBlurTokens(this.checked)" style="margin:0">
+                    <label class="form-check-label text-muted" for="blurTokensEnv" id="ssModeLabel" style="cursor:pointer;font-size:0.6rem;margin:0;padding-left:0.35rem">Off</label>
+                  </div>
+                </div>
+              </div>
               <div class="mb-2">
                 <label class="form-label" data-i18n="label_working_directory">Working Directory</label>
                 <div class="input-group" style="font-size:0.75rem">
@@ -792,7 +723,7 @@
                   <button class="btn btn-outline-action btn-wp" data-wp="none" onclick="setWallpaper('none')" data-i18n="wp_none">None</button>
                   <button class="btn btn-outline-action btn-wp" data-wp="bing" onclick="setWallpaper('bing')" data-i18n="wp_bing">Bing</button>
                   <button class="btn btn-outline-action btn-wp" data-wp="wallhaven" onclick="setWallpaper('wallhaven')" data-i18n="wp_wallhaven">Wallhaven</button>
-                  <button class="btn btn-outline-action btn-wp" data-wp="ai" onclick="setWallpaper('ai')" disabled style="opacity:0.4;cursor:not-allowed" title="Requires an Agnes API key" data-i18n="wp_ai">AI (FreeGen)</button>
+                  <button class="btn btn-outline-action btn-wp" data-wp="ai" onclick="setWallpaper('ai')" data-i18n="wp_ai">AI (FreeGen)</button>
                 </div>
               </div>
               <div class="mb-1" id="wallpaperPromptRow" style="display:none">
@@ -1049,19 +980,16 @@
     }
 
     // ── State ──
-    let allKeys = [];
-    let config = {};
     let models = [];
     let ws = null;
     let wsReconnectTimer = null;
-    let _activeProviders = ['opencode'];
+    let _activeProviders = ['umans'];
     let editingIndex = -1, deleteIndex = -1;
 
     function escapeHtml(t) { const d = document.createElement('div'); d.textContent = t; return d.innerHTML; }
     function maskKey(key) { if (!key || key.length < 20) return '(empty)'; return key.substring(0, 5) + '...' + key.substring(key.length - 2); }
     function maskSession(s) { if (!s) return '(none)'; return s.substring(0, 8) + '...'; }
     function obfuscateEmail(email) { if (!email || !email.includes('@')) return email || ''; const [user, domain] = email.split('@'); const d = domain.split('.'); const maskedDomain = d.map(p => p[0] + '*' + p.slice(-1)).join('.'); return user[0] + '*' + user.slice(-1) + '@' + maskedDomain; }
-    function getProvider() { return 'opencode'; }
 
     function showToast(message, type) {
       type = type || 'info';
@@ -1138,7 +1066,6 @@
           if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
           const wallpaper = localStorage.getItem('gc2xy_wallpaper') || 'none';
           wsSend('getBingBg', { source: wallpaper });
-          wsSend('getWorkspaceUsage');
           setTimeout(() => populateTestChatModelSelect(), 300);
           if (_wsOpenResolve) { _wsOpenResolve(); _wsOpenResolve = null; _wsOpenReject = null; }
         };
@@ -1177,13 +1104,6 @@
           break;
         case 'patch':
           applyPatch(msg.data);
-          break;
-        case 'workspaceUsage':
-          if (msg.data && Array.isArray(msg.data.data)) {
-            renderWorkspaceUsage(msg.data);
-          } else if (msg.data.success !== false) {
-            renderWorkspaceUsage({ data: msg.data.data || [] });
-          }
           break;
         case 'wallpaperUrl':
         case 'wallpaperUpdated':
@@ -1244,20 +1164,13 @@
     function applySnapshot(data) {
       if (data.status) applyStatus(data.status);
       if (data.models) models = data.models;
-      if (data.keys) applyKeys(data.keys);
       if (data.health) applyHealth(data.health);
-      if (data.sessionCookie) _sessionCookies = data.sessionCookie;
       if (data.hasAgnesKey !== undefined) { _hasAgnesKey = data.hasAgnesKey; updateAiWallpaperButton(); }
       if (data.agnesKey !== undefined) { _agnesKey = data.agnesKey; updateAgnesKeyStatus(); }
       if (data.hasOpenRouterKey !== undefined) { _hasOpenRouterKey = data.hasOpenRouterKey; }
       if (data.openrouterKey !== undefined) { _openrouterKey = data.openrouterKey; updateOpenRouterKeyStatus(); }
       if (data.hasCodestralKey !== undefined) { _hasCodestralKey = data.hasCodestralKey; }
       if (data.codestralKey !== undefined) { _codestralKey = data.codestralKey; updateCodestralKeyStatus(); }
-      if (data.hasFeatherlessKey !== undefined) { _hasFeatherlessKey = data.hasFeatherlessKey; }
-      if (data.featherlessKey !== undefined) { _featherlessKey = data.featherlessKey; updateFeatherlessKeyStatus(); }
-      if (data.hasPollKey !== undefined) { _hasPollKey = data.hasPollKey; }
-      if (data.pollKey !== undefined) { _pollKey = data.pollKey; updatePollKeyStatus(); }
-      if (data.featherlessAddedModels) { _featherlessAddedModels = data.featherlessAddedModels; renderFeatherlessModels(); }
       if (data.wallpaper) { applyWallpaper(data.wallpaper); }
       if (data.wallpaperProgress) { handleWSProgress(data.wallpaperProgress, true); }
       if (data.providers) setProviderToggles(data.providers);
@@ -1267,7 +1180,11 @@
       }
       if (data.wallpaperPrompt !== undefined) {
         const inp = document.getElementById('wallpaperPromptInput');
-        if (inp) inp.value = data.wallpaperPrompt;
+        if (inp && !inp.matches(':focus')) inp.value = data.wallpaperPrompt;
+      }
+      if (data.freegenPrompt !== undefined) {
+        const inp = document.getElementById('wallpaperPromptInput');
+        if (inp && !inp.matches(':focus')) inp.value = data.freegenPrompt;
       }
       if (data.completionsModel !== undefined) {
         _completionsModel = data.completionsModel;
@@ -1287,11 +1204,6 @@
       if (data.umansUsageHistory !== undefined) { _umansState.usageHistory = data.umansUsageHistory; updateUmansTopBar(); }
       if (data.umansUserId !== undefined) { _umansUserId = data.umansUserId; updateUmansAccountBadge(); }
       if (data.umansConcurrency !== undefined) { _umansState.concurrency = data.umansConcurrency; if (_umansState.concurrency && _umansState.concurrency.user_id) _umansUserId = _umansState.concurrency.user_id; updateUmansAccountBadge(); }
-      if (data.workspaceData) {
-        _wsData = data.workspaceData;
-        renderOpencodeStats();
-        renderWorkspaceUsageSummary();
-      }
     }
 
     function applyGithubSettings(gs) {
@@ -1307,20 +1219,13 @@
     function applyPatch(data) {
       if (data.status) applyStatus(data.status);
       if (data.models) models = data.models;
-      if (data.keys) applyKeys(data.keys);
       if (data.health) applyHealth(data.health);
-      if (data.sessionCookie) Object.assign(_sessionCookies, data.sessionCookie);
       if (data.hasAgnesKey !== undefined) { _hasAgnesKey = data.hasAgnesKey; updateAiWallpaperButton(); }
       if (data.agnesKey !== undefined) { _agnesKey = data.agnesKey; updateAgnesKeyStatus(); }
       if (data.hasOpenRouterKey !== undefined) { _hasOpenRouterKey = data.hasOpenRouterKey; }
       if (data.openrouterKey !== undefined) { _openrouterKey = data.openrouterKey; updateOpenRouterKeyStatus(); }
       if (data.hasCodestralKey !== undefined) { _hasCodestralKey = data.hasCodestralKey; }
       if (data.codestralKey !== undefined) { _codestralKey = data.codestralKey; updateCodestralKeyStatus(); }
-      if (data.hasFeatherlessKey !== undefined) { _hasFeatherlessKey = data.hasFeatherlessKey; }
-      if (data.featherlessKey !== undefined) { _featherlessKey = data.featherlessKey; updateFeatherlessKeyStatus(); }
-      if (data.hasPollKey !== undefined) { _hasPollKey = data.hasPollKey; }
-      if (data.pollKey !== undefined) { _pollKey = data.pollKey; updatePollKeyStatus(); }
-      if (data.featherlessAddedModels) { _featherlessAddedModels = data.featherlessAddedModels; renderFeatherlessModels(); }
       if (data.wallpaper) { applyWallpaper(data.wallpaper); }
       if (data.wallpaperProgress) { handleWSProgress(data.wallpaperProgress, true); }
       if (data.providers) setProviderToggles(data.providers);
@@ -1330,7 +1235,11 @@
       }
       if (data.wallpaperPrompt !== undefined) {
         const inp = document.getElementById('wallpaperPromptInput');
-        if (inp) inp.value = data.wallpaperPrompt;
+        if (inp && !inp.matches(':focus')) inp.value = data.wallpaperPrompt;
+      }
+      if (data.freegenPrompt !== undefined) {
+        const inp = document.getElementById('wallpaperPromptInput');
+        if (inp && !inp.matches(':focus')) inp.value = data.freegenPrompt;
       }
       if (data.completionsModel !== undefined) {
         _completionsModel = data.completionsModel;
@@ -1350,11 +1259,6 @@
       if (data.umansUsageHistory !== undefined) { _umansState.usageHistory = data.umansUsageHistory; updateUmansTopBar(); }
       if (data.umansUserId !== undefined) { _umansUserId = data.umansUserId; updateUmansAccountBadge(); }
       if (data.umansConcurrency !== undefined) { _umansState.concurrency = data.umansConcurrency; if (_umansState.concurrency && _umansState.concurrency.user_id) _umansUserId = _umansState.concurrency.user_id; updateUmansAccountBadge(); }
-      if (data.workspaceData) {
-        _wsData = data.workspaceData;
-        renderOpencodeStats();
-        renderWorkspaceUsageSummary();
-      }
     }
 
     function setProviderToggles(providers) {
@@ -1369,16 +1273,6 @@
       if (orRow) orRow.style.display = arr.includes('openrouter') ? '' : 'none';
       const csRow = document.getElementById('codestralConfigRow');
       if (csRow) csRow.style.display = arr.includes('codestral') ? '' : 'none';
-      const flRow = document.getElementById('featherlessConfigRow');
-      if (flRow) flRow.style.display = arr.includes('featherless') ? '' : 'none';
-      const pollRow = document.getElementById('pollConfigRow');
-      if (pollRow) pollRow.style.display = arr.includes('poll') ? '' : 'none';
-      toggleOcStatsCard();
-    }
-
-    function toggleOcStatsCard() {
-      const card = document.querySelector('[data-section="keys-and-usage"]');
-      if (card) card.style.display = _activeProviders.includes('opencode') ? '' : 'none';
     }
 
     // ── i18n runtime ──
@@ -1463,9 +1357,9 @@
       _currentLocaleNative = getNativeName(_currentLocale);
       applyI18nToDocument();
       if (typeof renderModels === 'function') try { renderModels(); } catch (e) {}
-      if (typeof renderOpencodeStats === 'function') try { renderOpencodeStats(); } catch (e) {}
       if (typeof updateStats === 'function') try { updateStats(); } catch (e) {}
       if (typeof populateTestChatModelSelect === 'function') try { populateTestChatModelSelect(); } catch (e) {}
+      if (typeof updateSsModeStatus === 'function') try { updateSsModeStatus(); } catch (e) {}
       setTimeout(initLiquidGlass, 50);
     }
     async function enableAutotranslate(forcedLocale) {
@@ -1511,11 +1405,6 @@
       document.querySelectorAll('.btn-wp').forEach(b => b.classList.toggle('active', b.dataset.wp === source));
     }
     async function setWallpaper(source) {
-      if (source === 'ai' && !_hasAgnesKey) {
-        showToast(t('toast_wallpaper_error', 'Wallpaper error: {error}').replace('{error}', 'AI wallpaper requires an Agnes API key'), 'warning');
-        applyWallpaper('none');
-        return;
-      }
       applyWallpaper(source);
       const prompt = source === 'ai' ? document.getElementById('wallpaperPromptInput').value.trim() : undefined;
       if (source === 'ai' && !prompt) { useDefaultWallpaperPrompt(); }
@@ -1540,16 +1429,10 @@
     function updateAiWallpaperButton() {
       const aiBtn = document.querySelector('.btn-wp[data-wp="ai"]');
       if (!aiBtn) return;
-      aiBtn.disabled = !_hasAgnesKey;
-      aiBtn.style.opacity = _hasAgnesKey ? '' : '0.4';
-      aiBtn.style.cursor = _hasAgnesKey ? '' : 'not-allowed';
-      aiBtn.title = _hasAgnesKey ? '' : 'Requires an Agnes API key';
-      const isAiActive = aiBtn.classList.contains('active');
-      if (!_hasAgnesKey && isAiActive) {
-        applyWallpaper('none');
-      }
-      const promptRow = document.getElementById('wallpaperPromptRow');
-      if (promptRow) promptRow.style.display = _hasAgnesKey ? '' : 'none';
+      aiBtn.disabled = false;
+      aiBtn.style.opacity = '';
+      aiBtn.style.cursor = '';
+      aiBtn.title = '';
     }
 
     function saveWallpaperPrompt() {
@@ -1596,139 +1479,43 @@
       }
     }
 
-    function applyStatus(s) {
-      document.getElementById('modeDisplay').textContent = s.mode;
-      document.getElementById('modeDisplay').className = 'mode-' + s.mode.toLowerCase();
-      document.getElementById('reqDisplay').textContent = s.requests;
-      document.getElementById('tpsDisplay').textContent = s.tps.toFixed(1);
-      if (s.workDir) document.getElementById('workDir').value = s.workDir;
-    }
-
-    function applyKeys(k) {
-      allKeys = k.opencode || [];
-      document.getElementById('keysCountBadge').textContent = allKeys.length;
-      renderOpencodeStats();
-      renderWorkspaceUsageSummary();
-      updateStats();
-    }
-
-    // ── Workspace Usage ──
-    let _wsData = [];
-
-    function renderWorkspaceUsage(data) {
-      _wsData = (data && data.data) || [];
-      renderOpencodeStats();
-      renderWorkspaceUsageSummary();
-    }
-
-    function toggleWsKey(wsId, keyID, enabled) {
-      wsSend('toggleWorkspaceKey', { workspaceId: wsId, keyID, enabled });
-    }
-
-    function renderOpencodeStats() {
-      const container = document.getElementById('apiKeysContainer');
-      if (_wsData.length === 0) {
-        container.innerHTML = '<div class="text-center py-4"><i class="bi bi-bar-chart" style="font-size:2rem;color:rgba(255,255,255,0.4)"></i><p class="mt-2 text-muted">No workspace data — set a session cookie first</p></div>';
-        return;
-      }
-      let html = '';
-      for (const ws of _wsData) {
-        const wsName = ws.name || ws.slug || ws.id.slice(0, 16);
-        const u = ws.usage || {};
-        const ru = u.rollingUsage;
-        const wu = u.weeklyUsage;
-        const mu = u.monthlyUsage;
-        const rPct = ru ? ru.usagePercent : null;
-        const wPct = wu ? wu.usagePercent : null;
-        const mPct = mu ? mu.usagePercent : null;
-        const rReset = ru?.resetInSec || null;
-        const wReset = wu?.resetInSec || null;
-        const mReset = mu?.resetInSec || null;
-        const enabledKeyIDs = ws.enabledKeyIDs || [];
-        const hasSub = u.hasSubscription === true;
-        const label = u.label || '';
-        const hasUsage = hasSub && (rPct !== null || wPct !== null || mPct !== null);
-
-        html += '<div class="pool-card">';
-        html += '<div style="display:flex;gap:8px">';
-        html += '<div style="flex:0 0 auto;min-width:120px;padding-top:4px">';
-        html += '<div style="font-size:13px;font-weight:600;color:white;margin-bottom:4px" title="' + escapeHtml(ws.id) + '">' + escapeHtml(wsName) + '</div>';
-        if (ws.keyNames && ws.keyNames.length > 0) {
-          for (const kn of ws.keyNames) {
-            const checked = enabledKeyIDs.includes(kn.keyID);
-            html += '<div class="form-check" style="margin-bottom:1px">' +
-              '<input class="form-check-input provider-cb" type="checkbox" id="wsk-' + escapeHtml(kn.keyID) + '" ' + (checked ? 'checked' : '') + ' onchange="toggleWsKey(\'' + escapeHtml(ws.id) + '\',\'' + escapeHtml(kn.keyID) + '\',this.checked)" style="transform:scale(0.85);margin-top:3px">' +
-              '<label class="form-check-label" for="wsk-' + escapeHtml(kn.keyID) + '" style="font-size:11px;color:' + (checked ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.4)') + ';cursor:pointer">' + escapeHtml(kn.name) + '</label>' +
-              '</div>';
-          }
-        }
-        html += '</div>';
-
-        if (hasUsage) {
-          html += '<div style="flex:1;display:flex;flex-direction:column;padding-top:2px;gap:3px">';
-          html += '<div style="font-size:9px;font-weight:700;color:#58a6ff;margin-bottom:1px">Usage</div>';
-          const rows = [
-            { id: '5HOURLY', pct: rPct, reset: rReset },
-            { id: 'WEEKLY', pct: wPct, reset: wReset },
-            { id: 'MONTHLY', pct: mPct, reset: mReset },
-          ];
-          for (const r of rows) {
-            if (r.pct === null) continue;
-            html += '<div><div class="progress" style="height:14px;background:rgba(255,255,255,0.06);border-radius:3px"><div class="progress-bar d-flex align-items-center justify-content-center" style="width:' + Math.max(r.pct, 8) + '%;background:' + usageBarColor(r.pct) + ';border-radius:3px;font-size:8px;font-weight:700;color:#000;min-width:fit-content;padding:0 3px">' + r.id + ' · ' + r.pct.toFixed(0) + '%</div></div><div style="font-size:7px;color:rgba(255,255,255,0.3);margin-top:1px;line-height:1">Resets in ' + formatDuration(r.reset) + '</div></div>';
-          }
-          html += '</div>';
-        } else if (!hasSub) {
-          html += '<div style="flex:1;display:flex;align-items:center;justify-content:center;padding-top:4px"><span style="font-size:10px;color:rgba(255,255,255,0.3);font-style:italic">no active go sub</span></div>';
-        }
-
-        html += '</div>';
-        html += '</div>';
-      }
-      container.innerHTML = html;
-    }
-
-    function renderWorkspaceUsageSummary() {
-      const qEl = document.getElementById('quotaDisplay');
-      if (!qEl) return;
-      let sumUsage = 0, totalWs = 0, activeWs = 0;
-      for (const ws of _wsData) {
-        const u = ws.usage || {};
-        if (u.hasSubscription) activeWs++;
-        const mPct = u.monthlyUsage?.usagePercent;
-        if (mPct !== null && mPct !== undefined) {
-          sumUsage += mPct;
-          totalWs++;
-        }
-      }
-      if (totalWs > 0) {
-        const remainingPct = Math.max(0, 100 - sumUsage / totalWs);
-        qEl.textContent = remainingPct.toFixed(0) + '%';
-        qEl.title = remainingPct.toFixed(1) + '% remaining · avg ' + (sumUsage / totalWs).toFixed(0) + '% used across ' + totalWs + ' workspaces';
-      } else {
-        qEl.textContent = 'n/a';
-        qEl.title = activeWs > 0 ? 'No usage data yet' : 'No active subscriptions';
-      }
-    }
-
     function applyHealth(h) {
       if (h.runtime) document.getElementById('nodeVersion').textContent = h.runtime;
       if (h.platform) document.getElementById('platform').textContent = h.platform;
       if (h.status === 'ok' || h.status === 'degraded') setStatusOnline();
     }
     function applyStatus(s) {
+      document.getElementById('modeDisplay').textContent = s.mode;
+      document.getElementById('modeDisplay').className = 'mode-' + s.mode.toLowerCase();
+      document.getElementById('reqDisplay').textContent = s.requests;
+      document.getElementById('tpsDisplay').textContent = s.tps.toFixed(1);
       if (s.runtime) document.getElementById('nodeVersion').textContent = s.runtime;
       if (s.port) document.getElementById('portInfo').textContent = s.port;
       if (s.startedAt) document.getElementById('startedAt').textContent = new Date(s.startedAt).toLocaleString();
-      if (s.workDir) {
-        document.getElementById('workDirInput').value = s.workDir;
-        const wd = document.getElementById('workDir');
-        if (wd) wd.textContent = s.workDir;
-      }
+      if (s.workDir) document.getElementById('workDirInput').value = s.workDir;
+    }
+
+    function updateSsModeStatus() {
+      const label = document.getElementById('ssModeLabel');
+      const input = document.getElementById('blurTokensEnv');
+      if (label) label.textContent = blurTokensEnabled ? t('ss_mode_on','On') : t('ss_mode_off','Off');
+      if (input) input.checked = blurTokensEnabled;
+    }
+    function toggleBlurTokens(c) {
+      blurTokensEnabled = c;
+      updateSsModeStatus();
+      renderUmansAccount();
+      renderUmansKeys();
+      updateAgnesKeyStatus();
+      updateOpenRouterKeyStatus();
+      updateFeatherlessKeyStatus();
+      updateCodestralKeyStatus();
+      updatePollKeyStatus();
     }
 
     // ── Models ──
     function getProviderDisplayName(tag) {
-      const map = { go: 'OC-GO', poll: 'POLL', freebuff: 'FREEBUFF', agnes: 'AGNES', openrouter: 'OPENROUTER', zen: 'OC-ZEN', bitnet: 'BITNET', codestral: 'CODESTRAL', featherless: 'FEATHERLESS' };
+      const map = { umans: 'UMANS', freebuff: 'FREEBUFF', agnes: 'AGNES', openrouter: 'OPENROUTER', zen: 'OC-ZEN', bitnet: 'BITNET', codestral: 'CODESTRAL', deepseek: 'DEEPSEEK' };
       return map[tag] || tag.toUpperCase();
     }
     function renderModels() {
@@ -1742,22 +1529,21 @@
       }
       const enaModels = models.filter(m => m.enabled !== false && m.locked !== true).length;
       document.getElementById('modelCountBadge').textContent = enaModels + ' / ' + models.length;
-      const _provToTag = { opencode: 'go', zen: 'zen', freebuff: 'freebuff', agnes: 'agnes', poll: 'poll', openrouter: 'openrouter', bitnet: 'bitnet', codestral: 'codestral', featherless: 'featherless', deepseek: 'deepseek' };
+      const _provToTag = { umans: 'umans', zen: 'zen', freebuff: 'freebuff', agnes: 'agnes', openrouter: 'openrouter', bitnet: 'bitnet', codestral: 'codestral', deepseek: 'deepseek' };
       const activeTags = new Set(_activeProviders.map(p => _provToTag[p] || p));
       const groups = {};
       models.forEach((m, idx) => {
-        const ptag = m.providerTag || 'go';
+        const ptag = m.providerTag || 'umans';
         if (!groups[ptag]) groups[ptag] = [];
         groups[ptag].push({ model: m, idx });
       });
         const providerGroups = [
-        { name: '✨ OpenCode Go:', tags: ['go'], controlTag: 'go', checkKeys: true },
-        { name: '🪶 Featherless:', tags: ['featherless'], controlTag: 'featherless', checkKey: true },
-        { name: '🐋 DeepSeek:', tags: ['deepseek'] },
+        { name: 'UMANS:', tags: ['umans'] },
+        { name: 'DeepSeek:', tags: ['deepseek'] },
         { name: '[🇫🇷ᴇᴇ] FreeBuff:', tags: ['freebuff'] },
         { name: '💜 AgnesAI:', tags: ['agnes'], controlTag: 'agnes', checkKey: true },
-        { name: '🔷 Codestral:', tags: ['codestral'] },
-        { name: '🐝 Other (Free):', tags: ['poll', 'bitnet', 'openrouter'] },
+        { name: 'Codestral:', tags: ['codestral'], prefix: '🔷' },
+        { name: 'Others:', tags: ['bitnet', 'go', 'openrouter', 'zen'], prefix: '⚙️' },
       ];
       container.innerHTML = providerGroups.map(group => {
         const allItems = group.tags.reduce((acc, tag) => {
@@ -1770,22 +1556,19 @@
         const totalCount = allItems.length;
         let isActive;
         if (group.checkKeys) {
-          isActive = activeTags.has(group.controlTag) && _wsData.some(ws => (ws.enabledKeyIDs || []).length > 0);
+          isActive = activeTags.has(group.controlTag);
         } else if (group.checkKey) {
-          const keyMap = { featherless: _featherlessKey, agnes: _agnesKey, codestral: _codestralKey, openrouter: _openrouterKey, poll: _pollKey };
+          const keyMap = { agnes: _agnesKey, codestral: _codestralKey, openrouter: _openrouterKey };
           isActive = activeTags.has(group.controlTag) && !!keyMap[group.controlTag];
         } else if (group.controlTag) {
           isActive = activeTags.has(group.controlTag);
         } else {
           isActive = group.tags.some(t => activeTags.has(t));
         }
-        const isSpecial = group.tags.includes('agnes');
-        const headerBorderColor = isSpecial ? 'rgba(255,255,255,0.2)' : 'rgba(50,205,50,0.2)';
-        const iconStyle = isSpecial ? 'style="font-size:10px;opacity:0.8;color:#fff"' : 'style="font-size:10px;opacity:0.6"';
-        const iconMap = { freebuff: 'hdd', poll: 'globe', agnes: 'stars', openrouter: 'router', codestral: 'code-slash', featherless: 'feather', deepseek: 'water' };
-        const icon = iconMap[group.tags[0]] || 'cloud';
+        const headerBorderColor = isActive ? 'rgba(50,205,50,0.2)' : 'rgba(255,255,255,0.08)';
         const disabledLabel = isActive ? '' : ' <span class="disabled-tag">(disabled)</span>';
-        return '<div class="model-family-group' + (isActive ? '' : ' provider-disabled') + '"><div class="model-family-header" style="border-bottom-color:' + headerBorderColor + '"><i class="bi bi-' + icon + '-fill me-1" ' + iconStyle + '></i>' + group.name + disabledLabel + ' <span class="badge bg-secondary">' + enabledCount + ' / ' + totalCount + '</span></div><div style="display:flex;flex-wrap:wrap;gap:3px">' +
+        const displayName = (group.prefix ? group.prefix + ' ' : '') + group.name;
+        return '<div class="model-family-group' + (isActive ? '' : ' provider-disabled') + '"><div class="model-family-header" style="border-bottom-color:' + headerBorderColor + '"><span class="provider-prefix">' + displayName + '</span>' + disabledLabel + ' <span class="badge bg-secondary">' + enabledCount + ' / ' + totalCount + '</span></div><div style="display:flex;flex-wrap:wrap;gap:3px">' +
           allItems.map(({ model, idx }) => {
             const name = model.name || model.id.split('/').pop() || model.id;
             const code = model.id, ena = model.enabled !== false, locked = model.locked === true;
@@ -1811,7 +1594,6 @@
 
     // ── Status Header ──
     function updateStats() {
-      const activeKeysBlock = document.getElementById('activeKeysBlock'); if (activeKeysBlock) activeKeysBlock.textContent = _wsData.length;
       const enabled = models.filter(m => m.enabled !== false).length;
       document.getElementById('totalModels').textContent = enabled + ' / ' + models.length;
     }
@@ -1827,9 +1609,6 @@
 
     // ── Provider Change ──
     function onProviderChange() {
-      const qEl = document.getElementById('quotaDisplay');
-      if (qEl) { qEl.textContent = '\u2026'; qEl.title = ''; }
-      wsSend('getWorkspaceUsage');
       setTimeout(() => initLiquidGlass(), 100);
     }
 
@@ -1837,6 +1616,7 @@
     let _umansState = { account: {}, keys: [], enabledModels: [], usage: null, concurrency: {}, loggedIn: false, usageHistory: null };
     let _umansEditingIndex = -1;
     let _umansUserId = '';
+    let blurTokensEnabled = false;
 
     function addCurrentProviderKey() { openKeysModal(); }
 
@@ -1856,19 +1636,39 @@
       bootstrap.Modal.getOrCreateInstance(modalEl).show();
     }
 
+    function scrambleUserId(id) {
+      const arr = id.split('');
+      for (let i = arr.length - 1; i > 0; i--) {
+        const j = (Math.random() * (i + 1)) | 0;
+        [arr[i], arr[j]] = [arr[j], arr[i]];
+      }
+      return arr.join('');
+    }
+    function formatEmailMasked(email) {
+      const at = email.indexOf('@');
+      if (at < 0) {
+        return '<span class="token-blurred">' + escapeHtml('*'.repeat(email.length)) + '</span>';
+      }
+      const localLen = at;
+      const domainLen = email.length - at - 1;
+      return '<span class="token-blurred">' + escapeHtml('*'.repeat(localLen)) + '</span>' + escapeHtml('@') + '<span class="token-blurred">' + escapeHtml('*'.repeat(domainLen)) + '</span>';
+    }
+
     function renderUmansAccount() {
       const container = document.getElementById('umansAccountCard');
       if (!container) return;
       const account = _umansState.account || {};
       const email = _umansState.email || account.email || '';
+      const displayUserId = (_umansUserId && blurTokensEnabled) ? scrambleUserId(_umansUserId) : _umansUserId;
+      const emailHtml = (email && blurTokensEnabled) ? formatEmailMasked(email) : escapeHtml(email);
       const userIdRow = _umansUserId ? '<div class="mt-1 d-flex align-items-center gap-2" style="font-size:0.7rem;color:rgba(255,255,255,0.55)">' +
         '<span><i class="bi bi-person-badge me-1"></i>' + t('label_user_id', 'User ID') + ':</span>' +
-        '<code style="font-size:0.7rem;color:rgba(255,255,255,0.85);background:rgba(255,255,255,0.05);padding:1px 4px;border-radius:4px;word-break:break-all">' + escapeHtml(_umansUserId) + '</code>' +
+        '<code class="' + (blurTokensEnabled ? 'token-blurred' : '') + '" style="font-size:0.7rem;color:rgba(255,255,255,0.85);background:rgba(255,255,255,0.05);padding:1px 4px;border-radius:4px;word-break:break-all">' + escapeHtml(displayUserId) + '</code>' +
         '<button class="btn btn-sm p-0 ms-auto" style="background:transparent;border:none;color:rgba(255,255,255,0.5);font-size:0.65rem" onclick="copyUserId()" title="' + t('btn_copy_user_id', 'Copy User ID') + '"><i class="bi bi-clipboard"></i></button>' +
         '</div>' : '';
       if (_umansState.loggedIn) {
         container.innerHTML = '<div class="d-flex justify-content-between align-items-start">' +
-          '<div style="min-width:0"><div style="font-size:13px;font-weight:600;color:white;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + escapeHtml(email) + '"><i class="bi bi-person-circle me-1" style="color:rgba(255,255,255,0.7)"></i>' + escapeHtml(email || t('status_logged_in', 'Logged in')) + '</div>' + userIdRow + '</div>' +
+          '<div style="min-width:0"><div style="font-size:13px;font-weight:600;color:white;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + escapeHtml(email) + '"><i class="bi bi-person-circle me-1" style="color:rgba(255,255,255,0.7)"></i>' + emailHtml + '</div>' + userIdRow + '</div>' +
           '<button class="btn btn-sm" style="background:rgba(220,53,69,0.2);color:#dc3545;border:none;font-size:0.7rem;padding:2px 10px;flex-shrink:0" onclick="openUmansLogoutModal()"><i class="bi bi-box-arrow-right me-1"></i>' + t('btn_logout', 'Logout') + '</button>' +
           '</div>';
       } else {
@@ -1897,10 +1697,11 @@
               '</div>';
           }
           const mk = k.key ? (k.key.substring(0, 4) + '...' + k.key.substring(k.key.length - 4)) : 'no key';
+          const blur = blurTokensEnabled ? 'token-blurred' : '';
           return '<div class="pool-card"><div class="pool-header"><div class="pool-name">' + escapeHtml(k.name || t('label_unnamed', 'Unnamed')) + '</div>' +
             '<div><button class="btn btn-sm btn-outline-action me-1" onclick="startEditKey(' + i + ')" title="' + t('btn_edit', 'Edit') + '"><i class="bi bi-pencil"></i></button>' +
             '<button class="btn btn-sm" style="background:rgba(220,53,69,0.2);color:#dc3545;border:none" onclick="startDeleteKey(' + i + ')" title="' + t('btn_delete', 'Delete') + '"><i class="bi bi-trash"></i></button></div></div>' +
-            '<div style="font-size:0.8rem;color:rgba(255,255,255,0.7)"><span title="' + escapeHtml(k.key) + '">' + escapeHtml(mk) + '</span></div></div>';
+            '<div style="font-size:0.8rem;color:rgba(255,255,255,0.7)"><span class="' + blur + '" title="' + escapeHtml(k.key) + '">' + escapeHtml(mk) + '</span></div></div>';
         }).join('');
       }
     }
@@ -2091,6 +1892,7 @@
       renderUmansKeys();
       renderUmansModels();
       updateUmansTopBar();
+      updateSsModeStatus();
     }
 
     function updateUmansWindowTopBar() {
@@ -2110,7 +1912,7 @@
         const cachedPct = winInputTokens > 0 ? ((cached / winInputTokens) * 100).toFixed(0) : '0';
         if (winReqs || winTokens) {
           reqEl.textContent = winReqs.toLocaleString();
-          tokEl.innerHTML = winTokens.toLocaleString() + ' <span style="font-size:10px;color:rgba(255,255,255,0.45)">(' + cachedPct + '%)</span>';
+          tokEl.innerHTML = '<span style="white-space:nowrap">' + winTokens.toLocaleString() + ' <span style="font-size:10px;color:rgba(255,255,255,0.45)">(' + cachedPct + '%)</span></span>';
           reqEl.title = 'Window requests';
           tokEl.title = 'Window tokens · ' + cachedPct + '% cached';
         } else {
@@ -2160,8 +1962,6 @@
       updateUmansWindowTopBar();
       updateUmans90DaysTopBar();
       const accountLabel = document.getElementById('umansAccountTopLabel');
-      const keysLabel = document.getElementById('umansKeysTopLabel');
-      const activeKeysBlock = document.getElementById('activeKeysBlock');
       if (accountLabel) {
         if (_umansState.loggedIn) {
           accountLabel.textContent = _umansUserId || t('status_logged_in', 'Logged in');
@@ -2171,27 +1971,12 @@
           accountLabel.setAttribute('title', '');
         }
       }
-      if (keysLabel) keysLabel.style.display = 'none';
-      if (activeKeysBlock) activeKeysBlock.textContent = String(_wsData.length);
     }
 
     function copyUserId() {
       if (!_umansUserId) return;
       navigator.clipboard.writeText(_umansUserId).then(() => showToast('User ID copied', 'success')).catch(() => showToast('Copy failed', 'danger'));
     }
-
-    // ── OpenCode Session ──
-    function saveOcSession() {
-      const val = document.getElementById('ocSessionInput').value.trim();
-      let cookie = val;
-      if (cookie.startsWith('auth=')) cookie = cookie.substring(5);
-      if (cookie.startsWith('__session=')) cookie = cookie.substring(10);
-      if (!cookie) return;
-      wsSend('setOcSession', { sessionCookie: cookie });
-      document.getElementById('ocSessionInput').value = '';
-      showToast('OpenCode session saved', 'success');
-    }
-    function logoutOc() { wsSend('clearOcSession', {}); }
 
     // ── Agnes API Key ──
     let _agnesKey = '';
@@ -2226,7 +2011,7 @@
       const inp = document.getElementById('agnesKeyInput');
       if (el) {
         if (_agnesKey) {
-          el.textContent = _agnesKey.slice(0, 5) + '...' + _agnesKey.slice(-4);
+          el.innerHTML = '<span class="' + (blurTokensEnabled ? 'token-blurred' : '') + '">' + escapeHtml(_agnesKey.slice(0, 5) + '...' + _agnesKey.slice(-4)) + '</span>';
           el.style.color = 'rgba(50,205,50,0.8)';
         } else {
           el.textContent = 'not set';
@@ -2236,7 +2021,6 @@
       if (inp) inp.value = _agnesKey || '';
     }
 
-    // ── OpenRouter API Key ──
     let _openrouterKey = '';
     let _hasOpenRouterKey = false;
     function saveOpenRouterKey() {
@@ -2268,7 +2052,7 @@
       const inp = document.getElementById('openrouterKeyInput');
       if (el) {
         if (_openrouterKey) {
-          el.textContent = _openrouterKey.slice(0, 5) + '...' + _openrouterKey.slice(-4);
+          el.innerHTML = '<span class="' + (blurTokensEnabled ? 'token-blurred' : '') + '">' + escapeHtml(_openrouterKey.slice(0, 5) + '...' + _openrouterKey.slice(-4)) + '</span>';
           el.style.color = 'rgba(50,205,50,0.8)';
         } else {
           el.textContent = 'not set';
@@ -2276,139 +2060,6 @@
         }
       }
       if (inp) inp.value = _openrouterKey || '';
-    }
-
-    // ── Featherless API Key ──
-    let _featherlessKey = '';
-    let _hasFeatherlessKey = false;
-    let _featherlessAddedModels = [];
-    function saveFeatherlessKey() {
-      const val = document.getElementById('featherlessKeyInput').value.trim();
-      if (!val) { showToast('Key is required', 'warning'); return; }
-      _featherlessKey = val;
-      wsSend('setFeatherlessKey', { key: val });
-      updateFeatherlessKeyStatus();
-      _hasFeatherlessKey = true;
-      if (!_activeProviders.includes('featherless')) {
-        _activeProviders.push('featherless');
-        const cb = document.getElementById('prov-featherless');
-        if (cb) cb.checked = true;
-        const fRow = document.getElementById('featherlessConfigRow');
-        if (fRow) fRow.style.display = '';
-        renderModels();
-      }
-      showToast('Featherless key saved', 'success');
-    }
-    function clearFeatherlessKey() {
-      _featherlessKey = '';
-      wsSend('setFeatherlessKey', { key: '' });
-      updateFeatherlessKeyStatus();
-      _hasFeatherlessKey = false;
-      const idx = _activeProviders.indexOf('featherless');
-      if (idx !== -1) { _activeProviders.splice(idx, 1); }
-      const cb = document.getElementById('prov-featherless');
-      if (cb) cb.checked = false;
-      const fRow = document.getElementById('featherlessConfigRow');
-      if (fRow) fRow.style.display = 'none';
-      renderModels();
-      showToast('Featherless key cleared', 'success');
-    }
-    function updateFeatherlessKeyStatus() {
-      const el = document.getElementById('featherlessKeyStatus');
-      const inp = document.getElementById('featherlessKeyInput');
-      if (el) {
-        if (_featherlessKey) {
-          el.textContent = _featherlessKey.slice(0, 5) + '...' + _featherlessKey.slice(-4);
-          el.style.color = 'rgba(50,205,50,0.8)';
-        } else {
-          el.textContent = 'not set';
-          el.style.color = 'rgba(255,255,255,0.4)';
-        }
-      }
-      if (inp) inp.value = _featherlessKey || '';
-    }
-
-    function renderFeatherlessModels() {
-      const container = document.getElementById('featherlessModelsList');
-      if (!container) return;
-      if (!_featherlessAddedModels || _featherlessAddedModels.length === 0) {
-        container.innerHTML = '<div style="font-size:10px;color:rgba(255,255,255,0.3);padding:4px 0">No models added yet</div>';
-        return;
-      }
-      let html = '';
-      for (const id of _featherlessAddedModels) {
-        const shortName = id.split('/').pop() || id;
-        const enabled = models.find(m => m.id === id)?.enabled !== false;
-        html += '<div class="d-inline-flex align-items-center gap-1" style="padding:2px 4px;border:1px solid ' + (enabled ? 'rgba(50,205,50,0.3)' : 'rgba(255,255,255,0.12)') + ';border-radius:4px;background:' + (enabled ? 'rgba(50,205,50,0.1)' : 'rgba(255,255,255,0.03)') + ';opacity:' + (enabled ? '1' : '0.5') + '">' +
-          '<input type="checkbox" class="form-check-input" ' + (enabled ? 'checked' : '') + ' onchange="toggleFeatherlessModel(\'' + escapeHtml(id) + '\',this.checked)" style="transform:scale(0.75);margin:0;accent-color:#32CD32;cursor:pointer">' +
-          '<span style="font-size:10px;color:#fff;cursor:pointer" onclick="renameModel(\'' + escapeHtml(id) + '\')" title="' + escapeHtml(id) + '">' + escapeHtml(shortName) + '</span>' +
-          '<span onclick="removeFeatherlessModel(\'' + escapeHtml(id) + '\')" style="cursor:pointer;color:#dc3545;font-size:12px;line-height:1;padding:0 1px" title="Remove ' + escapeHtml(shortName) + '">×</span>' +
-          '</div>';
-      }
-      container.innerHTML = html;
-    }
-
-    function toggleFeatherlessModel(modelId, enabled) {
-      wsSend('toggleModel', { modelId, enabled });
-    }
-
-    function removeFeatherlessModel(modelId) {
-      wsSend('removeFeatherlessModel', { modelId });
-      _featherlessAddedModels = _featherlessAddedModels.filter(id => id !== modelId);
-      renderFeatherlessModels();
-    }
-
-    // ── Featherless Model Search & Add ──
-    let _addModelSearchTimer = null;
-    function debounceSearchModel() {
-      if (_addModelSearchTimer) clearTimeout(_addModelSearchTimer);
-      _addModelSearchTimer = setTimeout(doSearchModel, 400);
-    }
-    async function doSearchModel() {
-      const q = document.getElementById('addModelInput').value.trim();
-      const resultsEl = document.getElementById('addModelResults');
-      if (!q || q.length < 2) { resultsEl.style.display = 'none'; return; }
-      resultsEl.innerHTML = '<div style="padding:8px;text-align:center;color:rgba(255,255,255,0.4);font-size:11px">Searching...</div>';
-      resultsEl.style.display = 'block';
-      try {
-        const data = await wsCall('featherlessSearchModels', { query: q });
-        const results = Array.isArray(data) ? data : [];
-        if (results.length === 0) {
-          resultsEl.innerHTML = '<div style="padding:8px;text-align:center;color:rgba(255,255,255,0.4);font-size:11px">No results — enter the full model ID manually</div>';
-          return;
-        }
-        resultsEl.innerHTML = results.map(r => {
-          const alreadyAdded = models.some(m => m.id === 'featherless/' + r.id || m.id === r.id);
-          return '<div class="pool-card" style="padding:4px 8px;margin-bottom:2px;cursor:pointer;opacity:' + (alreadyAdded ? '0.4' : '1') + '" onclick="' + (!alreadyAdded ? "addFeatherlessModelFromSearch('" + escapeHtml(r.id) + "')" : '') + '" title="' + escapeHtml(r.id) + '">' +
-            '<div style="display:flex;justify-content:space-between;align-items:center">' +
-            '<div><div style="font-size:11px;font-weight:600;color:#fff">' + escapeHtml(r.name || r.id) + '</div>' +
-            '<div style="font-size:9px;color:rgba(255,255,255,0.4)">' + escapeHtml(r.id) + (r.context_length ? ' · ' + r.context_length + ' ctx' : '') + '</div></div>' +
-            (alreadyAdded ? '<span style="font-size:9px;color:rgba(50,205,50,0.6)">added</span>' : '<span style="font-size:16px;color:rgba(50,205,50,0.6)">+</span>') +
-            '</div></div>';
-        }).join('');
-      } catch(e) {
-        resultsEl.innerHTML = '<div style="padding:8px;text-align:center;color:rgba(220,53,69,0.7);font-size:11px">Search failed: ' + escapeHtml(e.message || '') + '</div>';
-      }
-    }
-    function addFeatherlessModelFromSearch(modelId) {
-      const prefixed = modelId.startsWith('featherless/') ? modelId : 'featherless/' + modelId;
-      if (!_featherlessAddedModels.includes(prefixed)) _featherlessAddedModels.push(prefixed);
-      wsSend('addFeatherlessModel', { modelId });
-      document.getElementById('addModelInput').value = '';
-      document.getElementById('addModelResults').style.display = 'none';
-      renderFeatherlessModels();
-      showToast('Added ' + modelId.split('/').pop(), 'success');
-    }
-    function addFeatherlessModel() {
-      const val = document.getElementById('addModelInput').value.trim();
-      if (!val) { showToast('Enter a model ID', 'warning'); return; }
-      const prefixed = val.startsWith('featherless/') ? val : 'featherless/' + val;
-      if (!_featherlessAddedModels.includes(prefixed)) _featherlessAddedModels.push(prefixed);
-      wsSend('addFeatherlessModel', { modelId: val });
-      document.getElementById('addModelInput').value = '';
-      document.getElementById('addModelResults').style.display = 'none';
-      renderFeatherlessModels();
-      showToast('Added ' + val.split('/').pop(), 'success');
     }
 
     // ── Inline Model Rename (double-click model name) ──
@@ -2481,7 +2132,7 @@
       const inp = document.getElementById('codestralKeyInput');
       if (el) {
         if (_codestralKey) {
-          el.textContent = _codestralKey.slice(0, 5) + '...' + _codestralKey.slice(-4);
+          el.innerHTML = '<span class="' + (blurTokensEnabled ? 'token-blurred' : '') + '">' + escapeHtml(_codestralKey.slice(0, 5) + '...' + _codestralKey.slice(-4)) + '</span>';
           el.style.color = 'rgba(50,205,50,0.8)';
         } else {
           el.textContent = 'not set';
@@ -2489,47 +2140,6 @@
         }
       }
       if (inp) inp.value = _codestralKey || '';
-    }
-
-    let _pollKey = '';
-    let _hasPollKey = false;
-    function savePollKey() {
-      const val = document.getElementById('pollKeyInput').value.trim();
-      if (!val) { showToast('Key is required', 'warning'); return; }
-      _pollKey = val;
-      wsSend('setPollKey', { key: val });
-      updatePollKeyStatus();
-      _hasPollKey = true;
-      if (!_activeProviders.includes('poll')) {
-        _activeProviders.push('poll');
-        const cb = document.getElementById('prov-poll');
-        if (cb) cb.checked = true;
-        const pollRow = document.getElementById('pollConfigRow');
-        if (pollRow) pollRow.style.display = '';
-        renderModels();
-      }
-      showToast('Poll key saved', 'success');
-    }
-    function clearPollKey() {
-      _pollKey = '';
-      wsSend('setPollKey', { key: '' });
-      updatePollKeyStatus();
-      _hasPollKey = false;
-      showToast('Poll key cleared', 'success');
-    }
-    function updatePollKeyStatus() {
-      const el = document.getElementById('pollKeyStatus');
-      const inp = document.getElementById('pollKeyInput');
-      if (el) {
-        if (_pollKey) {
-          el.textContent = _pollKey.slice(0, 5) + '...' + _pollKey.slice(-4);
-          el.style.color = 'rgba(50,205,50,0.8)';
-        } else {
-          el.textContent = 'not set';
-          el.style.color = 'rgba(255,255,255,0.4)';
-        }
-      }
-      if (inp) inp.value = _pollKey || '';
     }
 
     let _completionsModel = '';
@@ -2706,9 +2316,9 @@
         setTimeout(() => enableAutotranslate(), 50);
       }
       loadInitialData().then(() => {
+        updateSsModeStatus();
         initLiquidGlass();
         setTimeout(() => {
-          wsSend('getWorkspaceUsage');
           window.dispatchEvent(new Event('resize'));
         }, 500);
         setTimeout(() => window.dispatchEvent(new Event('resize')), 3000);
@@ -2730,11 +2340,6 @@
           if (orRow) orRow.style.display = checked.includes('openrouter') ? '' : 'none';
           const csRow = document.getElementById('codestralConfigRow');
           if (csRow) csRow.style.display = checked.includes('codestral') ? '' : 'none';
-          const flRow = document.getElementById('featherlessConfigRow');
-          if (flRow) flRow.style.display = checked.includes('featherless') ? '' : 'none';
-          const pollRow = document.getElementById('pollConfigRow');
-          if (pollRow) pollRow.style.display = checked.includes('poll') ? '' : 'none';
-          toggleOcStatsCard();
           wsSend('setProviders', { providers: checked });
           renderModels();
           onProviderChange();
@@ -2773,10 +2378,6 @@
       // UMANS key/account modal bindings (functions referenced by inline handlers must be defined before DOMContentLoaded)
       const umansAccountTopLabel = document.getElementById('umansAccountTopLabel');
       if (umansAccountTopLabel) umansAccountTopLabel.onclick = openKeysModal;
-      const umansKeysTopLabel = document.getElementById('umansKeysTopLabel');
-      if (umansKeysTopLabel) umansKeysTopLabel.onclick = openKeysModal;
-      const addKeyBtn = document.getElementById('addKeyBtn');
-      if (addKeyBtn) addKeyBtn.onclick = function(e) { e.stopPropagation(); openKeysModal(); };
       const wallpaperDefaultBtn = document.getElementById('wallpaperDefaultBtn');
       if (wallpaperDefaultBtn) wallpaperDefaultBtn.onclick = useDefaultWallpaperPrompt;
       const wallpaperGenerateBtn = document.getElementById('wallpaperGenerateBtn');
@@ -2829,16 +2430,16 @@
         .replace(/\x00B(\d+)\x00/g, (_, i) => bolds[parseInt(i, 10)]);
     }
 
-    const TEST_CHAT_PROVIDER_NAMES = { go: 'OC-GO', poll: 'POLL', freebuff: 'FREEBUFF', agnes: 'AGNES', openrouter: 'OPENROUTER', zen: 'OC-ZEN', bitnet: 'BITNET', codestral: 'CODESTRAL', featherless: 'FEATHERLESS' };
-    const TEST_CHAT_PROVIDER_SHORT = { go: '[OC-GO] ', poll: '[POLL] ', freebuff: '[FREEBUFF] ', agnes: '[AGNES] ', openrouter: '[OPENROUTER] ', zen: '[OC-ZEN] ', bitnet: '[BITNET] ', codestral: '[CODESTRAL] ', featherless: '[FEATHERLESS] ' };
+    const TEST_CHAT_PROVIDER_NAMES = { umans: 'UMANS', freebuff: 'FREEBUFF', agnes: 'AGNES', openrouter: 'OPENROUTER', zen: 'OC-ZEN', bitnet: 'BITNET', codestral: 'CODESTRAL', deepseek: 'DEEPSEEK' };
+    const TEST_CHAT_PROVIDER_SHORT = { umans: '[UMANS] ', freebuff: '[FREEBUFF] ', agnes: '[AGNES] ', openrouter: '[OPENROUTER] ', zen: '[OC-ZEN] ', bitnet: '[BITNET] ', codestral: '[CODESTRAL] ', deepseek: '[DEEPSEEK] ' };
 
     function populateTestChatModelSelect() {
       const sel = document.getElementById('testChatModelSelect');
       if (!sel) return;
       const currentVal = sel.value;
-      const _provToTag = { opencode: 'go', zen: 'zen', freebuff: 'freebuff', agnes: 'agnes', poll: 'poll', openrouter: 'openrouter', bitnet: 'bitnet', codestral: 'codestral', featherless: 'featherless' };
-      const activeTags = new Set(_activeProviders.map(p => _provToTag[p] || p));
-      const visibleModels = models.filter(m => activeTags.has(m.providerTag || 'go') && m.enabled !== false);
+      const _provToTag = { umans: 'umans', zen: 'zen', freebuff: 'freebuff', agnes: 'agnes', openrouter: 'openrouter', bitnet: 'bitnet', codestral: 'codestral', deepseek: 'deepseek' };
+       const activeTags = new Set(_activeProviders.map(p => _provToTag[p] || p));
+      const visibleModels = models.filter(m => activeTags.has(m.providerTag || 'umans') && m.enabled !== false);
       if (visibleModels.length === 0) {
         sel.innerHTML = '<option value="">-- no models --</option>';
         testChatModel = '';
@@ -2846,11 +2447,11 @@
       }
       const groups = {};
       visibleModels.forEach(m => {
-        const pt = m.providerTag || 'go';
+        const pt = m.providerTag || 'umans';
         if (!groups[pt]) groups[pt] = [];
         groups[pt].push(m);
       });
-      const providerOrder = ['featherless', 'agnes', 'freebuff', 'go', 'openrouter', 'poll', 'zen', 'bitnet', 'codestral'];
+      const providerOrder = ['umans', 'agnes', 'freebuff', 'deepseek', 'openrouter', 'zen', 'bitnet', 'codestral'];
       let html = '';
       for (const pt of providerOrder) {
         if (!groups[pt]) continue;

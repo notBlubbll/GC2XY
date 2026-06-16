@@ -2,7 +2,7 @@ import forge from "node-forge";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { jsonResponse, HandlerInput, HandlerResult, getProjectRoot } from "../../shared.ts";
-import { getModelCtx, getModelDisplayName, getModelProviderTag } from "../opencode-client.ts";
+import { getModelCtx, getModelDisplayName, getModelProviderTag } from "../openai-provider.ts";
 
 import { addModels } from "../../models.ts";
 import { isDebug } from "../../split-console.ts";
@@ -114,6 +114,7 @@ function getSupports(id: string): any {
 
 export function detectVendor(id: string): string {
   const l = id.toLowerCase();
+  if (l.startsWith("umans-")) return "UMANS";
   if (l.includes("deepseek") || l.includes("mimo")) return "OpenAI";
   if (l.includes("claude")) return "Anthropic";
   if (l.includes("gpt") || l.includes("codex") || l.includes("o1") || l.includes("o3")) return "OpenAI";
@@ -230,9 +231,9 @@ async function ensureModels() {
   const template = VS_MODELS.find((m: any) => !m.id.startsWith("_cat_") && !m.id.includes("["));
   if (template && VS_MODELS.length > 0) {
     const PROVIDER_NAMES: Record<string, string> = {
-      go: "\u200D✨ ⸻ OpenCode Go:", freebuff: "\u200D\u200D🇫🇷ᴇᴇ ⸻ FreeBuff:", agnes: "\u200D\u200D\u200D💜 ⸻ AgnesAI:", codestral: "\u200D\u200D\u200D\u200D🌀 ⸻ Codestral:", bitnet: "\u200D\u200D\u200D\u200D\u200D✨ ⸻ Bitnet:", deepseek: "\u200D\u200D\u200D\u200D\u200D\u200D✨ ⸻ DeepSeek:", openrouter: "\u200D\u200D\u200D\u200D\u200D\u200D\u200D✨ ⸻ OpenRouter:", zen: "\u200D\u200D\u200D\u200D\u200D\u200D\u200D\u200D⸻ ZEN:",
+      go: "\u200D✨ ⸻ OpenCode Go:", freebuff: "\u200D\u200D[🇫🇷ᴇᴇ] ⸻ FreeBuff:", agnes: "\u200D\u200D\u200D💜 ⸻ AgnesAI:", codestral: "\u200D\u200D\u200D\u200D🌀 ⸻ Codestral:", bitnet: "\u200D\u200D\u200D\u200D\u200D✨ ⸻ Bitnet:", deepseek: "\u200D\u200D\u200D\u200D\u200D\u200D✨ ⸻ DeepSeek:", openrouter: "\u200D\u200D\u200D\u200D\u200D\u200D\u200D✨ ⸻ OpenRouter:", zen: "\u200D\u200D\u200D\u200D\u200D\u200D\u200D\u200D⸻ ZEN:", umans: "\u200D\u200D\u200D\u200D\u200D\u200D\u200D\u200D\u200D⸻ UMANS:",
     };
-    const SEP_ORDER = ["go", "codestral", "freebuff", "agnes", "bitnet", "deepseek", "openrouter", "zen"];
+    const SEP_ORDER = ["go", "codestral", "freebuff", "agnes", "bitnet", "deepseek", "openrouter", "zen", "umans"];
     // Header banner at very top
     VS_MODELS.splice(0, 0, {
       ...template,

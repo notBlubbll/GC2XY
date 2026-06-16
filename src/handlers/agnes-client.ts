@@ -209,13 +209,17 @@ export async function chatCompletion(
     if (msg.reasoning) out.reasoning = msg.reasoning;
     return out;
   });
-  body.stream = false; // Non-streaming: AGNES streaming drops tool calls
+  // If the caller supplied tools, force non-streaming because Agnes's streaming
+  // chat endpoint does not reliably emit tool_calls. Otherwise respect the
+  // requested stream flag so test chat / VS streaming work as expected.
+  body.stream = tools && tools.length ? false : stream;
   if (tools !== undefined) {
     body.tools = tools.length ? tools.map(normalizeTool) : undefined;
   }
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
+    "Accept": body.stream ? "text/event-stream" : "application/json",
     "Authorization": `Bearer ${key}`,
     "User-Agent": "gc2xy/3.0",
   };

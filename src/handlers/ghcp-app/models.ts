@@ -1,5 +1,5 @@
 import { jsonResponse, HandlerInput, HandlerResult } from "../../shared.ts";
-import { getModelCtx, modelHasVision, getModelDisplayName } from "../opencode-client.ts";
+import { getModelCtx, modelHasVision, getModelDisplayName } from "../openai-provider.ts";
 import { getFreebuffModelPremium } from "../freebuff-client.ts";
 import { addModels } from "../../models.ts";
 import { isDebug } from "../../split-console.ts";

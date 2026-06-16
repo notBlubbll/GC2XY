@@ -2,18 +2,28 @@ import forge from "node-forge";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { jsonResponse, HandlerInput, HandlerResult, countConsecutiveNags, stripNagMessages, RECENTLY_COMPLETED, RECENT_BODIES, injectIdentity, getProjectRoot, scrubTaskComplete, compressToolDefinitions, stripCopilotGreeting } from "../shared.ts";
-import { chatCompletion as opencodeChat, getKeyStatus, storeReasoning, getModelCtx, modelHasVision, detectSessionSignal, extractUserPrompt, getModelDisplayName, getModelProviderTag } from "./opencode-client.ts";
-import { addModels } from "../models.ts";
+import { chatCompletion as openAIChat, storeReasoning, getModelCtx, modelHasVision, detectSessionSignal, extractUserPrompt, getModelDisplayName, getModelProviderTag } from "./openai-provider.ts";
 import { chatCompletion as freebuffChat, getFreebuffModelPremium } from "./freebuff-client.ts";
 import { chatCompletion as agnesChat } from "./agnes-client.ts";
 import { getCompletionsModel, filterModelsByConfig } from "./dashboard-handler.ts";
-import { chatCompletion as codestralChat, completions as codestralFim } from "./codestral-client.ts";
+import { completions as codestralFim } from "./codestral-client.ts";
 import { chatCompletion as bitnetChat } from "./bitnet-client.ts";
+import { chatCompletion as umansChat } from "./umans-client.ts";
+import { addModels } from "../models.ts";
 import { isSupermavenEnabled, isSupermavenReady, supermavenCodeComplete } from "./supermaven-client.ts";
 import { reqLog, agentTag } from "../split-console.ts";
 import { trackRequest } from "../usage-tracker.ts";
 import { repairToolCalls, detectApologyText, detectToolLoop, bumpSalvageStat } from "../tool-salvager.ts";
 import { anthropicToOpenAIRequest } from "./anthropic-bridge.ts";
+
+function routeChat(model: string, messages: any[], tools: any[] | undefined, stream: boolean, extra: Record<string, any>, session?: { keyIdx?: number; sessionLabel?: string }): Promise<Response> {
+  if (model.startsWith("freebuff/")) return freebuffChat(model, messages, tools, stream, { max_tokens: extra.max_tokens, temperature: extra.temperature, top_p: extra.top_p, ...extra });
+  if (model.startsWith("agnes")) return agnesChat(model, messages, tools, stream, { ...extra });
+  if (model.startsWith("codestral/") || model.startsWith("mistral-")) return codestralChat(model, messages, tools, stream, { max_tokens: extra.max_tokens, temperature: extra.temperature, top_p: extra.top_p });
+  if (model === "bitnet-demo" || model.startsWith("bitnet/")) return bitnetChat(model, messages, tools, stream, { max_tokens: extra.max_tokens, temperature: extra.temperature, top_p: extra.top_p });
+  if (model.startsWith("umans-") || getModelProviderTag(model) === "umans") return umansChat(model, messages, tools, stream, { ...extra });
+  return openAIChat(model, messages, tools, stream, extra, session?.keyIdx, session?.sessionLabel);
+}
 
 const FAKE_MODELS: any[] = [];
 let _lastModelIds: string[] = [];
@@ -179,9 +189,9 @@ async function ensureModels() {
   const template = FAKE_MODELS.find((m: any) => !m.id.startsWith("cat_") && !m.id.startsWith("_cat_") && !m.id.includes("-lo") && !m.id.includes("-md") && !m.id.includes("-hi") && !m.id.includes("-mx"));
   if (template && FAKE_MODELS.length > 0) {
     const PROVIDER_NAMES: Record<string, string> = {
-      go: "\u200D✨ ⸻ OpenCode Go:", freebuff: "\u200D\u200D🇫🇷ᴇᴇ ⸻ FreeBuff:", agnes: "\u200D\u200D\u200D💜 ⸻ AgnesAI:", codestral: "\u200D\u200D\u200D\u200D🌀 ⸻ Codestral:", bitnet: "\u200D\u200D\u200D\u200D\u200D✨ ⸻ Bitnet:", deepseek: "\u200D\u200D\u200D\u200D\u200D\u200D✨ ⸻ DeepSeek:", openrouter: "\u200D\u200D\u200D\u200D\u200D\u200D\u200D✨ ⸻ OpenRouter:", zen: "\u200D\u200D\u200D\u200D\u200D\u200D\u200D\u200D⸻ ZEN:",
+      go: "\u200D✨ ⸻ OpenCode Go:", freebuff: "\u200D\u200D[🇫🇷ᴇᴇ] ⸻ FreeBuff:", agnes: "\u200D\u200D\u200D💜 ⸻ AgnesAI:", codestral: "\u200D\u200D\u200D\u200D🌀 ⸻ Codestral:", bitnet: "\u200D\u200D\u200D\u200D\u200D✨ ⸻ Bitnet:", deepseek: "\u200D\u200D\u200D\u200D\u200D\u200D✨ ⸻ DeepSeek:", openrouter: "\u200D\u200D\u200D\u200D\u200D\u200D\u200D✨ ⸻ OpenRouter:", zen: "\u200D\u200D\u200D\u200D\u200D\u200D\u200D\u200D⸻ ZEN:", umans: "\u200D\u200D\u200D\u200D\u200D\u200D\u200D\u200D\u200D⸻ UMANS:",
     };
-    const SEP_ORDER = ["go", "freebuff", "agnes", "codestral", "bitnet", "deepseek", "openrouter", "zen"];
+    const SEP_ORDER = ["go", "freebuff", "agnes", "codestral", "bitnet", "deepseek", "openrouter", "zen", "umans"];
     // Header banner at very top
     FAKE_MODELS.splice(0, 0, {
       ...template,
@@ -462,7 +472,7 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
       Array.isArray(lastUserMsg.content) ? lastUserMsg.content.filter((c: any) => c.type === "text").map((c: any) => c.text || "").join(" ") : ""
     ) : "";
     const tag = agentTag(headers);
-    const provider = model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "go";
+    const provider = model.startsWith("umans-") ? "umans" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "go";
     const completeLog = reqLog({ tag, provider, model, preview: queryPreview, body: parsed });
     const startTime = Date.now();
 
@@ -535,19 +545,7 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
       bridge.messages = scrubbed1.messages;
       bridge.tools = scrubbed1.tools;
       bridge.tools = compressToolDefinitions(bridge.tools);
-      const isFb = bridge.model.startsWith("freebuff/");
-      const isAg = bridge.model.startsWith("agnes");
-      const isCd = bridge.model.startsWith("codestral");
-      const isBn = bridge.model === "bitnet-demo" || bridge.model.startsWith("bitnet/");
-      const resp = isFb
-        ? await freebuffChat(bridge.model, bridge.messages, bridge.tools, false, { max_tokens: bridge.max_tokens, ...parsed })
-        : isAg
-        ? await agnesChat(bridge.model, bridge.messages, bridge.tools, false, { max_tokens: bridge.max_tokens, ...parsed })
-        : isCd
-        ? await codestralChat(bridge.model, bridge.messages, bridge.tools, false, { max_tokens: bridge.max_tokens, ...parsed })
-        : isBn
-        ? await bitnetChat(bridge.model, bridge.messages, bridge.tools, false, { max_tokens: bridge.max_tokens })
-        : await opencodeChat(bridge.model, bridge.messages, bridge.tools, false, { max_tokens: bridge.max_tokens, ...parsed });
+    const resp = await routeChat(bridge.model, bridge.messages, bridge.tools, false, { max_tokens: bridge.max_tokens, ...parsed });
       const ct = resp.headers.get("content-type") || "";
       let content = "";
       let toolCalls: any[] | undefined;
@@ -866,7 +864,7 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
       Array.isArray(lastUserMsg.content) ? lastUserMsg.content.filter((c: any) => c.type === "text").map((c: any) => c.text || "").join(" ") : ""
     ) : "";
     const tag = agentTag(headers);
-    const provider = model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "go";
+    const provider = model.startsWith("umans-") ? "umans" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "go";
     const completeLog = reqLog({ tag, provider, model, preview: chatPreview, body: parsed });
     const startTime = Date.now();
 
@@ -881,19 +879,7 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
       const cleanMsgs2 = scrubbed2.messages;
       const cleanTools2 = scrubbed2.tools;
       const cleanTools2Compressed = compressToolDefinitions(cleanTools2);
-      const isFb2 = model.startsWith("freebuff/");
-      const isAg2 = model.startsWith("agnes");
-      const isCd2 = model.startsWith("codestral");
-      const isBn2 = model === "bitnet-demo" || model.startsWith("bitnet/");
-      const resp = isFb2
-        ? await freebuffChat(model, cleanMsgs2, cleanTools2, isStream, { max_tokens: parsed.max_tokens, temperature: parsed.temperature, top_p: parsed.top_p, ...parsed })
-        : isAg2
-        ? await agnesChat(model, cleanMsgs2, cleanTools2, isStream, { ...parsed })
-        : isCd2
-        ? await codestralChat(model, cleanMsgs2, cleanTools2, isStream, { max_tokens: parsed.max_tokens, temperature: parsed.temperature, top_p: parsed.top_p })
-        : isBn2
-        ? await bitnetChat(model, cleanMsgs2, cleanTools2, isStream, { max_tokens: parsed.max_tokens, temperature: parsed.temperature, top_p: parsed.top_p })
-        : await opencodeChat(model, cleanMsgs2, cleanTools2, isStream, parsed, session?.keyIdx, session?.sessionLabel);
+      const resp = await routeChat(model, cleanMsgs2, cleanTools2, isStream, parsed, session);
 
       if (!isStream) {
         const data: any = await resp.json();
@@ -1211,7 +1197,7 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
     ];
 
     const tag = agentTag(headers);
-    const provider = model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "go";
+    const provider = model.startsWith("umans-") ? "umans" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "go";
     const completeLog = reqLog({ tag, provider, model, preview: userContent, body: parsed });
     const startTime = Date.now();
 
@@ -1220,19 +1206,7 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
       const cleanMsgs3 = scrubbed3.messages;
       const cleanTools3 = scrubbed3.tools;
       const cleanTools3Compressed = compressToolDefinitions(cleanTools3);
-      const isFb3 = model.startsWith("freebuff/");
-      const isAg3 = model.startsWith("agnes");
-      const isCd3 = model.startsWith("codestral");
-      const isBn3 = model === "bitnet-demo" || model.startsWith("bitnet/");
-      const resp = isFb3
-        ? await freebuffChat(model, cleanMsgs3, cleanTools3, isStream, { max_tokens: parsed.max_tokens, temperature: parsed.temperature, top_p: parsed.top_p, ...parsed })
-        : isAg3
-        ? await agnesChat(model, cleanMsgs3, cleanTools3, isStream, { ...parsed })
-        : isCd3
-        ? await codestralChat(model, cleanMsgs3, cleanTools3, isStream, { max_tokens: parsed.max_tokens, temperature: parsed.temperature, top_p: parsed.top_p })
-        : isBn3
-        ? await bitnetChat(model, cleanMsgs3, cleanTools3, isStream, { max_tokens: parsed.max_tokens, temperature: parsed.temperature, top_p: parsed.top_p })
-        : await opencodeChat(model, cleanMsgs3, cleanTools3, isStream, { ...parsed });
+      const resp = await routeChat(model, cleanMsgs3, cleanTools3Compressed, isStream, { ...parsed });
 
       if (!isStream) {
         const ct = resp.headers.get("content-type") || "";

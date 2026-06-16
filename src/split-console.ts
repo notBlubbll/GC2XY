@@ -344,23 +344,28 @@ function buildStatusLines(width: number): string[] {
     const isOther = (m: string) => m.startsWith("bitnet/") || m === "bitnet-demo";
     const freebuff = _modelIds.filter(m => m.startsWith("freebuff/")).map(colorModel);
     const codestral = _modelIds.filter(m => m.startsWith("codestral/")).map(colorModel);
+    const agnes = _modelIds.filter(m => m.startsWith("agnes")).map(colorModel);
+    const umans = _modelIds.filter(m => m.startsWith("umans")).map(colorModel);
     const other = _modelIds.filter(m => isOther(m)).map(colorModel);
-    const premium = _modelIds.filter(m => !m.startsWith("freebuff/") && !m.startsWith("codestral/") && !isOther(m)).map(colorModel);
     const fbRows = _wrapList(freebuff, rightWidth, ", ");
     const cdRows = _wrapList(codestral, rightWidth, ", ");
+    const agRows = _wrapList(agnes, rightWidth, ", ");
+    const umRows = _wrapList(umans, rightWidth, ", ");
     const otherRows = _wrapList(other, rightWidth, ", ");
-    const premRows = _wrapList(premium, rightWidth, ", ");
     if (fbRows.length > 0) {
-      modelRows = modelRows.concat(fbRows.map((r, i) => i === 0 ? `${Y}FREEBUFF:${R}${LG} ${r}${R}` : `${LG}${r}${R}`));
+      modelRows = modelRows.concat(fbRows.map((r, i) => i === 0 ? `${C}FREEBUFF:${R}${LG} ${r}${R}` : `${LG}${r}${R}`));
     }
     if (cdRows.length > 0) {
-      modelRows = modelRows.concat(cdRows.map((r, i) => i === 0 ? `${Y}CODESTRAL:${R}${LG} ${r}${R}` : `${LG}${r}${R}`));
+      modelRows = modelRows.concat(cdRows.map((r, i) => i === 0 ? `${C}CODESTRAL:${R}${LG} ${r}${R}` : `${LG}${r}${R}`));
     }
-    if (premRows.length > 0) {
-      modelRows = modelRows.concat(premRows.map((r, i) => i === 0 ? `${M}OC-GO:${R}${LG} ${r}${R}` : `${LG}${r}${R}`));
+    if (agRows.length > 0) {
+      modelRows = modelRows.concat(agRows.map((r, i) => i === 0 ? `${C}AGNES:${R}${LG} ${r}${R}` : `${LG}${r}${R}`));
+    }
+    if (umRows.length > 0) {
+      modelRows = modelRows.concat(umRows.map((r, i) => i === 0 ? `${C}UMANS:${R}${LG} ${r}${R}` : `${LG}${r}${R}`));
     }
     if (otherRows.length > 0) {
-      modelRows = modelRows.concat(otherRows.map((r, i) => i === 0 ? `${M}OTHER:${R}${LG} ${r}${R}` : `${LG}${r}${R}`));
+      modelRows = modelRows.concat(otherRows.map((r, i) => i === 0 ? `${C}OTHER:${R}${LG} ${r}${R}` : `${LG}${r}${R}`));
     }
   } else {
     modelRows = ["", `${LG}loading models...${R}`, ""];

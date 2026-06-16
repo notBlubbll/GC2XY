@@ -2,6 +2,7 @@
 import * as crypto from "node:crypto";
 import * as https from "node:https";
 import { isDebug } from "../split-console.ts";
+import { normalizeTool as sharedNormalizeTool } from "../shared.ts";
 
 const UMANS_API_BASE = "https://api.code.umans.ai/v1";
 const APP_BASE = "https://app.umans.ai";
@@ -459,6 +460,8 @@ let modelCatalogCacheTime = 0;
 const MODEL_CATALOG_CACHE_TTL = 5 * 60 * 1000;
 let modelDisplayNameMap: Record<string, string> = {};
 export let modelInfoMap: Record<string, any> = {};
+let _cachedModelIds: string[] = [];
+let _modelsInitialized = false;
 
 export async function fetchModelCatalog(key?: string): Promise<Record<string, any>> {
   const k = key || (_config.keys[0]?.key);
@@ -490,11 +493,34 @@ export async function getCatalogData(): Promise<Record<string, any>> {
 }
 
 export function getModelDisplayName(id: string): string {
-  return modelDisplayNameMap[id] || id.replace(/^umans-/i, "");
+  if (modelDisplayNameMap[id]) return modelDisplayNameMap[id];
+  const base = id.replace(/^umans-/i, "");
+  return base.split("-").map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(" ");
 }
 
 export function getEnabledModels(): string[] {
   return _config.enabledModels || [];
+}
+
+export async function initModels(): Promise<string[]> {
+  if (_modelsInitialized && _cachedModelIds.length > 0) return _cachedModelIds;
+  try {
+    const data = await getCatalogData();
+    if (data && typeof data === "object" && !Array.isArray(data.data)) {
+      _cachedModelIds = Object.keys(data).filter(id => id && typeof data[id] === "object");
+    } else if (data && Array.isArray(data.data)) {
+      _cachedModelIds = data.data.map((m: any) => typeof m === "string" ? m : m.id || "").filter(Boolean);
+    }
+  } catch (e: any) {
+    if (isDebug()) console.log(`[UMANS] initModels failed: ${e.message}`);
+  }
+  _modelsInitialized = true;
+  return _cachedModelIds;
+}
+
+export function getModelIds(): string[] {
+  if (!_modelsInitialized) initModels().catch(() => {});
+  return _cachedModelIds;
 }
 
 // --- app.umans.ai account functions ---
@@ -721,6 +747,21 @@ export function queueChatRequest(payload: any, requestedModel: string, skipSessi
       .catch(reject)
       .finally(() => { activeRequests--; processQueue(); });
   });
+}
+
+export async function chatCompletion(modelId: string, messages: any[], tools?: any[], stream = true, extra: Record<string, any> = {}): Promise<Response> {
+  const payload: any = { ...extra };
+  payload.model = modelId;
+  payload.messages = messages;
+  payload.stream = stream;
+  if (stream === false) delete payload.stream;
+  if (tools !== undefined) payload.tools = tools.length ? tools.map(sharedNormalizeTool) : undefined;
+  if (payload.tools?.length) {
+    // umans upstream is OpenAI-compatible; keep schemas lightweight
+    const needNorm = payload.tools.some((t: any) => t.function?.parameters?.$defs || t.function?.parameters?.$definitions || t.function?.parameters?.$ref);
+    if (needNorm) normalizeToolSchemas(payload.tools);
+  }
+  return queueChatRequest(payload, modelId, true);
 }
 
 async function proxyChatRequest(payload: any, requestedModel: string, skipSessionLabel: boolean): Promise<Response> {

@@ -1,17 +1,28 @@
 import forge from "node-forge";
 import { readFileSync } from "node:fs";
 import { jsonResponse, HandlerInput, HandlerResult, countConsecutiveNags, stripNagMessages, RECENTLY_COMPLETED, RECENT_BODIES, injectIdentity, compactIdentity, scrubTaskComplete, compressToolDefinitions, stripCopilotGreeting } from "../../shared.ts";
-import { chatCompletion as opencodeChat, detectSessionSignal, extractUserPrompt, getModelDisplayName, getModelProviderTag } from "../opencode-client.ts";
+import { chatCompletion as openAIChat, detectSessionSignal, extractUserPrompt, getModelDisplayName, getModelProviderTag } from "../openai-provider.ts";
 import { chatCompletion as freebuffChat } from "../freebuff-client.ts";
 import { chatCompletion as agnesChat } from "../agnes-client.ts";
 import { chatCompletion as codestralChat } from "../codestral-client.ts";
 import { chatCompletion as bitnetChat } from "../bitnet-client.ts";
+import { chatCompletion as umansChat } from "../umans-client.ts";
 import { addModels } from "../../models.ts";
 import { handleVSModels, VS_MODELS } from "./models.ts";
 import { recordTps, reqLog, agentTag } from "../../split-console.ts";
 import { trackRequest } from "../../usage-tracker.ts";
 import { anthropicToOpenAIRequest } from "../anthropic-bridge.ts";
 import { filterModelsByConfig } from "../dashboard-handler.ts";
+
+function routeChat(model: string, messages: any[], tools: any[] | undefined, stream: boolean, extra: Record<string, any>, session?: { keyIdx?: number; sessionLabel?: string }): Promise<Response> {
+  if (model.startsWith("freebuff/")) return freebuffChat(model, messages, tools, stream, { max_tokens: extra.max_tokens, temperature: extra.temperature, top_p: extra.top_p, ...extra });
+  if (model.startsWith("agnes")) return agnesChat(model, messages, tools, stream, { ...extra });
+  if (model.startsWith("codestral/") || model.startsWith("mistral-")) return codestralChat(model, messages, tools, stream, { max_tokens: extra.max_tokens, temperature: extra.temperature, top_p: extra.top_p });
+  if (model === "bitnet-demo" || model.startsWith("bitnet/")) return bitnetChat(model, messages, tools, stream, { max_tokens: extra.max_tokens, ...extra });
+  if (model.startsWith("umans-") || getModelProviderTag(model) === "umans") return umansChat(model, messages, tools, stream, { ...extra });
+  return openAIChat(model, messages, tools, stream, extra, session?.keyIdx, session?.sessionLabel);
+}
+
 import {
   repairToolCalls,
   detectApologyText,
@@ -463,41 +474,17 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
 
       const lastUserMsg = [...bridge.messages].reverse().find((m: any) => m.role === "user");
       const vsTag = agentTag(headers);
-      const vsProvider = model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "go";
+      const vsProvider = model.startsWith("umans-") ? "umans" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "go";
       const messagesPreview = lastUserMsg ? (
         typeof lastUserMsg.content === "string" ? lastUserMsg.content :
         Array.isArray(lastUserMsg.content) ? lastUserMsg.content.filter((c: any) => c.type === "text").map((c: any) => c.text || "").join(" ") : ""
       ) : "";
       const messagesComplete = reqLog({ tag: vsTag, provider: vsProvider, model, preview: messagesPreview, body: parsed });
 
-      const isFb = bridge.model.startsWith("freebuff/");
-      const isAg = bridge.model.startsWith("agnes");
-      const isCd = bridge.model.startsWith("codestral");
-      const isBn = bridge.model === "bitnet-demo" || bridge.model.startsWith("bitnet/");
-      const resp = isFb
-        ? await freebuffChat(bridge.model, bridge.messages, bridge.tools, bridge.stream, {
+      const resp = await routeChat(bridge.model, bridge.messages, bridge.tools, bridge.stream, {
         max_tokens: bridge.max_tokens,
         ...parsed,
-      })
-        : isAg
-        ? await agnesChat(bridge.model, bridge.messages, bridge.tools, bridge.stream, {
-        max_tokens: bridge.max_tokens,
-        ...parsed,
-      })
-        : isCd
-        ? await codestralChat(bridge.model, bridge.messages, bridge.tools, bridge.stream, {
-        max_tokens: bridge.max_tokens,
-        ...parsed,
-      })
-        : isBn
-        ? await bitnetChat(bridge.model, bridge.messages, bridge.tools, bridge.stream, {
-        max_tokens: bridge.max_tokens,
-        ...parsed,
-      })
-        : await opencodeChat(bridge.model, bridge.messages, bridge.tools, bridge.stream, {
-        max_tokens: bridge.max_tokens,
-        ...parsed,
-      }, vsSession?.keyIdx, vsSession?.sessionLabel);
+      }, vsSession);
 
       const respCt = resp.headers.get("content-type") || "";
       const actualStream = isStream && respCt.includes("event-stream");
@@ -796,22 +783,10 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
         console.log(`[VS SESSION] ${ts2} [Session#${vsSession.sessNum}>${vsSession.keyLabel}] ${model} "${extractUserPrompt(cleanMessages).substring(0, 120)}"`);
       }
 
-      const vsTag = agentTag(headers);
-      const vsProvider = model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "go";
+    const vsTag = agentTag(headers);
+    const vsProvider = model.startsWith("umans-") ? "umans" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "go";
 
-      const isFb2 = model.startsWith("freebuff/");
-      const isAg2 = model.startsWith("agnes");
-      const isCd2 = model.startsWith("codestral");
-      const isBn2 = model === "bitnet-demo" || model.startsWith("bitnet/");
-      const resp = isFb2
-        ? await freebuffChat(model, cleanMessages, cleanToolsBn, isStream, { max_tokens: parsed.max_tokens, temperature: parsed.temperature, top_p: parsed.top_p, ...parsed })
-        : isAg2
-        ? await agnesChat(model, cleanMessages, cleanToolsBn, isStream, { ...parsed })
-        : isCd2
-        ? await codestralChat(model, cleanMessages, cleanToolsBn, isStream, { max_tokens: parsed.max_tokens, temperature: parsed.temperature, top_p: parsed.top_p })
-        : isBn2
-        ? await bitnetChat(model, cleanMessages, cleanToolsBn, isStream, { max_tokens: parsed.max_tokens, ...parsed })
-        : await opencodeChat(model, cleanMessages, cleanToolsBn, isStream, { ...parsed }, vsSession?.keyIdx, vsSession?.sessionLabel);
+    const resp = await routeChat(model, cleanMessages, cleanToolsBn, isStream, { ...parsed }, vsSession);
       if (!isStream) {
         const openaiData: any = await resp.json();
         if (openaiData?.choices?.[0]?.message?.content) {
@@ -966,21 +941,10 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
     try {
       const vsTag = agentTag(headers);
       const lastUserMsg = [...chatMessages].reverse().find((m: any) => m.role === "user");
-      const vsProvider = model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "go";
+      const vsProvider = model.startsWith("umans-") ? "umans" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "go";
 
-      const isFb3 = model.startsWith("freebuff/");
-      const isAg3 = model.startsWith("agnes");
-      const isCd3 = model.startsWith("codestral");
-      const isBn3 = model === "bitnet-demo" || model.startsWith("bitnet/");
-      const resp = isFb3
-        ? await freebuffChat(model, chatMessages, chatToolsBn, isStream, { max_tokens: maxTokens, temperature: parsed.temperature, top_p: parsed.top_p, ...parsed })
-        : isAg3
-        ? await agnesChat(model, chatMessages, chatToolsBn, isStream, { max_tokens: maxTokens, ...parsed })
-        : isCd3
-        ? await codestralChat(model, chatMessages, chatToolsBn, isStream, { max_tokens: maxTokens, temperature: parsed.temperature, top_p: parsed.top_p })
-        : isBn3
-        ? await bitnetChat(model, chatMessages, chatToolsBn, isStream, { max_tokens: maxTokens, ...parsed })
-        : await opencodeChat(model, chatMessages, chatToolsBn, isStream, { max_tokens: maxTokens, ...parsed }, session?.keyIdx, session?.sessionLabel);
+      const isUm3 = model.startsWith("umans-");
+      const resp = await routeChat(model, chatMessages, chatToolsBn, isStream, { max_tokens: maxTokens, ...parsed }, session);
       if (!isStream) {
         const data: any = await resp.json();
         if (data?.choices?.[0]?.message?.content) {
