@@ -9,6 +9,8 @@ import { gunzipSync } from "node:zlib";
 import forge from "node-forge";
 import { spawnSync } from "node:child_process";
 import * as recorder from "./commands.ts";
+
+let _trafficLoggingEnabled = process.env.RECORD_MODE === "1";
 import * as deviceLogin from "./handlers/device-login-emulator.ts";
 import * as offlineStore from "./offline-store.ts";
 import * as splitConsole from "./split-console.ts";
@@ -68,10 +70,14 @@ let requestCounter = 0;
 let cacheHitCount = 0;
 let lastAgentName = "";
 
+function trafficLogEnabled(): boolean {
+  return _trafficLoggingEnabled;
+}
+
 function debugLog(msg: string) {
   const iso = new Date().toISOString();
   splitConsole.debugLog(generalLogLine("DEBUG", msg));
-  logStream.write(JSON.stringify({ timestamp: iso, level: "DEBUG", msg }) + "\n");
+  if (trafficLogEnabled()) logStream.write(JSON.stringify({ timestamp: iso, level: "DEBUG", msg }) + "\n");
 }
 
 function log(level: string, msg: string, data: Record<string, any> = {}) {
@@ -81,7 +87,7 @@ function log(level: string, msg: string, data: Record<string, any> = {}) {
   } else {
     console.log(generalLogLine(level, msg));
   }
-  logStream.write(JSON.stringify({ timestamp: iso, level, msg, ...data }) + "\n");
+  if (trafficLogEnabled()) logStream.write(JSON.stringify({ timestamp: iso, level, msg, ...data }) + "\n");
 }
 
 function logPlainEnglish(reqNum: number, direction: "REQUEST" | "RESPONSE", method: string, url: string, host: string, statusCode: number | null, headers: Record<string, string>, body: string | null, agentOverride?: string) {
@@ -97,6 +103,8 @@ function logPlainEnglish(reqNum: number, direction: "REQUEST" | "RESPONSE", meth
   } else {
     console.log(httpLogLine(dir, method, url, statusCode, agent));
   }
+
+  if (!trafficLogEnabled()) return;
 
   logStream.write(JSON.stringify({
     timestamp: new Date().toISOString(),
@@ -623,7 +631,7 @@ async function forwardWithInterceptor(client: TLSSocket | Socket, method: string
     const initBy = baggage.match(/vs\.copilot\.InitiatorType\s*=\s*(\S+)/)?.[1] || "";
     const _vsMsg = `[VS DETECTED] ${method} ${url} � editor: ${editorVer} | initiator=${initiator} | mode=${initType} | by=${initBy}`;
     const iso = new Date().toISOString();
-    logStream.write(JSON.stringify({ timestamp: iso, level: "INFO", msg: _vsMsg }) + "\n");
+    if (trafficLogEnabled()) logStream.write(JSON.stringify({ timestamp: iso, level: "INFO", msg: _vsMsg }) + "\n");
     if (isDebug()) console.log(generalLogLine("INFO", _vsMsg));
   }
 
@@ -1265,9 +1273,11 @@ splitConsole.onCommand((cmd: string) => {
       runtime: runtimeTag,
     });
   } else if (cmd === "record") {
+    _trafficLoggingEnabled = true;
     recorder.startRecording().catch(() => {});
     splitConsole.setRecording(true);
   } else if (cmd === "stoprecord") {
+    _trafficLoggingEnabled = false;
     if (recorder.isRecording) {
       recorder.stopRecordingAuto().then(() => splitConsole.setRecording(false)).catch(() => {});
     }

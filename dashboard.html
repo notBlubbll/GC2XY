@@ -479,17 +479,17 @@
             </div>
             <div style="width:1px;height:24px;background:rgba(255,255,255,0.15)"></div>
             <div class="text-center" style="line-height:1.1">
-              <div style="font-size:9px;color:rgba(255,255,255,0.5)" data-i18n="label_keys">Keys</div>
-              <div style="font-size:13px;font-weight:600;color:white" id="activeKeysBlock">0</div>
-            </div>
-            <div style="width:1px;height:24px;background:rgba(255,255,255,0.15)"></div>
-            <div class="text-center" style="line-height:1.1">
               <div style="font-size:9px;color:rgba(255,255,255,0.5)" data-i18n="label_models">Models</div>
               <div style="font-size:13px;font-weight:600;color:white" id="totalModels">0 / 0</div>
             </div>
-            <div class="text-center" style="line-height:1.1" id="quotaTopBar">
-              <div style="font-size:9px;color:rgba(255,255,255,0.5)" data-i18n="label_quota">90 Days</div>
-              <div style="font-size:13px;font-weight:600;color:white" id="quotaDisplay" title="">n/a</div>
+            <div class="d-flex align-items-center gap-2" style="line-height:1.1;position:relative;min-width:235px;margin-left:28px" id="windowTopBar">
+              <div style="position:absolute;inset:-6px -12px -4px -12px;background:linear-gradient(135deg,rgba(255,255,255,0.08),rgba(255,255,255,0.02));border-radius:8px;pointer-events:none;backdrop-filter:blur(10px) saturate(160%);-webkit-backdrop-filter:blur(10px) saturate(160%);border:1px solid rgba(255,255,255,0.12);box-shadow:0 4px 16px rgba(0,0,0,0.15)"></div>
+              <div class="position-relative" style="font-size:10px;color:rgba(255,255,255,0.55);letter-spacing:0.5px;text-transform:uppercase;writing-mode:vertical-rl;transform:rotate(180deg);padding-right:2px">WINDOW</div>
+              <div class="position-relative" style="display:flex;gap:12px;justify-content:center;align-items:stretch;flex:1;padding:0 4px">
+                <div class="text-center" style="flex:1;min-width:70px"><div style="font-size:9px;color:rgba(255,255,255,0.45);text-transform:uppercase">Requests</div><div style="font-size:13px;font-weight:600;color:white" id="windowRequests">n/a</div></div>
+                <div style="width:1px;height:24px;background:rgba(255,255,255,0.15);align-self:center"></div>
+                <div class="text-center" style="flex:1;min-width:90px"><div style="font-size:9px;color:rgba(255,255,255,0.45);text-transform:uppercase">Tokens</div><div style="font-size:13px;font-weight:600;color:white" id="windowTokens">n/a</div></div>
+              </div>
             </div>
           </div>
           <div class="d-flex align-items-center gap-2">
@@ -865,7 +865,9 @@
           <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
         </div>
         <div class="modal-body" id="keysModalBody">
+          <div class="mb-2" style="font-size:10px;color:rgba(255,255,255,0.55);text-transform:uppercase;letter-spacing:0.6px" data-i18n="label_account">Account</div>
           <div class="pool-card mb-3" id="umansAccountCard"></div>
+          <div class="mb-2" style="font-size:10px;color:rgba(255,255,255,0.55);text-transform:uppercase;letter-spacing:0.6px" data-i18n="section_keys">Keys</div>
           <div id="umansKeysList"></div>
           <hr style="border-color:rgba(255,255,255,0.1)">
           <div class="mb-3">
@@ -1220,6 +1222,21 @@
         case 'testChatDone':
           _finishTestChatStream(msg._id, msg.latencyMs, msg.elapsedMs);
           break;
+        case 'umans':
+          if (msg.data) { _umansState = { ..._umansState, ...msg.data }; if (_umansState.userId) _umansUserId = _umansState.userId; updateUmansAccountBadge(); }
+          break;
+        case 'umansUserId':
+          if (msg.data && msg.data.userId) { _umansUserId = msg.data.userId; updateUmansAccountBadge(); }
+          break;
+        case 'umansUsage':
+          if (msg.data !== undefined) { _umansState.usage = msg.data; updateUmansTopBar(); }
+          break;
+        case 'umansUsageHistory':
+          if (msg.data !== undefined) { _umansState.usageHistory = msg.data; updateUmansTopBar(); }
+          break;
+        case 'umansConcurrency':
+          if (msg.data !== undefined) { _umansState.concurrency = msg.data; if (msg.data && msg.data.user_id) _umansUserId = msg.data.user_id; updateUmansAccountBadge(); }
+          break;
       }
     }
 
@@ -1266,7 +1283,8 @@
       }
       if (data.githubSettings) applyGithubSettings(data.githubSettings);
       if (data.umans) { _umansState = { ..._umansState, ...data.umans }; if (_umansState.userId) _umansUserId = _umansState.userId; updateUmansAccountBadge(); }
-      if (data.umansUsage !== undefined) { _umansState.usage = data.umansUsage; }
+      if (data.umansUsage !== undefined) { _umansState.usage = data.umansUsage; updateUmansTopBar(); }
+      if (data.umansUsageHistory !== undefined) { _umansState.usageHistory = data.umansUsageHistory; updateUmansTopBar(); }
       if (data.umansUserId !== undefined) { _umansUserId = data.umansUserId; updateUmansAccountBadge(); }
       if (data.umansConcurrency !== undefined) { _umansState.concurrency = data.umansConcurrency; if (_umansState.concurrency && _umansState.concurrency.user_id) _umansUserId = _umansState.concurrency.user_id; updateUmansAccountBadge(); }
       if (data.workspaceData) {
@@ -1328,7 +1346,8 @@
       }
       if (data.githubSettings) applyGithubSettings(data.githubSettings);
       if (data.umans) { _umansState = { ..._umansState, ...data.umans }; if (_umansState.userId) _umansUserId = _umansState.userId; updateUmansAccountBadge(); }
-      if (data.umansUsage !== undefined) { _umansState.usage = data.umansUsage; }
+      if (data.umansUsage !== undefined) { _umansState.usage = data.umansUsage; updateUmansTopBar(); }
+      if (data.umansUsageHistory !== undefined) { _umansState.usageHistory = data.umansUsageHistory; updateUmansTopBar(); }
       if (data.umansUserId !== undefined) { _umansUserId = data.umansUserId; updateUmansAccountBadge(); }
       if (data.umansConcurrency !== undefined) { _umansState.concurrency = data.umansConcurrency; if (_umansState.concurrency && _umansState.concurrency.user_id) _umansUserId = _umansState.concurrency.user_id; updateUmansAccountBadge(); }
       if (data.workspaceData) {
@@ -1670,6 +1689,7 @@
 
     function renderWorkspaceUsageSummary() {
       const qEl = document.getElementById('quotaDisplay');
+      if (!qEl) return;
       let sumUsage = 0, totalWs = 0, activeWs = 0;
       for (const ws of _wsData) {
         const u = ws.usage || {};
@@ -1807,23 +1827,30 @@
 
     // ── Provider Change ──
     function onProviderChange() {
-      document.getElementById('quotaDisplay').textContent = '\u2026';
-      document.getElementById('quotaDisplay').title = '';
+      const qEl = document.getElementById('quotaDisplay');
+      if (qEl) { qEl.textContent = '\u2026'; qEl.title = ''; }
       wsSend('getWorkspaceUsage');
       setTimeout(() => initLiquidGlass(), 100);
     }
 
     // ── UMANS Account / Keys Management ──
-    let _umansState = { account: {}, keys: [], enabledModels: [], usage: null, concurrency: {}, loggedIn: false };
+    let _umansState = { account: {}, keys: [], enabledModels: [], usage: null, concurrency: {}, loggedIn: false, usageHistory: null };
     let _umansEditingIndex = -1;
     let _umansUserId = '';
 
     function addCurrentProviderKey() { openKeysModal(); }
 
-    function openKeysModal() {
+    async function openKeysModal() {
       _umansEditingIndex = -1;
       cancelEditKey();
       updateUmansAccountBadge();
+      if (!_umansUserId && _umansState.loggedIn) {
+        try {
+          const resp = await wsCall('umansRefresh', {});
+          if (resp && resp.userId) _umansUserId = resp.userId;
+        } catch {}
+      }
+      renderUmansAccount();
       const modalEl = document.getElementById('keysModal');
       if (!modalEl) return;
       bootstrap.Modal.getOrCreateInstance(modalEl).show();
@@ -1833,17 +1860,16 @@
       const container = document.getElementById('umansAccountCard');
       if (!container) return;
       const account = _umansState.account || {};
-      const email = account.email || '';
-      const displayId = _umansUserId || email || '';
+      const email = _umansState.email || account.email || '';
       const userIdRow = _umansUserId ? '<div class="mt-1 d-flex align-items-center gap-2" style="font-size:0.7rem;color:rgba(255,255,255,0.55)">' +
         '<span><i class="bi bi-person-badge me-1"></i>' + t('label_user_id', 'User ID') + ':</span>' +
         '<code style="font-size:0.7rem;color:rgba(255,255,255,0.85);background:rgba(255,255,255,0.05);padding:1px 4px;border-radius:4px;word-break:break-all">' + escapeHtml(_umansUserId) + '</code>' +
         '<button class="btn btn-sm p-0 ms-auto" style="background:transparent;border:none;color:rgba(255,255,255,0.5);font-size:0.65rem" onclick="copyUserId()" title="' + t('btn_copy_user_id', 'Copy User ID') + '"><i class="bi bi-clipboard"></i></button>' +
         '</div>' : '';
       if (_umansState.loggedIn) {
-        container.innerHTML = '<div class="d-flex justify-content-between align-items-center">' +
-          '<div><div style="font-size:12px;color:rgba(255,255,255,0.7)"><i class="bi bi-person-circle me-1"></i>' + escapeHtml(displayId) + '</div>' + userIdRow + '</div>' +
-          '<button class="btn btn-sm" style="background:rgba(220,53,69,0.2);color:#dc3545;border:none;font-size:0.7rem;padding:2px 10px" onclick="openUmansLogoutModal()"><i class="bi bi-box-arrow-right me-1"></i>' + t('btn_logout', 'Logout') + '</button>' +
+        container.innerHTML = '<div class="d-flex justify-content-between align-items-start">' +
+          '<div style="min-width:0"><div style="font-size:13px;font-weight:600;color:white;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + escapeHtml(email) + '"><i class="bi bi-person-circle me-1" style="color:rgba(255,255,255,0.7)"></i>' + escapeHtml(email || t('status_logged_in', 'Logged in')) + '</div>' + userIdRow + '</div>' +
+          '<button class="btn btn-sm" style="background:rgba(220,53,69,0.2);color:#dc3545;border:none;font-size:0.7rem;padding:2px 10px;flex-shrink:0" onclick="openUmansLogoutModal()"><i class="bi bi-box-arrow-right me-1"></i>' + t('btn_logout', 'Logout') + '</button>' +
           '</div>';
       } else {
         container.innerHTML = '<div class="d-flex justify-content-between align-items-center">' +
@@ -2068,32 +2094,71 @@
     }
 
     function updateUmansWindowTopBar() {
-      // Window top bar removed; placeholder kept for any legacy callers.
+      const reqEl = document.getElementById('windowRequests');
+      const tokEl = document.getElementById('windowTokens');
+      if (!reqEl || !tokEl) return;
+      const usage = _umansState && _umansState.usage;
+      if (usage) {
+        const winSrc = (usage.window && (usage.window.tokens_in !== undefined || usage.window.tokens_out !== undefined || usage.window.requests_in_window !== undefined)) ? usage.window : usage.usage;
+        let winReqs = 0, winInputTokens = 0, winTokens = 0, cached = 0;
+        if (winSrc) {
+          winReqs = winSrc.requests_in_window || 0;
+          winInputTokens = winSrc.tokens_in || 0;
+          winTokens = winInputTokens + (winSrc.tokens_out || 0);
+          cached = winSrc.tokens_cached || usage.usage?.tokens_cached || 0;
+        }
+        const cachedPct = winInputTokens > 0 ? ((cached / winInputTokens) * 100).toFixed(0) : '0';
+        if (winReqs || winTokens) {
+          reqEl.textContent = winReqs.toLocaleString();
+          tokEl.innerHTML = winTokens.toLocaleString() + ' <span style="font-size:10px;color:rgba(255,255,255,0.45)">(' + cachedPct + '%)</span>';
+          reqEl.title = 'Window requests';
+          tokEl.title = 'Window tokens · ' + cachedPct + '% cached';
+        } else {
+          reqEl.textContent = 'n/a';
+          tokEl.textContent = 'n/a';
+          reqEl.title = 'No UMANS window usage';
+          tokEl.title = 'No UMANS window usage';
+        }
+      } else {
+        reqEl.textContent = 'n/a';
+        tokEl.textContent = 'n/a';
+        reqEl.title = 'No UMANS window usage';
+        tokEl.title = 'No UMANS window usage';
+      }
     }
 
     function updateUmans90DaysTopBar() {
-      const qEl = document.getElementById('quotaDisplay');
-      if (!qEl) return;
-      let histReqs = 0, histTokens = 0;
+      const reqEl = document.getElementById('quotaRequests');
+      const tokEl = document.getElementById('quotaTokens');
+      if (!reqEl || !tokEl) return;
+      let histReqs = 0, histTokens = 0, histInputTokens = 0, histCached = 0;
       const hist = _umansState && _umansState.usageHistory;
       const buckets = hist && (hist.buckets || hist.entries || hist.data || []);
       if (Array.isArray(buckets)) {
         for (const b of buckets) {
           histReqs += b.requests || b.request_count || 0;
           histTokens += (b.tokens_in || 0) + (b.tokens_out || 0);
+          histInputTokens += (b.tokens_in || 0);
+          histCached += (b.tokens_cached_read || b.tokens_cached || 0);
         }
       }
+      const cachedPct = histInputTokens > 0 ? ((histCached / histInputTokens) * 100).toFixed(0) : '0';
       if (histReqs || histTokens) {
-        const label = (histReqs.toLocaleString() + ' req' + (histReqs === 1 ? '' : 's')) + ' · ' + histTokens.toLocaleString() + ' tok';
-        qEl.textContent = label;
-        qEl.title = '90-day totals: ' + histReqs.toLocaleString() + ' requests · ' + histTokens.toLocaleString() + ' tokens';
+        reqEl.textContent = histReqs.toLocaleString();
+        tokEl.innerHTML = histTokens.toLocaleString() + '<br><span style="font-size:10px;color:rgba(255,255,255,0.55)">(' + cachedPct + '%)</span>';
+        reqEl.title = 'Requests';
+        tokEl.title = 'Tokens · ' + cachedPct + '% cached';
       } else {
-        qEl.textContent = 'n/a';
-        qEl.title = 'No UMANS usage history';
+        reqEl.textContent = 'n/a';
+        tokEl.textContent = 'n/a';
+        reqEl.title = 'No UMANS usage history';
+        tokEl.title = 'No UMANS usage history';
       }
     }
 
     function updateUmansTopBar() {
+      updateUmansWindowTopBar();
+      updateUmans90DaysTopBar();
       const accountLabel = document.getElementById('umansAccountTopLabel');
       const keysLabel = document.getElementById('umansKeysTopLabel');
       const activeKeysBlock = document.getElementById('activeKeysBlock');

@@ -171,6 +171,7 @@ function takeSnapshot(): Record<string, any> {
     umans: _umansState,
     umansUserId: _umansState.userId || (_umansState.concurrency ? _umansState.concurrency.user_id : null) || null,
     umansUsage: _umansUsageCache,
+    umansUsageHistory: _umansUsageHistoryCache,
   };
 }
 
@@ -204,8 +205,31 @@ function pushStatusToWs(ws?: WebSocket) {
 
 // Push every 2s to check for changes (throttled delta detection)
 let _pushTimer: ReturnType<typeof setInterval> | null = null;
-export function startWsPushLoop() { if (!_pushTimer) _pushTimer = setInterval(() => pushStatusToWs(), 2000); }
-export function stopWsPushLoop() { if (_pushTimer) { clearInterval(_pushTimer); _pushTimer = null; } }
+let _umansRefreshTimer: ReturnType<typeof setInterval> | null = null;
+export function startWsPushLoop() { if (!_pushTimer) _pushTimer = setInterval(() => pushStatusToWs(), 2000); startUmansRefreshLoop(); }
+export function stopWsPushLoop() { if (_pushTimer) { clearInterval(_pushTimer); _pushTimer = null; } if (_umansRefreshTimer) { clearInterval(_umansRefreshTimer); _umansRefreshTimer = null; } }
+
+function startUmansRefreshLoop() {
+  if (_umansRefreshTimer) return;
+  _umansRefreshTimer = setInterval(async () => {
+    if (!_umansState.loggedIn && !getUmansConfig().appSession) return;
+    try {
+      const usage = await fetchUmansUsage();
+      const history = await fetchUmansUsageHistory();
+      const concurrency = await fetchUmansConcurrency().catch(() => ({ concurrent: 0, limit: null, user_id: null }));
+      if (usage) { _umansUsageCache = usage; _umansUsageCacheTime = Date.now(); broadcastUmansUsage(usage); }
+      if (history) { _umansUsageHistoryCache = history; _umansUsageHistoryCacheTime = Date.now(); pushUmansUsageHistory(history); }
+      if (concurrency) { _umansState.concurrency = concurrency; if (concurrency.user_id) _umansState.userId = concurrency.user_id; broadcastUmansConcurrency(concurrency); }
+    } catch {}
+  }, 30000);
+}
+
+function pushUmansUsageHistory(history: any) {
+  const msg = JSON.stringify({ type: "umansUsageHistory", data: history });
+  for (const client of _wsClients) {
+    if (client.readyState === WebSocket.OPEN) client.send(msg);
+  }
+}
 
 function detectDashboardLocale(payload?: any): string {
   if (payload?.locale) return String(payload.locale).toLowerCase().split(/[-_]/)[0].slice(0, 8);
@@ -644,14 +668,18 @@ async function handleWsMessage(ws: WebSocket, msg: any) {
             keys: state.keys,
             currentKeyIndex: 0,
             enabledModels: _umansState.enabledModels || [],
-            userId: concurrency.user_id,
+            userId: state.userId || concurrency.user_id,
           };
           syncUmansTranslationKey();
           saveConfig();
           broadcastUmansState();
+          _umansUsageCache = state.usage;
+          _umansUsageCacheTime = Date.now();
+          _umansUsageHistoryCache = usageHistory;
+          _umansUsageHistoryCacheTime = Date.now();
           broadcastUmansUsage(state.usage);
           broadcastUmansConcurrency(concurrency);
-          ws.send(JSON.stringify({ type: "umansUsageHistory", data: usageHistory }));
+          pushUmansUsageHistory(usageHistory);
           ws.send(JSON.stringify({ _id: payload?._id, success: true }));
         } else {
           ws.send(JSON.stringify({ _id: payload?._id, success: false, error: "Invalid email or password" }));
@@ -732,25 +760,31 @@ async function handleWsMessage(ws: WebSocket, msg: any) {
       break;
     }
     case "umansRefresh": {
+      ws.send(JSON.stringify({ _id: payload?._id }));
       try {
         const keys = await fetchKeysFromApp();
         _umansState.keys = keys;
+        const concurrency = await fetchUmansConcurrency().catch(() => ({ concurrent: 0, limit: null, user_id: null }));
+        _umansState.userId = concurrency.user_id || _umansState.userId;
         syncUmansTranslationKey();
         saveConfig();
         broadcastUmansState();
+        ws.send(JSON.stringify({ type: "umansUserId", data: { userId: _umansState.userId } }));
       } catch {}
       break;
     }
-    case "umansRefreshUsage": {
+      case "umansRefreshUsage": {
       try {
         const usage = await fetchUmansUsage({ force: true });
         const concurrency = await fetchUmansConcurrency();
         const history = await fetchUmansUsageHistory({ force: true });
         _umansUsageCache = usage;
         _umansUsageCacheTime = Date.now();
+        _umansUsageHistoryCache = history;
+        _umansUsageHistoryCacheTime = Date.now();
         broadcastUmansUsage(usage);
         broadcastUmansConcurrency(concurrency);
-        ws.send(JSON.stringify({ type: "umansUsageHistory", data: history }));
+        pushUmansUsageHistory(history);
       } catch {}
       break;
     }
@@ -1179,8 +1213,10 @@ function loadConfig() {
         if (Array.isArray(c.umans.keys)) setUmansKeys(c.umans.keys);
         if (Array.isArray(c.umans.enabledModels)) setUmansEnabledModels(c.umans.enabledModels);
         if (typeof c.umans.currentKeyIndex === "number") setUmansCurrentKeyIndex(c.umans.currentKeyIndex);
-        if (!_umansState.userId && _umansState.loggedIn) {
+        if (!c.umans.userId && _umansState.loggedIn) {
           maybeRefreshAccountUserId().then(uid => { if (uid) { _umansState.userId = uid; saveConfig(); pushStatusToWs(); } }).catch(() => {});
+        } else if (c.umans.userId) {
+          _umansState.userId = c.umans.userId;
         }
         syncUmansTranslationKey();
       }
@@ -1546,6 +1582,8 @@ let _workspaceDataTime = 0;
 const WORKSPACE_CACHE_TTL = 60 * 60 * 1000;
 let _umansUsageCache: any = null;
 let _umansUsageCacheTime = 0;
+let _umansUsageHistoryCache: any = null;
+let _umansUsageHistoryCacheTime = 0;
 const UMANS_USAGE_CACHE_TTL = 60 * 1000;
 
 async function fetchWorkspaceUsageData(): Promise<WorkspaceWithKeys[]> {

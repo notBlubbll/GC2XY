@@ -212,14 +212,14 @@ export function getCurrentKeyIndex(): number {
   return _currentKeyIndex;
 }
 
-export async function refreshUmansState(): Promise<{ usage: any; concurrency: any; usageHistory: any; keys: any[] }> {
+export async function refreshUmansState(): Promise<{ usage: any; concurrency: any; usageHistory: any; keys: any[]; userId: string | null }> {
   const [usage, concurrency, usageHistory, keys] = await Promise.all([
     fetchUsage({ force: true }).catch(() => null),
     fetchConcurrency().catch(() => ({ concurrent: 0, limit: null, user_id: null })),
     fetchUsageHistory({ force: true }).catch(() => null),
     fetchKeysFromApp().catch(() => []),
   ]);
-  return { usage, concurrency, usageHistory, keys };
+  return { usage, concurrency, usageHistory, keys, userId: concurrency?.user_id || null };
 }
 
 export function getKeyState(): any[] {

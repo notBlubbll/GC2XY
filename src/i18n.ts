@@ -27,6 +27,7 @@ export const I18N_STRINGS: Record<string, string> = {
   section_github_settings: "GitHub Settings",
   section_quick_actions: "Quick Actions",
   section_environment: "Environment",
+  section_keys: "Keys",
 
   header_models_manage: "Models are loaded automatically from active providers.",
 
@@ -70,7 +71,7 @@ export const I18N_STRINGS: Record<string, string> = {
   btn_refresh_keys: "Refresh Keys",
   status_logged_in: "Logged in",
 
-  modal_umans_account: "UMANS Account",
+  modal_umans_account: "Manage Keys",
   modal_umans_login: "UMANS Login",
   umans_add_new_key: "Add New Key",
   umans_edit_key: "Edit Key",
