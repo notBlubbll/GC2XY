@@ -1170,7 +1170,7 @@ function formatModelName(id: string): string {
   if (override) return override;
   if (id.startsWith("umans-")) {
     const name = getUmansModelDisplayName(id);
-    return `🤖 ${name}`;
+    return name;
   }
   const isFreebuff = id.startsWith("freebuff/");
   const limTag = isFreebuff && getFreebuffModelPremium(id) ? " [LIM]" : "";

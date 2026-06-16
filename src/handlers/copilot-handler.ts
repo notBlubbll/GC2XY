@@ -5,16 +5,27 @@ import { jsonResponse, HandlerInput, HandlerResult, countConsecutiveNags, stripN
 import { chatCompletion as openAIChat, storeReasoning, getModelCtx, modelHasVision, detectSessionSignal, extractUserPrompt, getModelDisplayName, getModelProviderTag } from "./openai-provider.ts";
 import { chatCompletion as freebuffChat, getFreebuffModelPremium } from "./freebuff-client.ts";
 import { chatCompletion as agnesChat } from "./agnes-client.ts";
-import { getCompletionsModel, filterModelsByConfig } from "./dashboard-handler.ts";
+import { getCompletionsModel } from "./dashboard-handler.ts";
 import { completions as codestralFim } from "./codestral-client.ts";
 import { chatCompletion as bitnetChat } from "./bitnet-client.ts";
 import { chatCompletion as umansChat } from "./umans-client.ts";
-import { addModels } from "../models.ts";
 import { isSupermavenEnabled, isSupermavenReady, supermavenCodeComplete } from "./supermaven-client.ts";
 import { reqLog, agentTag } from "../split-console.ts";
 import { trackRequest } from "../usage-tracker.ts";
 import { repairToolCalls, detectApologyText, detectToolLoop, bumpSalvageStat } from "../tool-salvager.ts";
 import { anthropicToOpenAIRequest } from "./anthropic-bridge.ts";
+import { ensureVSModels, VS_MODELS, detectVendor } from "./vs/models.ts";
+
+function isProviderRouted(model: string): boolean {
+  if (model.startsWith("freebuff/")) return true;
+  if (model.startsWith("agnes")) return true;
+  if (model.startsWith("codestral/") || model.startsWith("mistral-")) return true;
+  if (model === "bitnet-demo" || model.startsWith("bitnet/")) return true;
+  if (model.startsWith("umans-") || getModelProviderTag(model) === "umans") return true;
+  if (model.startsWith("pol/")) return true;
+  if (model.startsWith("openrouter/")) return true;
+  return false;
+}
 
 function routeChat(model: string, messages: any[], tools: any[] | undefined, stream: boolean, extra: Record<string, any>, session?: { keyIdx?: number; sessionLabel?: string }): Promise<Response> {
   if (model.startsWith("freebuff/")) return freebuffChat(model, messages, tools, stream, { max_tokens: extra.max_tokens, temperature: extra.temperature, top_p: extra.top_p, ...extra });
@@ -25,202 +36,11 @@ function routeChat(model: string, messages: any[], tools: any[] | undefined, str
   return openAIChat(model, messages, tools, stream, extra, session?.keyIdx, session?.sessionLabel);
 }
 
-const FAKE_MODELS: any[] = [];
-let _lastModelIds: string[] = [];
-let _rebuilding = false;
+const FAKE_MODELS = VS_MODELS;
 let _lastUserContent = "";
 
-function detectVendor(id: string): string {
-  const l = id.toLowerCase();
-  // Models with reasoning_effort (OpenAI-style) need vendor=OpenAI for GHCP dropdown
-  if (l.includes("deepseek") || l.includes("mimo")) return "OpenAI";
-  if (l.includes("claude")) return "Anthropic";
-  if (l.includes("gpt") || l.includes("codex") || l.includes("o1") || l.includes("o3")) return "OpenAI";
-  if (l.includes("gemini")) return "Google";
-  if (l.includes("minimax")) return "MiniMax";
-  if (l.includes("kimi") || l.includes("k2p")) return "Moonshot AI";
-  if (l.includes("qwen")) return "Alibaba Cloud";
-  if (l.includes("glm")) return "Zhipu AI";
-  if (l.includes("hy3")) return "H Company";
-  if (l.includes("nemotron")) return "NVIDIA";
-  if (l.includes("big-pickle")) return "Opencode";
-  if (l.includes("ring")) return "Ring";
-  if (l.includes("codestral") || l.includes("mistral")) return "Mistral AI";
-  return "Opencode";
-}
-
-function supportsThinkingVariants(id: string): boolean {
-  const l = id.toLowerCase();
-  const it = l.includes("glm") || l.includes("kimi") || l.includes("k2p") ||
-    l.includes("minimax") || l.includes("qwen") || l.includes("big-pickle") || l.includes("hy3") ||
-    l.includes("ring") || l.includes("nemotron");
-  return l.includes("deepseek-v4") || (l.includes("mimo") && !it);
-}
-
-function modelSupports(id: string): any {
-  const l = id.toLowerCase();
-  const isChat = !l.includes("embedding") && !l.includes("ada");
-  const base: any = { parallel_tool_calls: true, streaming: true, tool_calls: true };
-  if (isChat) base.structured_outputs = true;
-  if (isChat) base.vision = true;
-  const supportsDeepThink = l.includes("deepseek") || l.includes("claude") || l.includes("mimo") ||
-    l.includes("codex") || (l.match(/gpt-?5/) && !l.includes("mini")) || l.includes("big-pickle");
-  if (supportsDeepThink) {
-    base.adaptive_thinking = true;
-    base.min_thinking_budget = 1024;
-    base.max_thinking_budget = l.includes("big-pickle") ? 64000 : 32000;
-  }
-  // Models with internal thinking (no user control) — don't set reasoning_effort
-  // They produce reasoning internally without a selector
-  const internalThinking = l.includes("glm") || l.includes("kimi") || l.includes("k2p") ||
-    l.includes("minimax") || l.includes("qwen") || l.includes("big-pickle") || l.includes("hy3") ||
-    l.includes("ring") || l.includes("nemotron");
-  // Controllable thinking models — show reasoning effort dropdown
-  // Format matches what GHCP desktop expects: reasoning_effort array in capabilities.supports
-  if (l.includes("deepseek-v4")) {
-    base.reasoning_effort = ["low", "medium", "high", "xhigh"];
-  }
-  if (l.includes("mimo") && !internalThinking) {
-    base.reasoning_effort = ["low", "medium", "high"];
-  }
-  return base;
-}
-
-const THINKING_TAG_PARAMS: Record<string, Record<string, string>> = {
-  LOW: { reasoningEffort: "low" },
-  MEDIUM: { reasoningEffort: "medium" },
-  HIGH: { reasoningEffort: "high" },
-  MAXIMUM: { reasoningEffort: "max" },
-  MED: { reasoningEffort: "medium" },
-  MAX: { reasoningEffort: "max" },
-};
-
-function modelLimits(id: string): any {
-  const l = id.toLowerCase();
-  const isChat = !l.includes("embedding") && !l.includes("ada");
-  const limits: any = {};
-  if (l.includes("big-pickle")) {
-    limits.max_context_window_tokens = 1000000; limits.max_output_tokens = 128000; limits.max_prompt_tokens = 900000; limits.max_non_streaming_output_tokens = 64000;
-  } else if (l.includes("deepseek") || l.includes("claude")) {
-    limits.max_context_window_tokens = 200000; limits.max_output_tokens = 64000; limits.max_prompt_tokens = 200000; limits.max_non_streaming_output_tokens = 16000;
-  } else if (l.includes("codex") || (l.match(/gpt-?5/) && !l.includes("mini"))) {
-    limits.max_context_window_tokens = 400000; limits.max_output_tokens = 128000; limits.max_prompt_tokens = 272000; limits.max_non_streaming_output_tokens = 32000;
-  } else if (l.includes("gpt-5-mini") || l.includes("gpt-5.4-mini") || l.includes("gpt-5.4-nano") || l.includes("gpt-5-nano")) {
-    limits.max_context_window_tokens = 264000; limits.max_output_tokens = 64000; limits.max_prompt_tokens = 128000; limits.max_non_streaming_output_tokens = 16000;
-  } else {
-    limits.max_context_window_tokens = 128000; limits.max_output_tokens = 16384; limits.max_prompt_tokens = 64000; limits.max_non_streaming_output_tokens = 4096;
-  }
-  if (isChat) {
-    limits.vision = { max_prompt_image_size: 3145728, max_prompt_images: 5, supported_media_types: ["image/jpeg", "image/png", "image/webp", "image/gif"] };
-  }
-  return limits;
-}
-
 async function ensureModels() {
-  if (_rebuilding) return;
-  let modelIds = await addModels();
-  modelIds = filterModelsByConfig(modelIds);
-
-  const changed = modelIds.length !== _lastModelIds.length ||
-    modelIds.some((id, i) => id !== _lastModelIds[i]);
-  if (!changed && FAKE_MODELS.length > 0) return;
-  _lastModelIds = [...modelIds];
-
-  _rebuilding = true;
-  FAKE_MODELS.length = 0;
-  const seen = new Set<string>();
-
-  const addModel = (id: string) => {
-    if (seen.has(id)) return;
-    seen.add(id);
-    const prefix = id.startsWith("freebuff/") ? "🇫🇷ᴇᴇ" : id.startsWith("agnes") ? "💜" : id.startsWith("codestral/") ? "🌀" : "✨";
-    let displayName = getModelDisplayName(id);
-    if (displayName.length > 17) displayName = displayName.replace(/\s/g, "");
-    const name = `${prefix}￤${displayName}`;
-    const isLightweight = id.includes("mini") || id.includes("nano") || (id.includes("flash") && !id.includes("deepseek")) || id.includes("haiku") || id.includes("free");
-    const isPowerful = id.includes("pro") || id.includes("opus") || id.includes("codex") || id.includes("omni") || (id.includes("flash") && id.includes("deepseek"));
-    const limits = modelLimits(id);
-    const baseModel = {
-      id, object: "model",
-      name, vendor: detectVendor(id), version: id, preview: false,
-      model_picker_category: isLightweight ? "lightweight" : isPowerful ? "powerful" : "versatile",
-      model_picker_enabled: true,
-      is_chat_default: true,
-      is_chat_fallback: true,
-      billing: { is_premium: true, multiplier: getModelCtx(id) || limits.max_context_window_tokens, restricted_to: ["pro", "pro_plus", "business", "enterprise", "max"] },
-      policy: { state: "enabled", terms: `Enable access to the ${id} model. [Learn more](https://opencode.ai)` },
-      supported_endpoints: ["/chat/completions", "/v1/messages"],
-      capabilities: {
-        family: id, object: "model_capabilities", type: "chat", tokenizer: "o200k_base",
-        limits, supports: modelSupports(id),
-      },
-    };
-    FAKE_MODELS.push(baseModel);
-
-    // Thinking variants with -lo/-md/-hi/-mx suffix
-    const modes: string[] = [];
-    if (id.startsWith("freebuff/")) { /* no thinking modes */ }
-    else if (id.includes("deepseek-v4")) modes.push("LOW", "MEDIUM", "HIGH", "MAXIMUM");
-    else if (id.includes("mimo") && !id.includes("glm") && !id.includes("kimi") && !id.includes("minimax") && !id.includes("qwen") && !id.includes("big-pickle") && !id.includes("hy3") && !id.includes("ring") && !id.includes("nemotron")) modes.push("LOW", "MEDIUM", "HIGH");
-    const LEVEL_SUFFIX: Record<string, string> = { LOW: "lo", MEDIUM: "md", HIGH: "hi", MAXIMUM: "mx" };
-    for (const mode of modes) {
-      const suffix = LEVEL_SUFFIX[mode] || mode.toLowerCase();
-      const taggedId = `${id}-${suffix}`;
-      if (seen.has(taggedId)) continue;
-      seen.add(taggedId);
-      const baseName = displayName.replace(/\s/g, "");
-      const taggedName = `${prefix}￤${baseName}￤${suffix}`;
-      const tagSupports = { ...modelSupports(id), reasoning_effort: [mode.toLowerCase()] };
-      FAKE_MODELS.push({
-        ...baseModel,
-        id: taggedId,
-        name: taggedName,
-        model_picker_enabled: true,
-        is_chat_default: false,
-        is_chat_fallback: false,
-        capabilities: { ...baseModel.capabilities, supports: tagSupports },
-      });
-    }
-  };
-
-  for (const id of modelIds) addModel(id);
-
-  // Build category banners and header
-  const template = FAKE_MODELS.find((m: any) => !m.id.startsWith("cat_") && !m.id.startsWith("_cat_") && !m.id.includes("-lo") && !m.id.includes("-md") && !m.id.includes("-hi") && !m.id.includes("-mx"));
-  if (template && FAKE_MODELS.length > 0) {
-    const PROVIDER_NAMES: Record<string, string> = {
-      go: "\u200D✨ ⸻ OpenCode Go:", freebuff: "\u200D\u200D[🇫🇷ᴇᴇ] ⸻ FreeBuff:", agnes: "\u200D\u200D\u200D💜 ⸻ AgnesAI:", codestral: "\u200D\u200D\u200D\u200D🌀 ⸻ Codestral:", bitnet: "\u200D\u200D\u200D\u200D\u200D✨ ⸻ Bitnet:", deepseek: "\u200D\u200D\u200D\u200D\u200D\u200D✨ ⸻ DeepSeek:", openrouter: "\u200D\u200D\u200D\u200D\u200D\u200D\u200D✨ ⸻ OpenRouter:", zen: "\u200D\u200D\u200D\u200D\u200D\u200D\u200D\u200D⸻ ZEN:", umans: "\u200D\u200D\u200D\u200D\u200D\u200D\u200D\u200D\u200D⸻ UMANS:",
-    };
-    const SEP_ORDER = ["go", "freebuff", "agnes", "codestral", "bitnet", "deepseek", "openrouter", "zen", "umans"];
-    // Header banner at very top
-    FAKE_MODELS.splice(0, 0, {
-      ...template,
-      id: "_cat_header",
-      name: ".⸻ Model (/Category) ⸻ ContextLength",
-      is_chat_default: false,
-      is_chat_fallback: false,
-      billing: { ...template.billing, multiplier: 0 },
-    });
-    const seenTags: string[] = [];
-    for (let i = 0; i < FAKE_MODELS.length; i++) {
-      const tag = getModelProviderTag(FAKE_MODELS[i].id);
-      if (!tag || seenTags.includes(tag)) continue;
-      seenTags.push(tag);
-      const displayName = PROVIDER_NAMES[tag] || tag.toUpperCase();
-      FAKE_MODELS.splice(i, 0, {
-        ...template,
-        id: `cat_${tag}`,
-        name: displayName,
-        is_chat_default: false,
-        is_chat_fallback: false,
-        model_picker_price_category: "high",
-      });
-      i++;
-    }
-  }
-
-  console.log(`\n[MODEL CACHE] copilot-handler rebuilt ${FAKE_MODELS.length} models`);
-  _rebuilding = false;
+  await ensureVSModels();
 }
 
 const chatSessions = new Map<any, any>();
@@ -342,6 +162,15 @@ function generateToolCallResponse(model: string) {
   result += "data: [DONE]\n\n";
   return result;
 }
+
+const THINKING_TAG_PARAMS: Record<string, Record<string, string>> = {
+  LOW: { reasoningEffort: "low" },
+  MEDIUM: { reasoningEffort: "medium" },
+  HIGH: { reasoningEffort: "high" },
+  MAXIMUM: { reasoningEffort: "max" },
+  MED: { reasoningEffort: "medium" },
+  MAX: { reasoningEffort: "max" },
+};
 
 function parseThinkingMode(modelName: string): { model: string; thinking: string | null } {
   const clean = (modelName || "").trim();
@@ -818,7 +647,7 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
     }
 
     // If still not in model list, pick any non-MiniMax model
-    if (!FAKE_MODELS.find((m: any) => m.id === model) && model !== "bitnet-demo" && !model.startsWith("bitnet/")) {
+    if (!FAKE_MODELS.find((m: any) => m.id === model) && !isProviderRouted(model)) {
       const real = FAKE_MODELS.find((m: any) => m.id.startsWith("deepseek") && !m.id.includes("-embedding"))
         || FAKE_MODELS.find((m: any) => {
           const v = detectVendor(m.id);
@@ -1182,7 +1011,7 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
         });
       model = real?.id || model;
     }
-    if (!FAKE_MODELS.find((m: any) => m.id === model) && model !== "bitnet-demo" && !model.startsWith("bitnet/")) {
+    if (!FAKE_MODELS.find((m: any) => m.id === model) && !isProviderRouted(model)) {
       const real = FAKE_MODELS.find((m: any) => m.id.startsWith("deepseek") && !m.id.includes("-embedding"))
         || FAKE_MODELS.find((m: any) => {
           const v = detectVendor(m.id);

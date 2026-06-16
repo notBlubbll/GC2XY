@@ -492,9 +492,9 @@
               <div style="position:absolute;inset:-6px -12px -4px -12px;background:linear-gradient(135deg,rgba(255,255,255,0.08),rgba(255,255,255,0.02));border-radius:8px;pointer-events:none;backdrop-filter:blur(10px) saturate(160%);-webkit-backdrop-filter:blur(10px) saturate(160%);border:1px solid rgba(255,255,255,0.12);box-shadow:0 4px 16px rgba(0,0,0,0.15)"></div>
               <div class="position-relative" style="font-size:10px;color:rgba(255,255,255,0.55);letter-spacing:0.5px;text-transform:uppercase;writing-mode:vertical-rl;transform:rotate(180deg);padding-right:2px">WINDOW</div>
               <div class="position-relative" style="display:flex;gap:12px;justify-content:center;align-items:stretch;flex:1;padding:0 4px">
-                <div class="text-center" style="flex:1;min-width:70px"><div style="font-size:9px;color:rgba(255,255,255,0.45);text-transform:uppercase">Requests</div><div style="font-size:13px;font-weight:600;color:white;white-space:nowrap" id="windowRequests">n/a</div></div>
+                <div class="text-center" style="flex:1;min-width:70px"><div style="font-size:9px;color:rgba(255,255,255,0.45);text-transform:uppercase" data-i18n="label_requests">Requests</div><div style="font-size:13px;font-weight:600;color:white;white-space:nowrap" id="windowRequests">n/a</div></div>
                 <div style="width:1px;height:24px;background:rgba(255,255,255,0.15);align-self:center"></div>
-                <div class="text-center" style="flex:1;min-width:90px"><div style="font-size:9px;color:rgba(255,255,255,0.45);text-transform:uppercase">Tokens</div><div style="font-size:13px;font-weight:600;color:white;white-space:nowrap" id="windowTokens">n/a</div></div>
+                <div class="text-center" style="flex:1;min-width:90px"><div style="font-size:9px;color:rgba(255,255,255,0.45);text-transform:uppercase" data-i18n="label_tokens">Tokens</div><div style="font-size:13px;font-weight:600;color:white;white-space:nowrap" id="windowTokens">n/a</div></div>
               </div>
             </div>
           </div>
@@ -1646,6 +1646,21 @@
     const _umansUsagePerPage = 7;
     let _umansEditingIndex = -1;
     let _umansUserId = '';
+
+    function getCurrentDayUsage() {
+      const usage = _umansState && _umansState.usage;
+      if (!usage) return null;
+      const winSrc = (usage.window && (usage.window.tokens_in !== undefined || usage.window.tokens_out !== undefined || usage.window.requests_in_window !== undefined)) ? usage.window : usage.usage;
+      const win = winSrc || usage;
+      const reqs = win.requests_in_window || win.requests || 0;
+      const tokensIn = win.tokens_in || 0;
+      const tokensOut = win.tokens_out || 0;
+      const cached = win.tokens_cached_read || win.tokens_cached || 0;
+      if (reqs > 0 || tokensIn > 0 || tokensOut > 0) {
+        return { day: new Date().toISOString().slice(0, 10), reqs: reqs, tokensIn: tokensIn, tokensOut: tokensOut, cached: cached, preliminary: true };
+      }
+      return null;
+    }
     let blurTokensEnabled = false;
 
     function addCurrentProviderKey() { openKeysModal(); }
@@ -1989,6 +2004,9 @@
         tokensOut: b.tokens_out || 0,
         cached: b.tokens_cached_read || b.tokens_cached || 0,
       })).filter(r => r.reqs > 0 || r.tokensIn > 0 || r.tokensOut > 0);
+      const todayIso = new Date().toISOString().slice(0, 10);
+      const todayRow = getCurrentDayUsage();
+      if (todayRow && !rows.some(r => r.day === todayIso)) rows.unshift(todayRow);
       let totalReqs = 0, totalTokens = 0, totalInput = 0, totalCached = 0;
       for (const r of rows) {
         totalReqs += r.reqs;
@@ -2010,7 +2028,9 @@
           const tokens = r.tokensIn + r.tokensOut;
           const input = r.tokensIn || tokens;
           const pct = input > 0 ? ((r.cached / input) * 100).toFixed(0) + '%' : '';
-          return `<div style="display:flex;padding:2px 0"><span style="flex:0 0 auto;width:5rem;text-align:left;color:rgba(255,255,255,0.5)">${escapeHtml(r.day)}</span><span style="flex:1 1 0;text-align:center;${cellR}">${r.reqs.toLocaleString()}</span><span style="flex:1 1 0;text-align:center;${cellR}"><span style="display:inline-flex;width:100%;justify-content:space-between;gap:0.5rem"><span style="text-align:left;width:55%">${tokens.toLocaleString()}</span><span style="text-align:right;width:45%">${pct}</span></span></span></div>`;
+          const dayLabel = r.preliminary ? (r.day + ' · ' + t('label_preliminary','VORLÄUFIG')) : r.day;
+          const rowStyle = r.preliminary ? 'background:rgba(255,235,59,0.06)' : '';
+          return `<div style="display:flex;padding:2px 0;${rowStyle}"><span style="flex:0 0 auto;width:5rem;text-align:left;color:rgba(255,255,255,0.5)">${escapeHtml(dayLabel)}</span><span style="flex:1 1 0;text-align:center;${cellR}">${r.reqs.toLocaleString()}</span><span style="flex:1 1 0;text-align:center;${cellR}"><span style="display:inline-flex;width:100%;justify-content:space-between;gap:0.5rem"><span style="text-align:left;width:55%">${tokens.toLocaleString()}</span><span style="text-align:right;width:45%">${pct}</span></span></span></div>`;
         }).join('') + '</div>';
       if (pagEl) {
         pagEl.innerHTML =
@@ -2018,7 +2038,7 @@
           `<span style="font-size:11px;color:rgba(255,255,255,0.6);padding:0 8px">${_umansUsagePage+1}/${totalPages}</span>` +
           `<button class="btn btn-outline-action btn-sm" onclick="_umansUsagePage=Math.min(${totalPages-1},_umansUsagePage+1);renderUmansUsageHistory()" ${_umansUsagePage>=totalPages-1?'disabled':''}><i class="bi bi-chevron-right"></i></button>`;
       }
-      container.title = '90-day totals: ' + totalReqs.toLocaleString() + ' requests · ' + totalTokens.toLocaleString() + ' tokens · ' + cachedTotalPct + '% cached';
+      container.title = '90-day totals: ' + totalReqs.toLocaleString() + ' requests · ' + totalTokens.toLocaleString() + ' tokens · ' + cachedTotalPct + '% cached (includes current day)';
     }
 
     function updateUmansTopBar() {

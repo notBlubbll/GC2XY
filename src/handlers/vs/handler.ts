@@ -14,6 +14,17 @@ import { trackRequest } from "../../usage-tracker.ts";
 import { anthropicToOpenAIRequest } from "../anthropic-bridge.ts";
 import { filterModelsByConfig } from "../dashboard-handler.ts";
 
+function isProviderRouted(model: string): boolean {
+  if (model.startsWith("freebuff/")) return true;
+  if (model.startsWith("agnes")) return true;
+  if (model.startsWith("codestral/") || model.startsWith("mistral-")) return true;
+  if (model === "bitnet-demo" || model.startsWith("bitnet/")) return true;
+  if (model.startsWith("umans-") || getModelProviderTag(model) === "umans") return true;
+  if (model.startsWith("pol/")) return true;
+  if (model.startsWith("openrouter/")) return true;
+  return false;
+}
+
 function routeChat(model: string, messages: any[], tools: any[] | undefined, stream: boolean, extra: Record<string, any>, session?: { keyIdx?: number; sessionLabel?: string }): Promise<Response> {
   if (model.startsWith("freebuff/")) return freebuffChat(model, messages, tools, stream, { max_tokens: extra.max_tokens, temperature: extra.temperature, top_p: extra.top_p, ...extra });
   if (model.startsWith("agnes")) return agnesChat(model, messages, tools, stream, { ...extra });
@@ -238,7 +249,7 @@ function modelSupports(id: string): any {
   if (isChat) base.structured_outputs = true;
   if (isChat) base.vision = true;
   const supportsDeepThink = l.includes("deepseek") || l.includes("claude") || l.includes("mimo") ||
-    l.includes("codex") || (l.match(/gpt-?5/) && !l.includes("mini")) || l.includes("big-pickle");
+    l.includes("codex") || (l.match(/gpt-?5/) && !l.includes("mini")) || l.includes("big-pickle") || l.startsWith("umans-");
   if (supportsDeepThink) {
     base.adaptive_thinking = true;
     base.min_thinking_budget = 1024;
@@ -247,7 +258,7 @@ function modelSupports(id: string): any {
   if (l.includes("deepseek-v4")) {
     base.reasoning_effort = ["low", "medium", "high", "xhigh"];
   }
-  if (l.includes("mimo") && !supportsDeepThink) {
+  if ((l.includes("mimo") && !supportsDeepThink) || l.startsWith("umans-")) {
     base.reasoning_effort = ["low", "medium", "high"];
   }
   return base;
@@ -265,6 +276,8 @@ function modelLimits(id: string): any {
     limits.max_context_window_tokens = 400000; limits.max_output_tokens = 128000; limits.max_prompt_tokens = 272000; limits.max_non_streaming_output_tokens = 32000;
   } else if (l.includes("gpt-5-mini") || l.includes("gpt-5.4-mini") || l.includes("gpt-5.4-nano") || l.includes("gpt-5-nano")) {
     limits.max_context_window_tokens = 264000; limits.max_output_tokens = 64000; limits.max_prompt_tokens = 128000; limits.max_non_streaming_output_tokens = 16000;
+  } else if (l.startsWith("umans-")) {
+    limits.max_context_window_tokens = 256000; limits.max_output_tokens = 64000; limits.max_prompt_tokens = 200000; limits.max_non_streaming_output_tokens = 16000;
   } else {
     limits.max_context_window_tokens = 128000; limits.max_output_tokens = 16384; limits.max_prompt_tokens = 64000; limits.max_non_streaming_output_tokens = 4096;
   }
@@ -428,7 +441,7 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
       model = real?.id || model;
       console.log(`[MODEL VS/MESSAGES] Aliased → ${model}`);
     }
-    if (!FAKE_MODELS.find((m: any) => m.id === model)) {
+    if (!FAKE_MODELS.find((m: any) => m.id === model) && !isProviderRouted(model)) {
       const real = FAKE_MODELS.find((m: any) => !m.id.includes("-embedding"));
       model = real?.id || (FAKE_MODELS.length > 0 ? FAKE_MODELS[0].id : "big-pickle");
       console.log(`[MODEL VS/MESSAGES] ${model} not found, picked ${model}`);
@@ -601,7 +614,9 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
                         sseEvent(sock, "content_block_delta", { type: "content_block_delta", index: nextContentIdx, delta: { type: "text_delta", text: stripped } });
                       }
                     }
-                  } else {
+  } else if (l.startsWith("umans-")) {
+    limits.max_context_window_tokens = 256000; limits.max_output_tokens = 64000; limits.max_prompt_tokens = 200000; limits.max_non_streaming_output_tokens = 16000;
+  } else {
                     fullContent += delta.content;
                     sseEvent(sock, "content_block_delta", { type: "content_block_delta", index: nextContentIdx, delta: { type: "text_delta", text: delta.content } });
                   }
@@ -756,7 +771,7 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
       model = real?.id || model;
       console.log(`[MODEL VS/RESPONSES] Aliased → ${model}`);
     }
-    if (!FAKE_MODELS.find((m: any) => m.id === model)) {
+    if (!FAKE_MODELS.find((m: any) => m.id === model) && !isProviderRouted(model)) {
       const real = FAKE_MODELS.find((m: any) => !m.id.includes("-embedding"));
       model = real?.id || (FAKE_MODELS.length > 0 ? FAKE_MODELS[0].id : "big-pickle");
       console.log(`[MODEL VS/RESPONSES] ${model} not found, picked ${model}`);
@@ -885,7 +900,7 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
       model = real?.id || model;
       console.log(`[MODEL VS/CHAT] Aliased → ${model}`);
     }
-    if (!FAKE_MODELS.find((m: any) => m.id === model)) {
+    if (!FAKE_MODELS.find((m: any) => m.id === model) && !isProviderRouted(model)) {
       const real = FAKE_MODELS.find((m: any) => !m.id.includes("-embedding"));
       model = real?.id || (FAKE_MODELS.length > 0 ? FAKE_MODELS[0].id : "big-pickle");
       console.log(`[MODEL VS/CHAT] ${model} not found, picked ${model}`);

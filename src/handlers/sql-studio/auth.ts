@@ -2,6 +2,7 @@ import forge from "node-forge";
 import { jsonResponse, HandlerInput, HandlerResult, getGithubSku, getGithubUsername } from "../../shared.ts";
 import { trackRequest, getZenStats } from "../../usage-tracker.ts";
 import { handleVSModels } from "../vs/models.ts";
+import { handleVisualStudio } from "../vs/handler.ts";
 
 function getSkuFromGh(): { copilot_plan: string; access_type_sku: string; sku: string } {
   const s = getGithubSku();
@@ -30,8 +31,8 @@ function generateTrackingId(): string {
 }
 
 export function isSQLStudio(headers: Record<string, string>): boolean {
-  const ua = headers?.["user-agent"] || "";
-  return ua.startsWith("VSTeamExplorer-GitHub");
+  const ua = (headers?.["user-agent"] || "").toLowerCase();
+  return ua.includes("vsteamexplorer");
 }
 
 export function handleSQLStudioCopilotUser(req: HandlerInput): HandlerResult | null {
@@ -138,5 +139,15 @@ export async function handleSQLStudioAuth(req: HandlerInput): Promise<HandlerRes
   if (result) return result;
   const vsModelsResult = await handleVSModels(req);
   if (vsModelsResult.handled) return vsModelsResult;
+  const origEditorVersion = headers["editor-version"] || "";
+  if (!origEditorVersion.startsWith("VS/VisualStudio")) {
+    headers["editor-version"] = "VS/VisualStudio.17.SQLStudio";
+  }
+  console.log(`[SQL STUDIO] Delegating chat request to VS handler: ${req.method} ${req.url}`);
+  const vsResult = await handleVisualStudio(req);
+  if (vsResult.handled) return vsResult;
+  if (!origEditorVersion.startsWith("VS/VisualStudio")) {
+    headers["editor-version"] = origEditorVersion;
+  }
   return { handled: false };
 }

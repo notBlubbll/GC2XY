@@ -27,6 +27,13 @@ export const I18N_STRINGS: Record<string, string> = {
   section_quick_actions: "Quick Actions",
   section_environment: "Environment",
   section_keys: "Keys",
+  section_usage_history: "Usage",
+
+  header_date: "Date",
+  header_requests: "Req",
+  header_tokens: "Tokens",
+  header_cached_pct: "Cache",
+  label_preliminary: "VORLÄUFIG",
 
   header_models_manage: "Models are loaded automatically from active providers.",
 

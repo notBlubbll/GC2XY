@@ -183,7 +183,9 @@ export function getModelDisplayName(id: string): string {
     const cleaned = cached.replace(/-/g, " ").replace(/\bV(?=\d)/g, "v");
     return cleaned;
   }
-  const base = id.split("/").pop() || id;
+  let base = id.split("/").pop() || id;
+  // Strip provider prefix from Umans model IDs so category stays separate
+  base = base.replace(/^umans-/i, "");
   return base.split("-").map((p, i) => {
     const first = p.charAt(0).toUpperCase() + p.slice(1);
     if (p.length === 1 && p === "v" && i > 0) return p;

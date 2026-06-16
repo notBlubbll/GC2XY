@@ -157,7 +157,7 @@ async function ensureModels() {
     if (seen.has(id)) return;
     seen.add(id);
     const free = isFreeModel(id);
-    const prefix = id.startsWith("umans-") ? "⭐" :
+    const prefix = id.startsWith("umans-") ? "✨" :
                    id.startsWith("bitnet/") || id === "bitnet-demo" ? "⚙️" :
                    id.startsWith("freebuff/") ? "🇫🇷ᴇᴇ" :
                    id.startsWith("agnes") ? "💜" :
@@ -246,7 +246,7 @@ async function ensureModels() {
       deepseek: "\u200D\u200D\u200D\u200D✨ ⸻ DeepSeek:",
       openrouter: "\u200D\u200D\u200D\u200D\u200D✨ ⸻ OpenRouter:",
       zen: "\u200D\u200D\u200D\u200D\u200D\u200D⸻ ZEN:",
-      umans: "\u200D\u200D\u200D\u200D\u200D\u200D\u200D⭐ ⸻ UMANS:",
+      umans: "\u200D\u200D\u200D\u200D\u200D\u200D\u200D✨ ⸻ UMANS:",
     };
     // Header banner at very top
     VS_MODELS.splice(0, 0, {
