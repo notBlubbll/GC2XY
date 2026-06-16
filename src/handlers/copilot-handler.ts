@@ -13,6 +13,7 @@ import { isSupermavenEnabled, isSupermavenReady, supermavenCodeComplete } from "
 import { reqLog, agentTag } from "../split-console.ts";
 import { trackRequest } from "../usage-tracker.ts";
 import { repairToolCalls, detectApologyText, detectToolLoop, bumpSalvageStat } from "../tool-salvager.ts";
+import { StreamResponseLogger } from "../streaming-log.ts";
 import { anthropicToOpenAIRequest } from "./anthropic-bridge.ts";
 import { ensureVSModels, VS_MODELS, detectVendor } from "./vs/models.ts";
 
@@ -379,9 +380,11 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
       let content = "";
       let toolCalls: any[] | undefined;
       if (ct.includes("text/event-stream")) {
+        const streamLog = new StreamResponseLogger({ endpoint: "/v1/messages", model: bridge.model, resolved: bridge.model, status: resp.status });
         const reader = resp.body!.getReader();
         const decoder = new TextDecoder();
         const toolCallAccum: Record<number, any> = {};
+        let reasoningAccum = "";
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
@@ -391,7 +394,8 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
               try {
                 const d = JSON.parse(t.slice(6));
                 const delta = d.choices?.[0]?.delta;
-                if (delta?.content) content += delta.content;
+                if (delta?.content) { content += delta.content; streamLog.addContent(delta.content); }
+                if (delta?.reasoning_content) { reasoningAccum += delta.reasoning_content; streamLog.addReasoning(delta.reasoning_content); }
                 if (delta?.tool_calls) {
                   for (const tc of delta.tool_calls) {
                     const idx = tc.index ?? 0;
@@ -399,8 +403,11 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
                     if (tc.id) toolCallAccum[idx].id = tc.id;
                     if (tc.function?.name) toolCallAccum[idx].function.name += tc.function.name;
                     if (tc.function?.arguments) toolCallAccum[idx].function.arguments += tc.function.arguments;
+                    streamLog.addToolCall(idx, tc.id || "", tc.function?.name || "", tc.function?.arguments || "");
                   }
                 }
+                if (d.choices?.[0]?.finish_reason) streamLog.setFinishReason(d.choices[0].finish_reason);
+                if (d.usage) streamLog.setUsage(d.usage);
               } catch {}
             }
           }
@@ -408,6 +415,8 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
         const keys = Object.keys(toolCallAccum);
         if (keys.length) toolCalls = keys.map((k) => toolCallAccum[+k]);
         content = stripCopilotGreeting(content);
+        if (reasoningAccum) storeReasoning(content, reasoningAccum);
+        streamLog.flush();
       } else {
         const data: any = await resp.json();
         const msg = data.choices?.[0]?.message;
@@ -758,6 +767,7 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
         const respHead = `HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-store\r\naccess-control-allow-origin: *\r\nx-accel-buffering: no\r\nx-request-id: req-${forge.util.bytesToHex(forge.random.getBytesSync(6))}\r\nconnection: close\r\n\r\n`;
         sock.write(respHead);
 
+        const streamLog = new StreamResponseLogger({ endpoint: "/v1/chat/completions", model, resolved: model, status: resp.status });
         const reader = resp.body!.getReader();
         const decoder = new TextDecoder();
         let buf = "";
@@ -780,10 +790,20 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
                 const delta = d.choices?.[0]?.delta;
                 if (delta?.reasoning_content) {
                   reasoningAccum += delta.reasoning_content;
+                  streamLog.addReasoning(delta.reasoning_content);
                 }
                 if (delta?.content) {
                   lastAssistantContent += delta.content;
+                  streamLog.addContent(delta.content);
                 }
+                if (delta?.tool_calls) {
+                  for (const tc of delta.tool_calls) {
+                    const idx = tc.index ?? 0;
+                    streamLog.addToolCall(idx, tc.id || "", tc.function?.name || "", tc.function?.arguments || "");
+                  }
+                }
+                if (d.choices?.[0]?.finish_reason) streamLog.setFinishReason(d.choices[0].finish_reason);
+                if (d.usage) streamLog.setUsage(d.usage);
               } catch {}
             }
           }
@@ -794,6 +814,7 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
         }
         sock.end();
         if (completeLog) completeLog(Date.now() - startTime);
+        streamLog.flush();
         return { handled: true, response: { statusCode: 200, headers: {}, body: Buffer.alloc(0), _streamed: true } };
       }
 
@@ -1189,6 +1210,7 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
         let nextToolOutputIdx = 1;
         let gBuf = "";
         let gDone = false;
+        const streamLog = new StreamResponseLogger({ endpoint: "/responses", model, resolved: model, status: resp.status });
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
@@ -1201,6 +1223,7 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
                 const d = JSON.parse(t.slice(6));
                 const delta = d.choices?.[0]?.delta;
                 if (delta?.content) {
+                  streamLog.addContent(delta.content);
                   if (!gDone) {
                     gBuf += delta.content;
                     const s = stripCopilotGreeting(gBuf);
@@ -1234,8 +1257,11 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
                       toolCallAccum[idx].args += tc.function.arguments;
                       toolCallEvents.push({ type: "delta_args", id: toolCallAccum[idx].id, ouputIndex: toolCallAccum[idx].ouputIndex, args: tc.function.arguments });
                     }
+                    streamLog.addToolCall(idx, tc.id || "", tc.function?.name || "", tc.function?.arguments || "");
                   }
                 }
+                if (d.choices?.[0]?.finish_reason) streamLog.setFinishReason(d.choices[0].finish_reason);
+                if (d.usage) streamLog.setUsage(d.usage);
               } catch {}
             }
           }
@@ -1302,6 +1328,7 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
         sock.end();
         const elapsed = Date.now() - startTime;
         if (completeLog) completeLog(elapsed);
+        streamLog.flush();
         return { handled: true, response: { statusCode: 200, headers: {}, body: Buffer.alloc(0), _streamed: true } };
       }
 

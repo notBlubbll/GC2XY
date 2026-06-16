@@ -212,7 +212,7 @@ export async function chatCompletion(
   // If the caller supplied tools, force non-streaming because Agnes's streaming
   // chat endpoint does not reliably emit tool_calls. Otherwise respect the
   // requested stream flag so test chat / VS streaming work as expected.
-  body.stream = tools && tools.length ? false : stream;
+  body.stream = stream;
   if (tools !== undefined) {
     body.tools = tools.length ? tools.map(normalizeTool) : undefined;
   }

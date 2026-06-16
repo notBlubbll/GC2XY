@@ -1,7 +1,46 @@
 import forge from "node-forge";
-import { readFileSync } from "node:fs";
-import { jsonResponse, HandlerInput, HandlerResult, countConsecutiveNags, stripNagMessages, RECENTLY_COMPLETED, RECENT_BODIES, injectIdentity, compactIdentity, scrubTaskComplete, compressToolDefinitions, stripCopilotGreeting } from "../../shared.ts";
+import { readFileSync, appendFileSync, existsSync, mkdirSync } from "node:fs";
+import { jsonResponse, HandlerInput, HandlerResult, countConsecutiveNags, stripNagMessages, RECENTLY_COMPLETED, RECENT_BODIES, injectIdentity, compactIdentity, scrubTaskComplete, compressToolDefinitions, stripCopilotGreeting, getProjectRoot } from "../../shared.ts";
 import { chatCompletion as openAIChat, detectSessionSignal, extractUserPrompt, getModelDisplayName, getModelProviderTag } from "../openai-provider.ts";
+import { buildResponsesFromChatCompletion, streamChatCompletionToResponses, streamResponsesObjectToSSE, flattenResponsesInput, ResponsesOptions } from "./response-converter.ts";
+import { StreamResponseLogger } from "../../streaming-log.ts";
+
+// Dedicated /responses debug logger, because streamed responses bypass the traffic log.
+import { join } from "node:path";
+const VS_RESP_LOG_PATH = join(process.env.LOG_DIR || join(getProjectRoot(), ".proxy-logs"), "vs-responses.log");
+function vsRespLog(line: string) {
+  try {
+    appendFileSync(VS_RESP_LOG_PATH, `${new Date().toISOString()} ${line}\n`);
+  } catch {}
+}
+
+function buildQuotaSnapshotHeaders(): string {
+  const now = new Date();
+  const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+  const rst = nextMonth.toISOString();
+  const chatEnt = 500, chatRem = 290, chatPct = 58;
+  const compEnt = 4000, compRem = 2320, compPct = 58;
+  const premEnt = 1000, premRem = 580, premPct = 58;
+  return [
+    `x-quota-snapshot-chat: ent=${chatEnt}&ov=0.0&ovPerm=false&rem=${chatPct}.0&rst=${rst}&totRem=${chatRem}.0\r\n`,
+    `x-quota-snapshot-completions: ent=${compEnt}&ov=0.0&ovPerm=false&rem=${compPct}.0&rst=${rst}&totRem=${compRem}.0\r\n`,
+    `x-quota-snapshot-premium_interactions: ent=${premEnt}&ov=0.0&ovPerm=false&rem=${premPct}.0&rst=${rst}&totRem=${premRem}.0\r\n`,
+  ].join("");
+}
+
+async function responseBodyToString(resp: Response): Promise<string> {
+  if (!resp.body) return "";
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    text += decoder.decode(value, { stream: true });
+  }
+  text += decoder.decode();
+  return text;
+}
 import { chatCompletion as freebuffChat } from "../freebuff-client.ts";
 import { chatCompletion as agnesChat } from "../agnes-client.ts";
 import { chatCompletion as codestralChat } from "../codestral-client.ts";
@@ -11,6 +50,8 @@ import { addModels } from "../../models.ts";
 import { handleVSModels, VS_MODELS } from "./models.ts";
 import { recordTps, reqLog, agentTag } from "../../split-console.ts";
 import { trackRequest } from "../../usage-tracker.ts";
+import { appendFileSync } from "node:fs";
+import { getProjectRoot } from "../../shared.ts";
 import { anthropicToOpenAIRequest } from "../anthropic-bridge.ts";
 import { filterModelsByConfig } from "../dashboard-handler.ts";
 
@@ -32,6 +73,61 @@ function routeChat(model: string, messages: any[], tools: any[] | undefined, str
   if (model === "bitnet-demo" || model.startsWith("bitnet/")) return bitnetChat(model, messages, tools, stream, { max_tokens: extra.max_tokens, ...extra });
   if (model.startsWith("umans-") || getModelProviderTag(model) === "umans") return umansChat(model, messages, tools, stream, { ...extra });
   return openAIChat(model, messages, tools, stream, extra, session?.keyIdx, session?.sessionLabel);
+}
+
+function normalizeModelIdVs(model: string): string {
+  // Hard strip anything VS may have appended (thinking tag, slug, clone suffix)
+  let m = model.trim();
+  const suffixMatch = m.match(/^(.*?)(?:\s*\[(LOW|MEDIUM|HIGH|MAXIMUM|MED|MAX|LO|MD|HI|MX)\]\s*|\s*-(lo|md|hi|mx))$/i);
+  if (suffixMatch) m = suffixMatch[1].trim();
+  return m;
+}
+
+async function resolveActiveChatModel(model: string): Promise<string> {
+  const normalized = normalizeModelIdVs(model);
+  if (isProviderRouted(normalized)) return normalized;
+  // model is unknown / not among configured providers → pick a real default
+  try {
+    let ids = await addModels();
+    ids = filterModelsByConfig(ids);
+    const chatIds = ids.filter((id: string) => {
+      const l = id.toLowerCase();
+      return !l.includes("embedding") && !l.includes("ada");
+    });
+    // prefer umans, then agnes, then codestral, then freebuff, then anything
+    const preferred = ["umans", "agnes", "codestral", "freebuff"];
+    for (const tag of preferred) {
+      const pick = chatIds.find((id: string) => getModelProviderTag(id) === tag);
+      if (pick) return pick;
+    }
+    return chatIds[0] || model;
+  } catch { }
+  return model;
+}
+
+async function routeChatWithFallback(
+  model: string,
+  messages: any[],
+  tools: any[] | undefined,
+  stream: boolean,
+  extra: Record<string, any>,
+  session?: { keyIdx?: number; sessionLabel?: string }
+): Promise<{ response: Response; model: string }> {
+  const resolved = await resolveActiveChatModel(model);
+  const resp = await routeChat(resolved, messages, tools, stream, extra, session);
+  return { response: resp, model: resolved };
+}
+
+function buildAnthropicTextSse(model: string, text: string): string {
+  const id = `msg_${forge.util.bytesToHex(forge.random.getBytesSync(8))}`;
+  const chunks: string[] = [];
+  chunks.push(`event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: { id, type: "message", role: "assistant", content: [], model, stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } } })}\n\n`);
+  chunks.push(`event: content_block_start\ndata: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } })}\n\n`);
+  chunks.push(`event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text } })}\n\n`);
+  chunks.push(`event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: 0 })}\n\n`);
+  chunks.push(`event: message_delta\ndata: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 0 } })}\n\n`);
+  chunks.push(`event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}\n\n`);
+  return chunks.join("");
 }
 
 import {
@@ -78,6 +174,28 @@ function _fixEmptyFilenames(repaired: any[], bridgeMessages: any[]): any[] {
     }
     return tc;
   });
+}
+
+function normalizeToolChoice(tc: any): string | undefined {
+  if (tc === undefined || tc === null) return undefined;
+  if (typeof tc === "string") return tc;
+  if (typeof tc === "object" && tc.type) {
+    if (tc.type === "function" && tc.function?.name) return tc;
+    return tc.type;
+  }
+  return tc;
+}
+
+function buildAnthropicErrorSSE(model: string, status: number, errorBody: string): string {
+  const id = `msg_${forge.util.bytesToHex(forge.random.getBytesSync(8))}`;
+  return [
+    `event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: { id, type: "message", role: "assistant", content: [], model, stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } } })}\n\n`,
+    `event: content_block_start\ndata: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } })}\n\n`,
+    `event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: `[Error] Upstream returned ${status}: ${errorBody}` } })}\n\n`,
+    `event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: 0 })}\n\n`,
+    `event: message_delta\ndata: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { input_tokens: 0, output_tokens: 0 } })}\n\n`,
+    `event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}\n\n`,
+  ].join("");
 }
 
 // ── Fix failed get_file tool_results ──────────────────────────────────────
@@ -139,7 +257,10 @@ function _salvageAnthropicResponse(data: any, bridgeMessages: any[], model: stri
   message: any;
 } {
   const empty = { replacedWithTaskComplete: false, repairedCount: 0, droppedCount: 0, message: data?.choices?.[0]?.message || { role: "assistant", content: "" } };
-  if (!data?.choices?.[0]) return { ...empty, replacedWithTaskComplete: true };
+  if (!data?.choices?.[0]) {
+    console.log(`[TOOL SALVAGE] ${model}: no choices in upstream response, returning empty text (not task_complete)`);
+    return { ...empty, replacedWithTaskComplete: false };
+  }
 
   const choice = data.choices[0];
   const msg = choice.message || { role: "assistant", content: "" };
@@ -364,6 +485,10 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
   if (method === "POST" && url === "/v1/messages") { trackRequest("vs");
     let parsed: any = {};
     try { parsed = JSON.parse(body?.toString() || "{}"); } catch {}
+    // Diagnostic: log raw incoming body for VS /v1/messages
+    const v1LogPath = `${getProjectRoot()}/.proxy-logs/vs-messages.log`;
+    const v1Log = (entry: any) => { try { appendFileSync(v1LogPath, `${new Date().toISOString()} ${JSON.stringify(entry)}\n`); } catch {} };
+    v1Log({ type: "raw-in", model: parsed.model, messagesSummary: (parsed.messages || []).map((m:any)=>({role:m.role, contentLen: typeof m.content==='string'?m.content.length:Array.isArray(m.content)?m.content.length:0})), systemType: typeof parsed.system, stream: parsed.stream, toolsCount: (parsed.tools||[]).length });
     const _v1NagModel = parsed.model || "";
     const _v1NagMessages = parsed.messages || [];
 
@@ -393,6 +518,7 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
       return { handled: true, response: { statusCode: 200, headers: { "content-type": "text/event-stream", "cache-control": "no-store", "access-control-allow-origin": "*", "connection": "close" }, body: Buffer.from(`event: message_start\ndata: ${msgStart}\n\nevent: message_delta\ndata: ${msgDelta}\n\nevent: message_stop\ndata: ${msgStop}\n\n`) } };
     }
     if (_nagCount > 0) {
+      console.log(`[VS NAG] ${_v1NagModel}: ${_nagCount} consecutive nag(s) → task_complete`);
       RECENTLY_COMPLETED.set(_v1NagModel, Date.now());
       stripNagMessages(_v1NagMessages);
       const nagId = `msg_${forge.util.bytesToHex(forge.random.getBytesSync(8))}`;
@@ -494,24 +620,53 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
       ) : "";
       const messagesComplete = reqLog({ tag: vsTag, provider: vsProvider, model, preview: messagesPreview, body: parsed });
 
-      const resp = await routeChat(bridge.model, bridge.messages, bridge.tools, bridge.stream, {
-        max_tokens: bridge.max_tokens,
-        ...parsed,
-      }, vsSession);
+      v1Log({ type: "bridge", model: bridge.model, messages: bridge.messages.slice(-3), toolsCount: (bridge.tools || []).length, stream: bridge.stream, max_tokens: bridge.max_tokens });
+
+      const bridgeExtras: Record<string, any> = { max_tokens: bridge.max_tokens };
+      if (parsed.reasoning) bridgeExtras.reasoning = parsed.reasoning;
+      if (parsed.temperature !== undefined) bridgeExtras.temperature = parsed.temperature;
+      if (parsed.top_p !== undefined) bridgeExtras.top_p = parsed.top_p;
+      if (parsed.tool_choice !== undefined) bridgeExtras.tool_choice = normalizeToolChoice(parsed.tool_choice);
+      if (parsed.parallel_tool_calls !== undefined) bridgeExtras.parallel_tool_calls = parsed.parallel_tool_calls;
+      if (parsed.max_output_tokens !== undefined) bridgeExtras.max_output_tokens = parsed.max_output_tokens;
+      if (parsed.text !== undefined) bridgeExtras.text = parsed.text;
+      if (parsed.store !== undefined) bridgeExtras.store = parsed.store;
+      if (parsed.presence_penalty !== undefined) bridgeExtras.presence_penalty = parsed.presence_penalty;
+      if (parsed.frequency_penalty !== undefined) bridgeExtras.frequency_penalty = parsed.frequency_penalty;
+      if (parsed.stop !== undefined) bridgeExtras.stop = parsed.stop;
+      const fallbackRouted = await routeChatWithFallback(bridge.model, bridge.messages, bridge.tools, bridge.stream, bridgeExtras, vsSession);
+      let resp = fallbackRouted.response;
+      console.log(`[VS MESSAGES] req=${bridge.model} resolved=${fallbackRouted.model} status=${resp.status} ct=${resp.headers.get("content-type") || ""}`);
+      v1Log({ type: "route", resolved: fallbackRouted.model, status: resp.status, ct: resp.headers.get("content-type") || "" });
 
       const respCt = resp.headers.get("content-type") || "";
       const actualStream = isStream && respCt.includes("event-stream");
       if (!actualStream) {
-        const openaiData: any = await resp.json();
+        const rawText = await resp.text();
+        if (resp.status >= 400) {
+          console.log(`[VS MESSAGES] upstream error ${resp.status}: ${rawText.slice(0, 500)}`);
+          v1Log({ type: "upstream-error", status: resp.status, body: rawText.slice(0, 500) });
+          const errMsg = rawText.length > 500 ? rawText.slice(0, 500) + "..." : rawText;
+          const errSse = buildAnthropicErrorSSE(model, resp.status, errMsg);
+          return { handled: true, response: { statusCode: 200, headers: { "content-type": "text/event-stream", "cache-control": "no-store", "access-control-allow-origin": "*", "connection": "close" }, body: Buffer.from(errSse) } };
+        }
+        let openaiData: any;
+        try { openaiData = JSON.parse(rawText); } catch (e: any) {
+          console.log(`[VS MESSAGES] upstream non-JSON (${resp.status}): ${rawText.slice(0, 300)}`);
+          const errSse = buildAnthropicErrorSSE(model, resp.status, rawText.slice(0, 500));
+          return { handled: true, response: { statusCode: 200, headers: { "content-type": "text/event-stream", "cache-control": "no-store", "access-control-allow-origin": "*", "connection": "close" }, body: Buffer.from(errSse) } };
+        }
         const elapsed = Date.now() - startTime;
         if (messagesComplete) messagesComplete(elapsed);
         const choice = openaiData.choices?.[0]?.message;
         const content = stripCopilotGreeting(choice?.content || "");
         const toolCalls = choice?.tool_calls;
+        v1Log({ type: "upstream-json", model: fallbackRouted.model, content: content.slice(0, 500), finish: openaiData.choices?.[0]?.finish_reason, usage: openaiData.usage });
 
         // ── Tool salvager: repair, detect apology, detect loop ──
         const salvaged = _salvageAnthropicResponse(openaiData, bridge.messages, model);
         if (salvaged.replacedWithTaskComplete) {
+          console.log(`[VS MESSAGES] salvager replaced response with task_complete for ${model}`);
           const sse = buildAnthropicTaskComplete(model);
           return { handled: true, response: { statusCode: 200, headers: { "content-type": "text/event-stream", "cache-control": "no-store", "access-control-allow-origin": "*", "connection": "close" }, body: Buffer.from(sse) } };
         }
@@ -573,7 +728,8 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
       const sock = req.clientSocket;
       if (sock) {
         const msgId = `msg_${forge.util.bytesToHex(forge.random.getBytesSync(8))}`;
-        const respHead = `HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-store\r\naccess-control-allow-origin: *\r\nx-accel-buffering: no\r\nconnection: close\r\n\r\n`;
+        const v1SvcReqId = headers["x-request-id"] || forge.util.bytesToHex(forge.random.getBytesSync(16));
+        const respHead = `HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\ncontent-security-policy: default-src 'none'; sandbox\r\nstrict-transport-security: max-age=31536000\r\naccess-control-allow-origin: *\r\nx-accel-buffering: no\r\nx-copilot-service-request-id: ${v1SvcReqId}\r\nconnection: close\r\n\r\n`;
         sock.write(respHead);
 
         const sseEvent = (s: any, evt: string, data: any) => {
@@ -589,13 +745,17 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
         let greetingBuf = "";
         let greetingDone = false;
 
+        const streamLog = new StreamResponseLogger({ endpoint: "/v1/messages", model, resolved: fallbackRouted.model, status: resp.status });
+
         sseEvent(sock, "message_start", { type: "message_start", message: { id: msgId, type: "message", role: "assistant", content: [], model: model, stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } } });
         sseEvent(sock, "content_block_start", { type: "content_block_start", index: nextContentIdx, content_block: { type: "text", text: "" } });
 
+        let firstChunkSeen = false;
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
           const chunk = decoder.decode(value, { stream: true });
+          if (!firstChunkSeen) { v1Log({ type: "upstream-stream-first", model: fallbackRouted.model, chunk: chunk.slice(0, 400) }); firstChunkSeen = true; }
           const lines = chunk.split("\n");
           for (const line of lines) {
             const t = line.trim();
@@ -604,6 +764,7 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
                 const d = JSON.parse(t.slice(6));
                 const delta = d.choices?.[0]?.delta;
                 if (delta?.content) {
+                  streamLog.addContent(delta.content);
                   if (!greetingDone) {
                     greetingBuf += delta.content;
                     const stripped = stripCopilotGreeting(greetingBuf);
@@ -614,14 +775,17 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
                         sseEvent(sock, "content_block_delta", { type: "content_block_delta", index: nextContentIdx, delta: { type: "text_delta", text: stripped } });
                       }
                     }
-  } else if (l.startsWith("umans-")) {
-    limits.max_context_window_tokens = 256000; limits.max_output_tokens = 64000; limits.max_prompt_tokens = 200000; limits.max_non_streaming_output_tokens = 16000;
-  } else {
+                  } else {
                     fullContent += delta.content;
                     sseEvent(sock, "content_block_delta", { type: "content_block_delta", index: nextContentIdx, delta: { type: "text_delta", text: delta.content } });
                   }
                 }
                 if (delta?.reasoning_content) {
+                  streamLog.addReasoning(delta.reasoning_content);
+                  // Reasoning always goes as reasoning_delta — never as text.
+                  // The old code emitted reasoning as text_delta when it arrived
+                  // first, which leaked "The user said..." reasoning into VS chat.
+                  greetingDone = true;
                   sseEvent(sock, "content_block_delta", { type: "content_block_delta", index: nextContentIdx, delta: { type: "reasoning_delta", reasoning: delta.reasoning_content } });
                 }
                 if (delta?.tool_calls) {
@@ -640,8 +804,11 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
                       toolCallAccum[idx].args += tc.function.arguments;
                       sseEvent(sock, "content_block_delta", { type: "content_block_delta", index: nextContentIdx, delta: { type: "input_json_delta", partial_json: tc.function.arguments } });
                     }
+                    streamLog.addToolCall(idx, tc.id || "", tc.function?.name || "", tc.function?.arguments || "");
                   }
                 }
+                if (d.choices?.[0]?.finish_reason) streamLog.setFinishReason(d.choices[0].finish_reason);
+                if (d.usage) streamLog.setUsage(d.usage);
               } catch {}
             }
           }
@@ -686,6 +853,12 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
           console.log(`[TOOL SALVAGE] ${model} (stream): ${_streamLoop.inLoop ? `loop(${_streamLoop.tool}×${_streamLoop.count})` : "apology"} → task_complete`);
           try { sock.write(buildAnthropicTaskComplete(model)); } catch {}
           try { sock.end(); } catch {}
+          streamLog.flush({
+            repaired: _streamFixed.length,
+            dropped: _streamDropped.length,
+            apologyInjected: _streamApology && _streamAllDropped,
+            loopInjected: _streamLoop.inLoop,
+          });
           return { handled: true, response: { statusCode: 200, headers: {}, body: Buffer.alloc(0), _streamed: true } };
         }
         // Apply repaired tool_calls back to the accumulator (for loop counter consistency)
@@ -708,6 +881,13 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
         try { sock.end(); } catch {}
         const elapsed = Date.now() - startTime;
         if (messagesComplete) messagesComplete(elapsed);
+
+        streamLog.flush({
+          repaired: _streamFixed.length,
+          dropped: _streamDropped.length,
+          apologyInjected: _streamApology && _streamAllDropped,
+          loopInjected: _streamLoop.inLoop,
+        });
 
         return { handled: true, response: { statusCode: 200, headers: {}, body: Buffer.alloc(0), _streamed: true } };
       }
@@ -732,15 +912,30 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
   if (method === "POST" && (url === "/responses" || url.startsWith("/responses?"))) { trackRequest("vs");
     let parsed: any = {};
     try { parsed = JSON.parse(body?.toString() || "{}"); } catch {}
-    let model = parsed.model || "";
-    const input = parsed.input || "";
-    const instructions = parsed.instructions || "";
-    const tools = parsed.tools || [];
     const isStream = parsed.stream === true;
 
-    const userContent = typeof input === "string" ? input :
-      Array.isArray(input) ? input.map((m: any) => m.content || "").join("\n") : "Hello";
+    // ── Nag handling for agentic mode (same policy as /v1/messages) ──
+    const _respInitiator = headers["x-initiator"] || "";
+    const _respInput = Array.isArray(parsed.input) ? parsed.input : [];
+    const _lastUser = [..._respInput].reverse().find((m: any) => m.role === "user" || (m.type === "message" && m.role === "user"));
+    const _userText = typeof _lastUser?.content === "string" ? _lastUser.content :
+      Array.isArray(_lastUser?.content) ? _lastUser.content.map((c: any) => c.text || "").join(" ") : "";
+    const _isAgentic = _respInitiator === "agent";
+    const _nagCount = _isAgentic ? countConsecutiveNags(_respInput) : 0;
 
+    if (_isAgentic && RECENTLY_COMPLETED.get(parsed.model || "") && Date.now() - RECENTLY_COMPLETED.get(parsed.model || "")! < 20000) {
+      RECENTLY_COMPLETED.delete(parsed.model || "");
+      const emptyResp = buildResponsesFromChatCompletion({ choices: [{ message: { role: "assistant", content: "" } }] }, { model: parsed.model || "unknown" });
+      return { handled: true, response: jsonResponse(emptyResp) };
+    }
+    if (_nagCount > 0) {
+      console.log(`[VS NAG] /responses ${parsed.model || ""}: ${_nagCount} consecutive nag(s) → task_complete`);
+      RECENTLY_COMPLETED.set(parsed.model || "", Date.now());
+      stripNagMessages(_respInput);
+      return { handled: true, response: jsonResponse(buildResponsesTaskComplete(parsed.model || "unknown")) };
+    }
+
+    let model = parsed.model || "";
     await ensureModels();
     const parsedTag = parseThinkingMode(model);
     model = parsedTag.model;
@@ -780,14 +975,17 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
 
     let startTime = Date.now();
     let responsesComplete: any;
+    vsRespLog(`[BEGIN] url=${url} model=${parsed.model || ""} stream=${isStream} x-initiator=${headers["x-initiator"] || ""}`);
     try {
       const identityText = compactIdentity(getModelDisplayName(model), model, parsedTag.thinking || undefined);
-      const messages = [
-        { role: "system", content: identityText + (instructions ? "\n\n" + instructions : "") },
-        { role: "user", content: userContent },
-      ];
+      const { messages: flatMessages, system } = flattenResponsesInput(parsed.input);
+      vsRespLog(`[FLAT] system=${system ? "yes" : "no"} messages=${JSON.stringify(flatMessages.map((m:any)=>({role:m.role,len:JSON.stringify(m.content||m).length})))}`);
+      const messages: any[] = [];
+      if (system) messages.push({ role: "system", content: system });
+      messages.push({ role: "system", content: identityText + (parsed.instructions ? "\n\n" + parsed.instructions : "") });
+      for (const m of flatMessages) messages.push(m);
 
-      const scrubbedResp = scrubTaskComplete(messages, tools);
+      const scrubbedResp = scrubTaskComplete(messages, parsed.tools || []);
       const cleanMessages = scrubbedResp.messages;
       const cleanTools = scrubbedResp.tools;
       const cleanToolsBn = compressToolDefinitions(cleanTools);
@@ -798,55 +996,166 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
         console.log(`[VS SESSION] ${ts2} [Session#${vsSession.sessNum}>${vsSession.keyLabel}] ${model} "${extractUserPrompt(cleanMessages).substring(0, 120)}"`);
       }
 
-    const vsTag = agentTag(headers);
-    const vsProvider = model.startsWith("umans-") ? "umans" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "go";
+      const vsTag = agentTag(headers);
+      const vsProvider = model.startsWith("umans-") ? "umans" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "go";
 
-    const resp = await routeChat(model, cleanMessages, cleanToolsBn, isStream, { ...parsed }, vsSession);
-      if (!isStream) {
-        const openaiData: any = await resp.json();
-        if (openaiData?.choices?.[0]?.message?.content) {
-          openaiData.choices[0].message.content = stripCopilotGreeting(openaiData.choices[0].message.content);
+      const lastPreview = [...cleanMessages].reverse().find((m: any) => m.role === "user");
+      const messagesPreview = lastPreview ? (
+        typeof lastPreview.content === "string" ? lastPreview.content :
+        Array.isArray(lastPreview.content) ? lastPreview.content.filter((c: any) => c.type === "text").map((c: any) => c.text || "").join(" ") : ""
+      ) : "";
+      responsesComplete = reqLog({ tag: vsTag, provider: vsProvider, model, preview: messagesPreview, body: parsed });
+
+      const respExtras: Record<string, any> = {};
+      if (parsed.reasoning) respExtras.reasoning = parsed.reasoning;
+      if (parsed.temperature !== undefined) respExtras.temperature = parsed.temperature;
+      if (parsed.top_p !== undefined) respExtras.top_p = parsed.top_p;
+      if (parsed.tool_choice !== undefined) respExtras.tool_choice = normalizeToolChoice(parsed.tool_choice);
+      if (parsed.parallel_tool_calls !== undefined) respExtras.parallel_tool_calls = parsed.parallel_tool_calls;
+      if (parsed.max_output_tokens !== undefined) respExtras.max_output_tokens = parsed.max_output_tokens;
+      if (parsed.text !== undefined) respExtras.text = parsed.text;
+      if (parsed.store !== undefined) respExtras.store = parsed.store;
+      if (parsed.presence_penalty !== undefined) respExtras.presence_penalty = parsed.presence_penalty;
+      if (parsed.frequency_penalty !== undefined) respExtras.frequency_penalty = parsed.frequency_penalty;
+      if (parsed.stop !== undefined) respExtras.stop = parsed.stop;
+      const fallbackRouted = await routeChatWithFallback(model, cleanMessages, cleanToolsBn, isStream, respExtras, vsSession);
+      let resp = fallbackRouted.response;
+      const rawText = await responseBodyToString(resp);
+      const respCt = resp.headers.get("content-type") || "";
+      console.log(`[VS RESPONSES] req=${model} resolved=${fallbackRouted.model} status=${resp.status} ct=${respCt} rawLen=${rawText.length}`);
+      vsRespLog(`[ROUTE] resolved=${fallbackRouted.model} status=${resp.status} ct=${respCt} rawLen=${rawText.length} rawPreview=${rawText.slice(0, 800).replace(/\n/g, "\\n")}`);
+
+      const respOpts: ResponsesOptions = {
+        model: fallbackRouted.model,
+        previous_response_id: parsed.previous_response_id,
+        instructions: parsed.instructions,
+        reasoning: parsed.reasoning,
+        tools: cleanToolsBn,
+        tool_choice: normalizeToolChoice(parsed.tool_choice),
+        temperature: parsed.temperature,
+        top_p: parsed.top_p,
+        max_output_tokens: parsed.max_output_tokens,
+        parallel_tool_calls: parsed.parallel_tool_calls,
+        text: parsed.text,
+        store: parsed.store,
+      };
+
+      const upstreamIsSSE = respCt.includes("event-stream") || rawText.trim().startsWith("data:");
+
+      // Build the final response object first (handles non-JSON, stripping, salvaging, etc.)
+      let openaiData: any;
+      if (upstreamIsSSE) {
+        // Use already parsed streaming logic below; don't pre-build JSON here.
+      } else {
+        if (resp.status >= 400) {
+          console.log(`[VS RESPONSES] upstream error ${resp.status}: ${rawText.slice(0, 500)}`);
+          vsRespLog(`[UPSTREAM ERROR] status=${resp.status} body=${rawText.slice(0, 500)}`);
+          const errMsg = rawText.length > 500 ? rawText.slice(0, 500) + "..." : rawText;
+          openaiData = { choices: [{ message: { role: "assistant", content: `[Error] Upstream returned ${resp.status}: ${errMsg}` } }] };
+        } else {
+          try { openaiData = JSON.parse(rawText); } catch (e: any) {
+            console.log(`[VS RESPONSES] upstream non-JSON (${resp.status}): ${rawText.slice(0, 300)}`);
+            openaiData = { choices: [{ message: { role: "assistant", content: `Upstream error (${resp.status}): ${rawText.slice(0, 500)}` } }] };
+          }
+          if (openaiData?.choices?.[0]?.message?.content) {
+            openaiData.choices[0].message.content = stripCopilotGreeting(openaiData.choices[0].message.content);
+          }
         }
-        const elapsed = Date.now() - startTime;
-        if (responsesComplete) responsesComplete(elapsed);
-        // ── Tool salvager (OpenAI Responses API path) ──
-        const salvaged = _salvageAnthropicResponse(openaiData, cleanMessages, model);
-        if (salvaged.replacedWithTaskComplete) {
-          return { handled: true, response: jsonResponse(buildOpenAITaskComplete(model)) };
-        }
-        if (salvaged.repairedCount || salvaged.droppedCount) {
-          openaiData.choices = openaiData.choices || [{}];
-          openaiData.choices[0].message = salvaged.message;
-        }
-        return { handled: true, response: jsonResponse(openaiData) };
       }
 
+      // The client requested stream=true, so WE are responsible for streaming back as SSE
+      // regardless of whether the upstream returned a JSON blob or proper SSE.
       const sock = req.clientSocket;
-      if (sock) {
-        const respHead = `HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-store\r\naccess-control-allow-origin: *\r\nx-accel-buffering: no\r\nconnection: close\r\n\r\n`;
+      const copilotServiceReqId = headers["x-request-id"] || forge.util.bytesToHex(forge.random.getBytesSync(16));
+      const quotaHeaders = buildQuotaSnapshotHeaders();
+      if (isStream && sock) {
+        const respHead = `HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\ncontent-security-policy: default-src 'none'; sandbox\r\nstrict-transport-security: max-age=31536000\r\naccess-control-allow-origin: *\r\nx-accel-buffering: no\r\nx-copilot-service-request-id: ${copilotServiceReqId}\r\n${quotaHeaders}connection: close\r\n\r\n`;
         sock.write(respHead);
-        const reader = resp.body!.getReader();
-        const decoder = new TextDecoder();
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          sock.write(decoder.decode(value, { stream: true }));
+
+        let emittedBytes = 0;
+        let firstChunk = "";
+        try {
+          if (upstreamIsSSE) {
+            const reader = new ReadableStream({
+              start(controller) {
+                const lines = rawText.split("\n");
+                for (const line of lines) {
+                  controller.enqueue(new TextEncoder().encode(line + "\n"));
+                }
+                controller.close();
+              }
+            }).getReader();
+            for await (const chunk of streamChatCompletionToResponses(reader, respOpts)) {
+              if (sock.destroyed || sock.closed) break;
+              emittedBytes += chunk.length;
+              if (firstChunk.length < 500) firstChunk += chunk;
+              try { sock.write(chunk); } catch { break; }
+            }
+          } else {
+            const rr = buildResponsesFromChatCompletion(openaiData, respOpts);
+            vsRespLog(`[RESPONSE JSON] output_items=${rr.output?.length || 0} firstText=${JSON.stringify(rr.output?.[0]?.content?.[0]?.text || "").slice(0, 200)}`);
+            try {
+              for await (const chunk of streamResponsesObjectToSSE(rr)) {
+                if (sock.destroyed || sock.closed) break;
+                emittedBytes += chunk.length;
+                if (firstChunk.length < 500) firstChunk += chunk;
+                try { sock.write(chunk); } catch { break; }
+              }
+            } catch (sseErr: any) {
+              vsRespLog(`[SSE OBJ ERR] ${sseErr.message}`);
+            }
+            vsRespLog(`[STREAM OBJ DONE] emittedBytes=${emittedBytes} firstChunk=${firstChunk.slice(0, 300).replace(/\n/g, "\\n")}`);
+          }
+        } catch (streamErr: any) {
+          vsRespLog(`[STREAM ERR] ${streamErr.message}`);
+          console.log(`[VS RESPONSES] stream error: ${streamErr.message}`);
         }
+        vsRespLog(`[STREAM DONE] emittedBytes=${emittedBytes} firstChunk=${firstChunk.slice(0, 500).replace(/\n/g, "\\n")}`);
         sock.end();
         const elapsed = Date.now() - startTime;
         if (responsesComplete) responsesComplete(elapsed);
         return { handled: true, response: { statusCode: 200, headers: {}, body: Buffer.alloc(0), _streamed: true } };
       }
 
+      // No socket fallback: build JSON object only if upstream was also non-streaming
       const elapsed = Date.now() - startTime;
       if (responsesComplete) responsesComplete(elapsed);
+      if (!upstreamIsSSE) {
+        const rr = buildResponsesFromChatCompletion(openaiData, respOpts);
+        const quotaHdrs: Record<string, string> = {};
+        const now = new Date();
+        const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+        const rst = nextMonth.toISOString();
+        quotaHdrs["x-quota-snapshot-chat"] = `ent=500&ov=0.0&ovPerm=false&rem=58.0&rst=${rst}&totRem=290.0`;
+        quotaHdrs["x-quota-snapshot-completions"] = `ent=4000&ov=0.0&ovPerm=false&rem=58.0&rst=${rst}&totRem=2320.0`;
+        quotaHdrs["x-quota-snapshot-premium_interactions"] = `ent=1000&ov=0.0&ovPerm=false&rem=58.0&rst=${rst}&totRem=580.0`;
+        quotaHdrs["x-copilot-service-request-id"] = copilotServiceReqId;
+        return { handled: true, response: {
+          statusCode: 200,
+          headers: {
+            "content-type": "application/json; charset=utf-8",
+            "cache-control": "no-cache",
+            "content-security-policy": "default-src 'none'; sandbox",
+            "strict-transport-security": "max-age=31536000",
+            "access-control-allow-origin": "*",
+            ...quotaHdrs,
+          },
+          body: Buffer.from(JSON.stringify(rr)),
+        } };
+      }
       return { handled: true, response: jsonResponse({ error: "no socket" }, 500) };
     } catch (e: any) {
       const elapsed = Date.now() - startTime;
       if (responsesComplete) responsesComplete(elapsed);
-      return { handled: true, response: jsonResponse({ choices: [{ index: 0, message: { role: "assistant", content: `Mock response (upstream: ${e.message})` }, finish_reason: "stop" }] })};
+      vsRespLog(`[FATAL] ${e.message}\n${e.stack || ""}`);
+      console.log(`[VS RESPONSES] error: ${e.message}`);
+      const rr = buildResponsesFromChatCompletion({
+        choices: [{ message: { role: "assistant", content: `Mock response (upstream: ${e.message})` } }]
+      }, { model: parsed.model || "unknown" });
+      return { handled: true, response: jsonResponse(rr) };
     }
   }
+
 
   // POST /chat/completions - VS sends OpenAI chat format too
   if (method === "POST" && url.includes("/chat/completions")) { trackRequest("vs");
@@ -958,8 +1267,23 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
       const lastUserMsg = [...chatMessages].reverse().find((m: any) => m.role === "user");
       const vsProvider = model.startsWith("umans-") ? "umans" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "go";
 
-      const isUm3 = model.startsWith("umans-");
-      const resp = await routeChat(model, chatMessages, chatToolsBn, isStream, { max_tokens: maxTokens, ...parsed }, session);
+      const chatExtras: Record<string, any> = { max_tokens: maxTokens };
+      if (parsed.reasoning) chatExtras.reasoning = parsed.reasoning;
+      if (parsed.temperature !== undefined) chatExtras.temperature = parsed.temperature;
+      if (parsed.top_p !== undefined) chatExtras.top_p = parsed.top_p;
+      if (parsed.tool_choice !== undefined) chatExtras.tool_choice = normalizeToolChoice(parsed.tool_choice);
+      if (parsed.parallel_tool_calls !== undefined) chatExtras.parallel_tool_calls = parsed.parallel_tool_calls;
+      if (parsed.max_output_tokens !== undefined) chatExtras.max_output_tokens = parsed.max_output_tokens;
+      if (parsed.text !== undefined) chatExtras.text = parsed.text;
+      if (parsed.store !== undefined) chatExtras.store = parsed.store;
+      if (parsed.presence_penalty !== undefined) chatExtras.presence_penalty = parsed.presence_penalty;
+      if (parsed.frequency_penalty !== undefined) chatExtras.frequency_penalty = parsed.frequency_penalty;
+      if (parsed.stop !== undefined) chatExtras.stop = parsed.stop;
+      const fallbackRouted = await routeChatWithFallback(model, chatMessages, chatToolsBn, isStream, chatExtras, session);
+      let resp = fallbackRouted.response;
+      if (fallbackRouted.model !== model) {
+        console.log(`[VS CHAT] routed ${model} → ${fallbackRouted.model} (fallback)`);
+      }
       if (!isStream) {
         const data: any = await resp.json();
         if (data?.choices?.[0]?.message?.content) {
@@ -981,21 +1305,48 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
 
       const sock = req.clientSocket;
       if (sock) {
-        const respHead = `HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-store\r\naccess-control-allow-origin: *\r\nx-accel-buffering: no\r\nconnection: close\r\n\r\n`;
+        const chatQuotaHdrs = buildQuotaSnapshotHeaders();
+        const chatSvcReqId = headers["x-request-id"] || forge.util.bytesToHex(forge.random.getBytesSync(16));
+        const respHead = `HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\ncontent-security-policy: default-src 'none'; sandbox\r\nstrict-transport-security: max-age=31536000\r\naccess-control-allow-origin: *\r\nx-accel-buffering: no\r\nx-copilot-service-request-id: ${chatSvcReqId}\r\n${chatQuotaHdrs}connection: close\r\n\r\n`;
         sock.write(respHead);
+        const streamLog = new StreamResponseLogger({ endpoint: "/chat/completions", model, resolved: fallbackRouted.model, status: resp.status });
         const reader = resp.body!.getReader();
         const decoder = new TextDecoder();
         let sseLen = 0;
+        let passthroughBuf = "";
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
           const chunk = decoder.decode(value, { stream: true });
           sock.write(chunk);
           sseLen += chunk.length;
+          passthroughBuf += chunk;
+          const lines = passthroughBuf.split("\n");
+          passthroughBuf = lines.pop() || "";
+          for (const line of lines) {
+            const t = line.trim();
+            if (t.startsWith("data: ") && t !== "data: [DONE]") {
+              try {
+                const d = JSON.parse(t.slice(6));
+                const delta = d.choices?.[0]?.delta;
+                if (delta?.content) streamLog.addContent(delta.content);
+                if (delta?.reasoning_content) streamLog.addReasoning(delta.reasoning_content);
+                if (delta?.tool_calls) {
+                  for (const tc of delta.tool_calls) {
+                    const idx = tc.index ?? 0;
+                    streamLog.addToolCall(idx, tc.id || "", tc.function?.name || "", tc.function?.arguments || "");
+                  }
+                }
+                if (d.choices?.[0]?.finish_reason) streamLog.setFinishReason(d.choices[0].finish_reason);
+                if (d.usage) streamLog.setUsage(d.usage);
+              } catch {}
+            }
+          }
         }
         sock.end();
         recordTps(sseLen, Date.now() - vsReqStart);
         if (vsChatComplete) vsChatComplete(Date.now() - vsReqStart);
+        streamLog.flush();
         return { handled: true, response: { statusCode: 200, headers: {}, body: Buffer.alloc(0), _streamed: true } };
       }
 
@@ -1023,7 +1374,7 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
         sse += "data: [DONE]\n\n";
         const sock = req.clientSocket;
         if (sock) {
-          const respHead = `HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-store\r\naccess-control-allow-origin: *\r\nconnection: close\r\n\r\n`;
+          const respHead = `HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\ncontent-security-policy: default-src 'none'; sandbox\r\nstrict-transport-security: max-age=31536000\r\naccess-control-allow-origin: *\r\nconnection: close\r\n\r\n`;
           sock.write(respHead);
           sock.write(sse);
           sock.end();

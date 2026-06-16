@@ -106,6 +106,7 @@ echo [INFO] Runtime: %RUNTIME%
 echo [2/3] Starting proxy in complete mock mode...
 set FAKE_DEVICE_LOGIN=1
 set SKIP_CACHE=1
+set INIT_MODE=mock
 
 echo.
 echo ==================================================
@@ -116,18 +117,27 @@ echo ==================================================
 echo.
 
 :restart_mock
+call :read_config_mode
 call :force_runtime
-if "%RUNTIME%"=="bun" bun run src\mitm-proxy.ts
-if "%RUNTIME%"=="node" %NODE_RUNNER% src\mitm-proxy.ts
-if errorlevel 45 call "!ACTIVATE.cmd" proxy & exit /b
-if errorlevel 44 call "!ACTIVATE.cmd" hybrid & exit /b
-if errorlevel 43 call "!ACTIVATE.cmd" mock & exit /b
+if /i "%INIT_MODE%"=="proxy" set "MCLI_FLAGS=--mode-3" && set "FAKE_DEVICE_LOGIN=" && set "SKIP_CACHE=" && set "gc2xy_MODE=proxy"
+if /i "%INIT_MODE%"=="hybrid" set "MCLI_FLAGS=--mode-2" && set "FAKE_DEVICE_LOGIN=1" && set "SKIP_CACHE=1" && set "gc2xy_MODE=hybrid"
+if /i "%INIT_MODE%"=="mock" set "MCLI_FLAGS=" && set "FAKE_DEVICE_LOGIN=1" && set "SKIP_CACHE=1" && set "gc2xy_MODE=mock"
+if "%RUNTIME%"=="bun" bun run src\mitm-proxy.ts %MCLI_FLAGS%
+if "%RUNTIME%"=="node" %NODE_RUNNER% src\mitm-proxy.ts %MCLI_FLAGS%
+if errorlevel 45 set "INIT_MODE=proxy" && goto :restart_mock
+if errorlevel 44 set "INIT_MODE=hybrid" && goto :restart_mock
+if errorlevel 43 set "INIT_MODE=mock" && goto :restart_mock
 if errorlevel 42 goto :restart_mock
 
 echo.
 echo Proxy stopped.
 if exist ".cache\proxy-host-pid" del .cache\proxy-host-pid >nul 2>&1
 timeout /t 2 /nobreak >nul
+exit /b 0
+
+:read_config_mode
+for /f "usebackq delims=" %%m in (`powershell -NoProfile -Command "try{$c=Get-Content '.config\config.json' -Raw|ConvertFrom-Json;if($c.mode){Write-Output $c.mode}}catch{}" 2^>nul`) do set "INIT_MODE=%%m"
+if not defined INIT_MODE set "INIT_MODE=mock"
 exit /b 0
 
 :force_runtime

@@ -950,6 +950,12 @@ async function proxyChatRequest(payload: any, requestedModel: string, skipSessio
         });
       }
       const errorText = await readBodyText(result.body);
+      // UMANS rejects many VS tool schemas with 400; retry once without tools
+      if (result.status === 400 && payload.tools?.length) {
+        console.log(`[UMANS] 400 with ${payload.tools.length} tool(s), retrying without tools`);
+        payload.tools = undefined;
+        continue;
+      }
       if (result.status === 500 || result.status === 503) {
         pool.markUnhealthy(slot.index, result.status);
         if (isLast) {
