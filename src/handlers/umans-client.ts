@@ -51,6 +51,48 @@ export function getUmansConfig(): UmansConfig {
   return _config;
 }
 
+// --- Dashboard-facing state helpers ---
+export function setUmansAppSession(sessionToken: string) {
+  _config.appSession = sessionToken;
+}
+
+export function setUmansEmail(email: string) {
+  _config.email = email;
+}
+
+export function setUmansPassword(password: string) {
+  _config.password = password;
+}
+
+export function setUmansKeys(keys: { name: string; key: string; session?: string }[]) {
+  _config.keys = keys;
+  refreshKeyPool();
+}
+
+export function setUmansEnabledModels(models: string[]) {
+  _config.enabledModels = models;
+}
+
+export function setUmansCurrentKeyIndex(index: number) {
+  setCurrentKeyIndex(index);
+}
+
+let _umansLoginStateCallback: ((state: any) => void) | null = null;
+export function onUmansLoginStateChange(cb: (state: any) => void) {
+  _umansLoginStateCallback = cb;
+}
+function emitLoginState() {
+  if (_umansLoginStateCallback) {
+    _umansLoginStateCallback({
+      loggedIn: !!_config.appSession,
+      email: _config.email,
+      keys: _config.keys,
+      currentKeyIndex: _currentKeyIndex,
+      enabledModels: _config.enabledModels,
+    });
+  }
+}
+
 // --- Key masking ---
 function maskToken(key: string): string {
   if (!key) return "";
@@ -162,10 +204,21 @@ export function setCurrentKeyIndex(index: number) {
   _currentKeyIndex = Math.max(0, index);
   const pool = ensureKeyPool();
   if (_currentKeyIndex >= pool.total) _currentKeyIndex = 0;
+  emitLoginState();
 }
 
 export function getCurrentKeyIndex(): number {
   return _currentKeyIndex;
+}
+
+export async function refreshUmansState(): Promise<{ usage: any; concurrency: any; usageHistory: any; keys: any[] }> {
+  const [usage, concurrency, usageHistory, keys] = await Promise.all([
+    fetchUsage({ force: true }).catch(() => null),
+    fetchConcurrency().catch(() => ({ concurrent: 0, limit: null, user_id: null })),
+    fetchUsageHistory({ force: true }).catch(() => null),
+    fetchKeysFromApp().catch(() => []),
+  ]);
+  return { usage, concurrency, usageHistory, keys };
 }
 
 export function getKeyState(): any[] {
@@ -509,15 +562,42 @@ export async function loginToApp(email?: string, password?: string): Promise<boo
     const sessionMatch = loginCookies.match(/__Secure-authjs\.session-token=([^;]+)/);
     if (sessionMatch) {
       _config.appSession = sessionMatch[1];
+      emitLoginState();
       return true;
     }
     return false;
   } catch (e) { return false; }
 }
 
+export async function fetchKeysFromApp(): Promise<{ name: string; key: string }[]> {
+  if (!_config.appSession) return [];
+  try {
+    const resp = await fetch(`${APP_BASE}/api/keys`, {
+      headers: { Cookie: makeAppCookie(_config.appSession), Accept: "application/json" },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!resp.ok) return [];
+    const data = await resp.json();
+    if (Array.isArray(data)) {
+      const keys = data.map((k: any) => ({ name: k.name || "Key", key: k.key || "" })).filter((k: any) => k.key.length > 5);
+      setUmansKeys(keys);
+      return keys;
+    }
+    if (Array.isArray(data?.keys)) {
+      const keys = data.keys.map((k: any) => ({ name: k.name || "Key", key: k.key || "" })).filter((k: any) => k.key.length > 5);
+      setUmansKeys(keys);
+      return keys;
+    }
+    return [];
+  } catch { return []; }
+}
+
 export function logoutApp(): void {
   _config.appSession = "";
   usageCache = { data: null, time: 0, ttl: 5 * 60 * 1000 };
+  usageHistoryCache = { data: null, time: 0, ttl: 5 * 60 * 1000 };
+  concurrencyCache = { concurrent: null as number | null, limit: null as number | null, user_id: null as string | null, time: 0, ttl: 5 * 60 * 1000 };
+  emitLoginState();
 }
 
 export function isLoggedIn(): boolean {

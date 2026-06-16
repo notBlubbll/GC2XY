@@ -5,6 +5,8 @@
 import { readFileSync, existsSync, writeFileSync, unlinkSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { createServer as createHttpServer } from "node:http";
+
+const DASHBOARD_START_TIME = new Date().toISOString();
 import https from "node:https";
 import { WebSocketServer, WebSocket } from "ws";
 import { HandlerInput, HandlerResult, jsonResponse, getProjectRoot, getMode, setMode, killPortProcess } from "../shared.ts";
@@ -16,9 +18,20 @@ import { getModelIds as getBitnetModelIds, chatCompletion as bitnetChat } from "
 import { chatCompletion as agnesChat } from "./agnes-client.ts";
 import { chatCompletion as codestralChat } from "./codestral-client.ts";
 import { initSupermaven, getSupermavenStatus, setSupermavenEnabled } from "./supermaven-client.ts";
+import {
+  setUmansConfig, loginToApp as umansLoginToApp, logoutApp as umansLogoutApp,
+  fetchUsage as fetchUmansUsage, fetchConcurrency as fetchUmansConcurrency,
+  fetchUsageHistory as fetchUmansUsageHistory, fetchKeysFromApp,
+  refreshUmansState,
+  setUmansEmail, setUmansPassword, setUmansAppSession, setUmansKeys, setUmansEnabledModels,
+  setUmansCurrentKeyIndex, getCurrentKeyIndex as getUmansCurrentKeyIndex,
+  getUmansConfig, getModelDisplayName as getUmansModelDisplayName,
+  onUmansLoginStateChange,
+} from "./umans-client.ts";
 import { getModelIds } from "../models.ts";
 import { getTps, restoreTerminal, setEnabledModelIds } from "../split-console.ts";
 import { fetchAllWorkspacesWithKeysAndUsage, WorkspaceWithKeys } from "../opencode-workspace.ts";
+import { ensureI18nForLocale, buildI18nBundle, getDashboardLocale, setUmansTranslationApiKey } from "../i18n.ts";
 
 // ── WebSocket Server (dedicated http.Server — handles upgrades natively) ──
 export const WS_PORT = parseInt(process.env.gc2xy_WS_PORT || "3441");
@@ -111,6 +124,8 @@ function takeSnapshot(): Record<string, any> {
       modelCount: models.length,
       enabledModelCount: models.filter((m: any) => m.enabled !== false).length,
       workDir: getProjectRoot(),
+      port: process.env.gc2xy_HTTP_PORT || (process.env.IIS_PROXY === "1" ? "3080" : "80"),
+      startedAt: getStartedAt(),
     },
     providers: _activeProviders,
     models: models.map(m => ({ id: m.id, name: m.name, family: m.family, providerTag: (m as any).providerTag || "go", enabled: m.enabled !== false, free: !!m.free, locked: !!m.locked })),
@@ -152,6 +167,8 @@ function takeSnapshot(): Record<string, any> {
       keyNames: ws.keyNames.map(kn => ({ keyID: kn.keyID, name: kn.name })),
       enabledKeyIDs: _workspaceKeyStates[ws.id] || [],
     })),
+    umans: _umansState,
+    umansUsage: _umansUsageCache,
   };
 }
 
@@ -503,19 +520,19 @@ async function handleWsMessage(ws: WebSocket, msg: any) {
           ws.send(JSON.stringify({ type: "testChatResult", data: { error: "Invalid request" }, _id: reqId }));
           break;
         }
-        const provider = model.startsWith("pol/") ? "poll" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("featherless/") ? "featherless" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral/") ? "codestral" : (model.startsWith("bitnet/") || model === "bitnet-demo") ? "bitnet" : "go";
+        const provider = model.startsWith("pol/") ? "poll" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral/") ? "codestral" : (model.startsWith("bitnet/") || model === "bitnet-demo") ? "bitnet" : "go";
         let resp: Response;
         if (provider === "poll") resp = await pollChat(model, messages, undefined, stream, { max_tokens: 2048 });
         else if (provider === "freebuff") resp = await freebuffChat(model, messages, undefined, stream, { max_tokens: 2048 });
         else if (provider === "agnes") resp = await agnesChat(model, messages, undefined, stream, { max_tokens: 2048 });
         else if (provider === "codestral") resp = await codestralChat(model, messages, undefined, stream, { max_tokens: 2048 });
-        else if (provider === "featherless") resp = await featherlessChat(model, messages, undefined, stream, { max_tokens: 2048 });
         else if (provider === "bitnet") resp = await bitnetChat(model, messages, undefined, stream);
         else resp = await chatCompletion(model, messages, undefined, stream, { max_tokens: 2048 });
 
         if (stream && resp.ok && resp.body) {
           let rawSse = "";
-          for await (const chunk of resp.body as any) { rawSse += chunk.toString("utf8"); }
+          const decoder = new TextDecoder();
+          for await (const chunk of resp.body as any) { rawSse += decoder.decode(chunk, { stream: true }); }
           const data = await summarizeSseTestChat(rawSse, model);
           ws.send(JSON.stringify({ type: "testChatResult", data, _id: reqId }));
         } else if (!resp.ok) {
@@ -530,6 +547,132 @@ async function handleWsMessage(ws: WebSocket, msg: any) {
       } catch (e: any) {
         ws.send(JSON.stringify({ type: "testChatResult", data: { error: e?.message || "request failed" }, _id: payload?._id }));
       }
+      break;
+    }
+    case "umansLogin": {
+      const email = payload?.email || "";
+      const password = payload?.password || "";
+      try {
+        setUmansEmail(email);
+        setUmansPassword(password);
+        const ok = await umansLoginToApp(email, password);
+        if (ok) {
+          const state = await refreshUmansState();
+          const concurrency = await fetchUmansConcurrency().catch(() => ({ concurrent: 0, limit: null, user_id: null }));
+          const usageHistory = await fetchUmansUsageHistory().catch(() => null);
+          _umansState = {
+            loggedIn: true,
+            email,
+            keys: state.keys,
+            currentKeyIndex: 0,
+            enabledModels: _umansState.enabledModels || [],
+          };
+          syncUmansTranslationKey();
+          saveConfig();
+          broadcastUmansState();
+          broadcastUmansUsage(state.usage);
+          broadcastUmansConcurrency(concurrency);
+          ws.send(JSON.stringify({ type: "umansUsageHistory", data: usageHistory }));
+          ws.send(JSON.stringify({ _id: payload?._id, success: true }));
+        } else {
+          ws.send(JSON.stringify({ _id: payload?._id, success: false, error: "Invalid email or password" }));
+        }
+      } catch (e: any) {
+        ws.send(JSON.stringify({ _id: payload?._id, success: false, error: e?.message || "Login request failed" }));
+      }
+      break;
+    }
+    case "umansLogout": {
+      umansLogoutApp();
+      _umansState = { loggedIn: false, email: "", keys: [], currentKeyIndex: 0, enabledModels: _umansState.enabledModels || [] };
+      saveConfig();
+      broadcastUmansState();
+      ws.send(JSON.stringify({ type: "umansUsage", data: null }));
+      ws.send(JSON.stringify({ type: "umansConcurrency", data: { concurrent: 0, limit: null, user_id: null } }));
+      break;
+    }
+    case "umansAddKey": {
+      const name = payload?.name || "Key";
+      const key = payload?.key || "";
+      if (key.length > 5) {
+        const cfg = getUmansConfig();
+        const keys = [...cfg.keys, { name, key }];
+        setUmansKeys(keys);
+        _umansState.keys = keys;
+        syncUmansTranslationKey();
+        saveConfig();
+        broadcastUmansState();
+      }
+      break;
+    }
+    case "umansUpdateKey": {
+      const idx = typeof payload?.index === "number" ? payload.index : -1;
+      if (idx >= 0) {
+        const cfg = getUmansConfig();
+        const keys = [...cfg.keys];
+        if (keys[idx]) {
+          keys[idx] = { name: payload?.name || keys[idx].name, key: payload?.key || keys[idx].key };
+          setUmansKeys(keys);
+          _umansState.keys = keys;
+          syncUmansTranslationKey();
+          saveConfig();
+          broadcastUmansState();
+        }
+      }
+      break;
+    }
+    case "umansDeleteKey": {
+      const idx = typeof payload?.index === "number" ? payload.index : -1;
+      if (idx >= 0) {
+        const cfg = getUmansConfig();
+        const keys = [...cfg.keys];
+        keys.splice(idx, 1);
+        setUmansKeys(keys);
+        _umansState.keys = keys;
+        syncUmansTranslationKey();
+        saveConfig();
+        broadcastUmansState();
+      }
+      break;
+    }
+    case "umansSetKey": {
+      const idx = typeof payload?.index === "number" ? payload.index : 0;
+      setUmansCurrentKeyIndex(idx);
+      _umansState.currentKeyIndex = getUmansCurrentKeyIndex();
+      saveConfig();
+      broadcastUmansState();
+      break;
+    }
+    case "umansSetEnabledModels": {
+      if (Array.isArray(payload?.models)) {
+        setUmansEnabledModels(payload.models);
+        _umansState.enabledModels = payload.models;
+        saveConfig();
+        broadcastUmansState();
+      }
+      break;
+    }
+    case "umansRefresh": {
+      try {
+        const keys = await fetchKeysFromApp();
+        _umansState.keys = keys;
+        syncUmansTranslationKey();
+        saveConfig();
+        broadcastUmansState();
+      } catch {}
+      break;
+    }
+    case "umansRefreshUsage": {
+      try {
+        const usage = await fetchUmansUsage({ force: true });
+        const concurrency = await fetchUmansConcurrency();
+        const history = await fetchUmansUsageHistory({ force: true });
+        _umansUsageCache = usage;
+        _umansUsageCacheTime = Date.now();
+        broadcastUmansUsage(usage);
+        broadcastUmansConcurrency(concurrency);
+        ws.send(JSON.stringify({ type: "umansUsageHistory", data: history }));
+      } catch {}
       break;
     }
   }
@@ -551,6 +694,12 @@ try {
 } catch (e) {}
 
 const PROVIDER_TAG_MAP: Record<string, string> = { opencode: "go", zen: "zen", freebuff: "freebuff", agnes: "agnes", codestral: "codestral", bitnet: "bitnet", deepseek: "deepseek", umans: "umans" };
+
+function syncUmansTranslationKey() {
+  const cfg = getUmansConfig();
+  const key = (cfg.keys || []).find(k => k.key)?.key || "";
+  setUmansTranslationApiKey(key);
+}
 
 let _requestCount = 0;
 
@@ -600,6 +749,27 @@ function broadcastProgress() {
     if (client.readyState === WebSocket.OPEN) client.send(msg);
   }
 }
+
+function broadcastUmansState() {
+  const msg = JSON.stringify({ type: "umans", data: _umansState });
+  for (const client of _wsClients) {
+    if (client.readyState === WebSocket.OPEN) client.send(msg);
+  }
+}
+
+function broadcastUmansUsage(usage: any) {
+  const msg = JSON.stringify({ type: "umansUsage", data: usage });
+  for (const client of _wsClients) {
+    if (client.readyState === WebSocket.OPEN) client.send(msg);
+  }
+}
+
+function broadcastUmansConcurrency(concurrency: any) {
+  const msg = JSON.stringify({ type: "umansConcurrency", data: concurrency });
+  for (const client of _wsClients) {
+    if (client.readyState === WebSocket.OPEN) client.send(msg);
+  }
+}
 function setGenProgress(kind: string, progress: number) {
   _genProgress = { kind, progress };
   broadcastProgress();
@@ -621,6 +791,7 @@ let _supermavenEnabled = false;
 
 let _workspaceKeyStates: Record<string, string[]> = {};
 let _workspaceData: WorkspaceWithKeys[] = [];
+let _umansState: any = { loggedIn: false, email: "", keys: [], currentKeyIndex: 0, enabledModels: [] };
 
 let _dashboardConfig: Record<string, any> = {
   mode: "mock",
@@ -920,6 +1091,16 @@ function loadConfig() {
         setSupermavenEnabled(_supermavenEnabled);
       }
       if (c.workspaceKeyStates && typeof c.workspaceKeyStates === "object") _workspaceKeyStates = c.workspaceKeyStates;
+      if (c.umans) {
+        _umansState = { ..._umansState, ...c.umans };
+        if (c.umans.email) setUmansEmail(c.umans.email);
+        if (c.umans.password) setUmansPassword(c.umans.password);
+        if (c.umans.appSession) setUmansAppSession(c.umans.appSession);
+        if (Array.isArray(c.umans.keys)) setUmansKeys(c.umans.keys);
+        if (Array.isArray(c.umans.enabledModels)) setUmansEnabledModels(c.umans.enabledModels);
+        if (typeof c.umans.currentKeyIndex === "number") setUmansCurrentKeyIndex(c.umans.currentKeyIndex);
+        syncUmansTranslationKey();
+      }
       if (c.disabledModels && typeof c.disabledModels === "object") {
         for (const [tag, ids] of Object.entries(c.disabledModels as Record<string, string[]>)) {
           if (Array.isArray(ids)) for (const id of ids) _modelStates[id as string] = false;
@@ -948,6 +1129,14 @@ function saveConfig() {
     existing.completionsModel = _completionsModel;
     existing.supermavenEnabled = _supermavenEnabled;
     existing.githubSettings = { skuMode: getGithubSku(), username: getGithubUsername(), displayName: getGithubDisplayName() };
+    existing.umans = {
+      loggedIn: !!getUmansConfig().appSession || _umansState.loggedIn,
+      email: getUmansConfig().email || _umansState.email,
+      password: getUmansConfig().password || "",
+      keys: getUmansConfig().keys,
+      enabledModels: getUmansConfig().enabledModels,
+      currentKeyIndex: getUmansCurrentKeyIndex(),
+    };
     const allIds = getModelIds();
     if (allIds.length > 0) {
       const dm: Record<string, string[]> = {};
@@ -997,6 +1186,10 @@ function getDashboardHtml(): string {
 
 function getRuntime(): string {
   return typeof Bun !== "undefined" ? "Bun " + (Bun?.version || "") : "Node.js " + process.version;
+}
+
+function getStartedAt(): string {
+  return DASHBOARD_START_TIME;
 }
 
 function toSmallCaps(s: string): string {
@@ -1066,6 +1259,7 @@ function getAgnesModels(): any[] {
   const hasKey = !!_agnesApiKey;
   const hasOpenRouter = !!_openRouterApiKey;
   const hasCodestral = !!_codestralApiKey;
+  const canShowPremium = _hasValidKey;
   return modelIds.map((id: string) => {
     const isFree = id.startsWith("pol/") || id.startsWith("freebuff/");
     const isFreebuff = id.startsWith("freebuff/");
@@ -1079,7 +1273,7 @@ function getAgnesModels(): any[] {
       family: family || (isOpenRouter ? "openrouter" : isFreebuff ? "freebuff" : isAgnes ? "agnes" : isCodestral ? "codestral" : isFree ? "pollinations" : "unknown"),
       providerTag,
       enabled: _modelStates[id] !== false,
-      free: isFree, locked: isCodestral ? !hasCodestral : isOpenRouter ? !hasOpenRouter : isAgnes ? !hasAgnes : (!isFree && !canShowPremium),
+      free: isFree, locked: false,
     };
   });
 }
@@ -1104,7 +1298,7 @@ function getModels(): any[] {
     const isOpenRouter = id.startsWith("openrouter/");
     const family = getModelFamily(id);
     const providerTag = getModelProviderTag(id);
-    const needsKey = isOpenRouter ? !hasOpenRouter : isAgnes ? !hasAgnes : isFeatherless ? !hasFeatherless : false;
+    const needsKey = isOpenRouter ? !hasOpenRouter : isAgnes ? !hasAgnes : false;
     return {
       id, name: formatModelName(id),
       family: family || (isOpenRouter ? "openrouter" : isFreebuff ? "freebuff" : isFeatherless ? "featherless" : isAgnes ? "agnes" : isFree ? "pollinations" : "unknown"),
@@ -1234,12 +1428,38 @@ export async function handleDashboard(req: HandlerInput): Promise<HandlerResult>
     return { handled: true, response: jsonResponse(snap) };
   }
 
+  // i18n API — autotranslation support
+  if (pathname === "/api/i18n" && method === "GET") {
+    const urlObj = new URL(req.url, "http://localhost");
+    const hasKey = !!getUmansTranslationKey();
+    if (urlObj.searchParams.get("config") === "1") {
+      const nav = getDashboardLocale(urlObj);
+      const fallbackLocale = hasKey ? nav || "en" : "en";
+      return { handled: true, response: jsonResponse({ has_key: hasKey, forced_locale: null, fallback_locale: fallbackLocale }) };
+    }
+    const locale = getDashboardLocale(urlObj);
+    if (!hasKey || locale === "en") {
+      const bundle = buildI18nBundle("en");
+      return { handled: true, response: jsonResponse({ ...bundle, has_key: hasKey, forced_locale: null, fallback_locale: "en" }) };
+    }
+    if (urlObj.searchParams.get("generate") === "1") {
+      const bundle = await ensureI18nForLocale(locale);
+      return { handled: true, response: jsonResponse({ ...bundle, has_key: true, forced_locale: null, fallback_locale: locale }) };
+    } else {
+      const bundle = buildI18nBundle(locale);
+      return { handled: true, response: jsonResponse({ ...bundle, has_key: true, forced_locale: null, fallback_locale: locale }) };
+    }
+  }
+
   return { handled: false };
 }
 
 // ── OpenCode Workspace Usage Cache ──
 let _workspaceDataTime = 0;
 const WORKSPACE_CACHE_TTL = 60 * 60 * 1000;
+let _umansUsageCache: any = null;
+let _umansUsageCacheTime = 0;
+const UMANS_USAGE_CACHE_TTL = 60 * 1000;
 
 async function fetchWorkspaceUsageData(): Promise<WorkspaceWithKeys[]> {
   const envSession = (process.env.OPENCODE_SESSION || "").trim();

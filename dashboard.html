@@ -30,8 +30,8 @@
     .btn-white-bg:hover { background: rgba(255,255,255,0.85); color: #0d1117; }
     .btn-outline-action { border: 1px solid rgba(255,255,255,0.8); color: white; background: transparent; font-size: 0.75rem !important; padding: 0.25rem 0.5rem !important; display: inline-flex !important; align-items: center; justify-content: center; text-decoration: none !important; transition: all 0.15s ease; }
     .btn-outline-action:hover, .btn-outline-action:focus { background: rgba(255,255,255,0.15); border-color: rgba(255,255,255,0.9) !important; color: white !important; outline: 0; }
-    .btn-check:checked + .btn-outline-action { background: rgba(50,205,50,0.2); border-color: rgba(50,205,50,0.8) !important; color: white !important; box-shadow: 0 0 0 0.15rem rgba(50,205,50,0.25) !important; transition: all 0.15s ease; }
-    .btn-check:checked + .btn-outline-action:hover { background: rgba(50,205,50,0.35); border-color: rgba(50,205,50,0.9) !important; }
+    .btn-check:checked + .btn-outline-action, .btn-outline-action.active { background: rgba(50,205,50,0.2); border-color: rgba(50,205,50,0.8) !important; color: white !important; box-shadow: 0 0 0 0.15rem rgba(50,205,50,0.25) !important; transition: all 0.15s ease; }
+    .btn-check:checked + .btn-outline-action:hover, .btn-outline-action.active:hover { background: rgba(50,205,50,0.35); border-color: rgba(50,205,50,0.9) !important; }
     .provider-cb { accent-color: #32cd32; cursor: pointer; }
     .form-check-label { color: rgba(255,255,255,0.45); cursor: pointer; }
     .provider-cb:checked ~ .form-check-label { color: #32cd32; text-shadow: 0 0 8px #32cd32, 0 0 16px #32cd32; }
@@ -45,6 +45,18 @@
     h4, h5, strong, .fw-medium { color: white !important; }
     small { color: rgba(255,255,255,0.8) !important; }
     .toast-container { position: fixed; top: 20px; right: 20px; z-index: 1050; }
+    .autotranslate-toggle { position: fixed; left: 12px; bottom: 12px; z-index: 1080; display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; background: rgba(0,0,0,0.55); border: 1px solid rgba(255,255,255,0.18); border-radius: 999px; color: rgba(255,255,255,0.85); font-size: 12px; letter-spacing: 0.2px; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); cursor: pointer; user-select: none; transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease; }
+    .autotranslate-toggle:hover { background: rgba(255,255,255,0.08); border-color: rgba(255,255,255,0.3); color: white; }
+    .autotranslate-toggle input { margin: 0; accent-color: #32CD32; cursor: pointer; }
+    .autotranslate-toggle .beta-tag { font-size: 10px; color: rgba(255,255,255,0.55); text-transform: uppercase; letter-spacing: 0.5px; }
+    .forced-hint { margin-left:6px; font-size:10px; color:rgba(255,255,255,0.55); text-transform:uppercase; letter-spacing:0.4px; }
+    .translate-overlay { position: fixed; inset: 0; z-index: 100000; background: rgba(0,0,0,0.25); display: none; align-items: center; justify-content: center; flex-direction: column; gap: 16px; color: white; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+    .translate-overlay.show { display: flex; }
+    .translate-overlay .spinner-ring { width: 64px; height: 64px; border-radius: 50%; border: 4px solid rgba(255,255,255,0.15); border-top-color: #32CD32; animation: translate-spin 0.9s linear infinite; }
+    .translate-overlay .title { font-size: 22px; font-weight: 600; letter-spacing: 0.4px; }
+    .translate-overlay .subtitle { font-size: 13px; color: rgba(255,255,255,0.65); max-width: 320px; text-align: center; line-height: 1.5; }
+    .translate-cancel { background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); color: rgba(255,255,255,0.8); padding: 6px 14px; border-radius: 6px; font-size: 13px; cursor: pointer; }
+    @keyframes translate-spin { to { transform: rotate(360deg); } }
     dialog.dialog { border: 1px solid rgba(255,255,255,0.3); box-shadow: 0 8px 32px 0 rgba(31,38,135,0.37); backdrop-filter: blur(30px); -webkit-backdrop-filter: blur(30px); }
     dialog.dialog::backdrop { background: rgba(0,0,0,0.5); }
     .collapsible-header { cursor: pointer; user-select: none; }
@@ -402,9 +414,32 @@
       0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
       40% { opacity: 1; transform: scale(1.1); }
     }
+    .card-body.env-body { padding-top:0.35rem; padding-bottom:0.35rem; padding-left:0.6rem; padding-right:0.6rem; font-size:0.75rem; }
+    .env-body .row { margin-bottom:0; }
+    .env-body .col-6 { padding-right:6px; padding-left:6px; }
+    .env-body small { font-size:0.6rem !important; display:block; margin-bottom:1px; }
+    .env-body .fw-medium { font-size:0.75rem; }
+    .env-body .form-label { font-size:0.6rem; margin-bottom:2px; }
+    .env-body .btn-group .btn { padding:0.15rem 0.35rem; font-size:0.6rem !important; }
+    .env-body .form-control { padding:0.15rem 0.5rem; font-size:0.65rem; }
+    .env-body .input-group button { padding:0.15rem 0.4rem; font-size:0.6rem !important; }
+    .env-body .mb-2 { margin-bottom:0.4rem !important; }
+    .env-body .text-muted { font-size:0.6rem !important; }
   </style>
 </head>
 <body>
+  <div class="translate-overlay" id="translateOverlay">
+    <div class="spinner-ring"></div>
+    <div class="title" data-i18n="overlay_translating">Translating</div>
+    <div class="subtitle" id="translateOverlaySubtitle" data-i18n="overlay_translating_sub" data-i18n-template="overlay_translating_sub">Translating UI to {lang}...</div>
+    <button class="translate-cancel" id="translateCancelBtn" type="button"><span data-i18n="btn_cancel">Cancel</span></button>
+  </div>
+
+  <label class="autotranslate-toggle" id="autotranslateToggle">
+    <input type="checkbox" id="autotranslateCheckbox">
+    <span data-i18n="autotranslate_label">AUTOTRANSLATION</span>
+  </label>
+
   <svg style="position:absolute;overflow:hidden;width:0;height:0" color-interpolation-filters="sRGB"><defs id="glass-defs"></defs></svg>
 
   <div class="container-fluid pt-2">
@@ -422,59 +457,62 @@
           </div>
           <div class="d-flex align-items-center gap-2 flex-wrap">
             <div class="text-center" style="line-height:1.1">
-              <div style="font-size:9px;color:rgba(255,255,255,0.5)">Mode</div>
+              <div style="font-size:9px;color:rgba(255,255,255,0.5)" data-i18n="label_mode">Mode</div>
               <div style="font-size:13px;font-weight:600;color:white"><span id="modeDisplay" class="mode-mock">MOCK</span></div>
             </div>
             <div style="width:1px;height:24px;background:rgba(255,255,255,0.15)"></div>
             <div class="text-center" style="line-height:1.1">
-              <div style="font-size:9px;color:rgba(255,255,255,0.5)">LReq</div>
+              <div style="font-size:9px;color:rgba(255,255,255,0.5)" data-i18n="label_lreq">LReq</div>
               <div style="font-size:13px;font-weight:600;color:white" id="reqDisplay">0</div>
             </div>
             <div style="width:1px;height:24px;background:rgba(255,255,255,0.15)"></div>
             <div class="text-center" style="line-height:1.1">
-              <div style="font-size:9px;color:rgba(255,255,255,0.5)">TPS</div>
+              <div style="font-size:9px;color:rgba(255,255,255,0.5)" data-i18n="label_tps">TPS</div>
               <div style="font-size:13px;font-weight:600;color:white" id="tpsDisplay">0.0</div>
             </div>
             <div style="width:1px;height:24px;background:rgba(255,255,255,0.15)"></div>
             <div class="text-center" style="line-height:1.1">
-              <div style="font-size:9px;color:rgba(255,255,255,0.5)">Keys</div>
+              <div style="font-size:9px;color:rgba(255,255,255,0.5)" data-i18n="label_keys">Keys</div>
               <div style="font-size:13px;font-weight:600;color:white" id="activeKeysBlock">0</div>
             </div>
             <div style="width:1px;height:24px;background:rgba(255,255,255,0.15)"></div>
             <div class="text-center" style="line-height:1.1">
-              <div style="font-size:9px;color:rgba(255,255,255,0.5)">Models</div>
+              <div style="font-size:9px;color:rgba(255,255,255,0.5)" data-i18n="label_models">Models</div>
               <div style="font-size:13px;font-weight:600;color:white" id="totalModels">0 / 0</div>
             </div>
             <div style="width:1px;height:24px;background:rgba(255,255,255,0.15)" id="usedTopBarSep1"></div>
             <div class="d-flex align-items-center gap-2" style="background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.12);border-radius:8px;padding:2px 8px;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)">
-              <div style="font-size:9px;color:rgba(255,255,255,0.55);text-transform:uppercase;letter-spacing:0.6px">Window</div>
+               <div style="font-size:9px;color:rgba(255,255,255,0.55);text-transform:uppercase;letter-spacing:0.6px" data-i18n="label_window">Window</div>
+
               <div class="d-flex align-items-center gap-2">
                 <div class="text-center" style="line-height:1.1">
-                  <div style="font-size:9px;color:rgba(255,255,255,0.5)">Requests</div>
+                   <div style="font-size:9px;color:rgba(255,255,255,0.5)" data-i18n="label_requests">Requests</div>
+
                   <div style="font-size:13px;font-weight:600;color:white" id="windowRequests">--</div>
                 </div>
                 <div style="width:1px;height:20px;background:rgba(255,255,255,0.12)"></div>
                 <div class="text-center" style="line-height:1.1">
-                  <div style="font-size:9px;color:rgba(255,255,255,0.5)">Tokens</div>
+                   <div style="font-size:9px;color:rgba(255,255,255,0.5)" data-i18n="label_tokens">Tokens</div>
+
                   <div style="font-size:13px;font-weight:600;color:white" id="windowTokens">--</div>
                 </div>
               </div>
             </div>
             <div style="width:1px;height:24px;background:rgba(255,255,255,0.15)" id="usedTopBarSep2"></div>
             <div class="text-center" style="line-height:1.1" id="quotaTopBar">
-              <div style="font-size:9px;color:rgba(255,255,255,0.5)">90 Days</div>
+              <div style="font-size:9px;color:rgba(255,255,255,0.5)" data-i18n="label_quota">90 Days</div>
               <div style="font-size:13px;font-weight:600;color:white" id="quotaDisplay" title="">n/a</div>
             </div>
           </div>
           <div class="d-flex align-items-center gap-2">
             <div class="text-center" style="line-height:1.1">
-              <div style="font-size:9px;color:rgba(255,255,255,0.5)">Account</div>
-              <div style="font-size:13px;font-weight:600;color:white;cursor:pointer" id="umansAccountTopLabel" onclick="openKeysModal()">Login</div>
+              <div style="font-size:9px;color:rgba(255,255,255,0.5)" data-i18n="label_account">Account</div>
+              <div style="font-size:13px;font-weight:600;color:white;cursor:pointer" id="umansAccountTopLabel">Login</div>
             </div>
             <div style="width:1px;height:24px;background:rgba(255,255,255,0.15)"></div>
             <div class="text-center" style="line-height:1.1">
-              <div style="font-size:9px;color:rgba(255,255,255,0.5)">Keys</div>
-              <div style="font-size:13px;font-weight:600;color:white;cursor:pointer" id="umansKeysTopLabel" onclick="openKeysModal()">0</div>
+              <div style="font-size:9px;color:rgba(255,255,255,0.5)" data-i18n="label_keys">Keys</div>
+              <div style="font-size:13px;font-weight:600;color:white;cursor:pointer" id="umansKeysTopLabel">0</div>
             </div>
           </div>
         </div>
@@ -507,7 +545,7 @@
             <div class="card-header collapsible-header d-flex justify-content-between align-items-center" onclick="toggleSection('models')">
               <span>
                 <i class="bi bi-chevron-down toggle-icon me-1"></i>
-                <i class="bi bi-cpu-fill me-2"></i>MODELS
+                <i class="bi bi-cpu-fill me-2"></i><span data-i18n="section_models">MODELS</span>
               </span>
               <span class="badge bg-secondary" id="modelCountBadge">0</span>
             </div>
@@ -525,11 +563,11 @@
             <div class="card-header collapsible-header d-flex justify-content-between align-items-center" onclick="toggleSection('keys-and-usage')">
               <span>
                 <i class="bi bi-chevron-down toggle-icon me-1"></i>
-                <i class="bi bi-bar-chart-fill me-2"></i>OPENCODE STATS
+                <i class="bi bi-bar-chart-fill me-2"></i><span data-i18n="section_opencode_stats">OPENCODE STATS</span>
               </span>
               <span class="d-flex align-items-stretch gap-2" style="height:100%">
                 <span class="badge bg-secondary d-flex align-items-center" id="keysCountBadge">0</span>
-                <button class="btn btn-sm btn-outline-action rounded-0" id="addKeyBtn" onclick="event.stopPropagation();addCurrentProviderKey()" style="font-size:11px"><i class="bi bi-pencil me-1"></i>Manage</button>
+                <button class="btn btn-sm btn-outline-action rounded-0" id="addKeyBtn" style="font-size:11px"><i class="bi bi-pencil me-1"></i><span data-i18n="btn_manage">Manage</span></button>
               </span>
             </div>
             <div class="card-body collapse-section" id="section-keys-and-usage">
@@ -543,7 +581,7 @@
           <div class="card-content">
             <div class="card-header collapsible-header" onclick="toggleSection('featherless')">
               <i class="bi bi-chevron-down toggle-icon collapsed me-1"></i>
-              <i class="bi bi-feather me-2"></i>Featherless Models
+              <i class="bi bi-feather me-2"></i><span data-i18n="section_featherless">Featherless Models</span>
             </div>
             <div class="card-body collapse-section collapsed" id="section-featherless">
               <div class="mb-2">
@@ -561,12 +599,14 @@
           <div class="glass-panel"></div>
           <div class="card-content">
             <div class="card-header collapsible-header" onclick="toggleSection('config')">
-              <i class="bi bi-chevron-down toggle-icon collapsed me-1"></i>
-              <i class="bi bi-gear-fill me-2"></i>Proxy Config
+              <span>
+                <i class="bi bi-chevron-down toggle-icon collapsed me-1"></i>
+                <i class="bi bi-gear-fill me-2"></i><span data-i18n="section_proxy_config">Proxy Config</span>
+              </span>
             </div>
             <div class="card-body collapse-section collapsed" id="section-config">
               <div class="mb-3">
-                <label class="form-label">Mode</label>
+                <label class="form-label" data-i18n="label_mode_select">Mode</label>
                 <div class="btn-group w-100" role="group" id="modeGroup">
                   <input type="radio" class="btn-check" name="proxyMode" id="mode-mock" value="mock" autocomplete="off" checked>
                   <label class="btn btn-outline-action" for="mode-mock"><i class="bi bi-shield-check me-1"></i>Mock</label>
@@ -577,19 +617,19 @@
                 </div>
               </div>
               <div class="mb-3">
-                <label class="form-label">Providers</label>
+                <label class="form-label" data-i18n="label_providers">Providers</label>
                 <div class="d-flex gap-3 flex-wrap" id="providerToggles">
                   <div class="form-check">
                     <input class="form-check-input provider-cb" type="checkbox" id="prov-opencode" value="opencode" checked>
-                    <label class="form-check-label" for="prov-opencode"><i class="bi bi-cloud-fill me-1"></i>OC-GO</label>
+                    <label class="form-check-label" for="prov-opencode"><i class="bi bi-cloud-fill me-1"></i><span data-i18n="provider_opencode">OC-GO</span></label>
                   </div>
                   <div class="form-check">
                     <input class="form-check-input provider-cb" type="checkbox" id="prov-freebuff" value="freebuff">
-                    <label class="form-check-label" for="prov-freebuff"><i class="bi bi-hdd me-1"></i>FREEBUFF</label>
+                    <label class="form-check-label" for="prov-freebuff"><i class="bi bi-hdd me-1"></i><span data-i18n="provider_freebuff">FREEBUFF</span></label>
                   </div>
                   <div class="form-check">
                     <input class="form-check-input provider-cb" type="checkbox" id="prov-agnes" value="agnes">
-                    <label class="form-check-label" for="prov-agnes"><i class="bi bi-stars me-1"></i>AGNES</label>
+                    <label class="form-check-label" for="prov-agnes"><i class="bi bi-stars me-1"></i><span data-i18n="provider_agnes">AGNES</span></label>
                   </div>
                   <!-- OpenRouter hidden for now
                   <div class="form-check">
@@ -599,24 +639,24 @@
                   -->
                   <div class="form-check">
                     <input class="form-check-input provider-cb" type="checkbox" id="prov-poll" value="poll">
-                    <label class="form-check-label" for="prov-poll"><i class="bi bi-globe me-1"></i>POLL</label>
+                    <label class="form-check-label" for="prov-poll"><i class="bi bi-globe me-1"></i><span data-i18n="provider_poll">POLL</span></label>
                   </div>
                   <div class="form-check">
                     <input class="form-check-input provider-cb" type="checkbox" id="prov-codestral" value="codestral">
-                    <label class="form-check-label" for="prov-codestral"><i class="bi bi-code-slash me-1"></i>CODESTRAL</label>
+                    <label class="form-check-label" for="prov-codestral"><i class="bi bi-code-slash me-1"></i><span data-i18n="provider_codestral">CODESTRAL</span></label>
                   </div>
                   <div class="form-check">
                     <input class="form-check-input provider-cb" type="checkbox" id="prov-bitnet" value="bitnet">
-                    <label class="form-check-label" for="prov-bitnet"><i class="bi bi-cpu me-1"></i>BITNET</label>
+                    <label class="form-check-label" for="prov-bitnet"><i class="bi bi-cpu me-1"></i><span data-i18n="provider_bitnet">BITNET</span></label>
                   </div>
                   <div class="form-check">
                     <input class="form-check-input provider-cb" type="checkbox" id="prov-featherless" value="featherless">
-                    <label class="form-check-label" for="prov-featherless"><i class="bi bi-feather me-1"></i>FEATHERLESS</label>
+                    <label class="form-check-label" for="prov-featherless"><i class="bi bi-feather me-1"></i><span data-i18n="provider_featherless">FEATHERLESS</span></label>
                   </div>
                 </div>
               </div>
               <div class="mb-3" id="agnesConfigRow" style="display:none">
-                <label class="form-label">Agnes API Key</label>
+                <label class="form-label" data-i18n="label_agnes_key">Agnes API Key</label>
                 <div class="d-flex gap-2">
                   <input type="text" class="form-control" id="agnesKeyInput" placeholder="cpk-..." style="font-size:0.85rem">
                   <button class="btn btn-sm btn-outline-action" onclick="saveAgnesKey()" style="white-space:nowrap"><i class="bi bi-check-lg"></i></button>
@@ -625,7 +665,7 @@
                 <div style="font-size:10px;color:rgba(255,255,255,0.4);margin-top:4px">Required for Agnes model. Key shown as <span id="agnesKeyStatus">not set</span></div>
               </div>
               <div class="mb-3" id="pollConfigRow" style="display:none">
-                <label class="form-label">Pollinations API Key</label>
+                <label class="form-label" data-i18n="label_poll_key">Pollinations API Key</label>
                 <div class="d-flex gap-2">
                   <input type="text" class="form-control" id="pollKeyInput" placeholder="sk_..." style="font-size:0.85rem">
                   <button class="btn btn-sm btn-outline-action" onclick="savePollKey()" style="white-space:nowrap"><i class="bi bi-check-lg"></i></button>
@@ -634,7 +674,7 @@
                 <div style="font-size:10px;color:rgba(255,255,255,0.4);margin-top:4px">Bypasses the 1-req/IP free-tier limit. Get a key at <a href="https://enter.pollinations.ai" target="_blank" style="color:rgba(120,200,255,0.8)">enter.pollinations.ai</a>. Key shown as <span id="pollKeyStatus">not set</span></div>
               </div>
               <div class="mb-3" id="codestralConfigRow" style="display:none">
-                <label class="form-label">Codestral API Key</label>
+                <label class="form-label" data-i18n="label_codestral_key">Codestral API Key</label>
                 <div class="d-flex gap-2">
                   <input type="text" class="form-control" id="codestralKeyInput" placeholder="codestral-key..." style="font-size:0.85rem">
                   <button class="btn btn-sm btn-outline-action" onclick="saveCodestralKey()" style="white-space:nowrap"><i class="bi bi-check-lg"></i></button>
@@ -643,7 +683,7 @@
                 <div style="font-size:10px;color:rgba(255,255,255,0.4);margin-top:4px">Required for Codestral models. Key shown as <span id="codestralKeyStatus">not set</span></div>
               </div>
               <div class="mb-3" id="featherlessConfigRow" style="display:none">
-                <label class="form-label">Featherless API Key</label>
+                <label class="form-label" data-i18n="label_featherless_key">Featherless API Key</label>
                 <div class="d-flex gap-2">
                   <input type="text" class="form-control" id="featherlessKeyInput" placeholder="sk-..." style="font-size:0.85rem">
                   <button class="btn btn-sm btn-outline-action" onclick="saveFeatherlessKey()" style="white-space:nowrap"><i class="bi bi-check-lg"></i></button>
@@ -664,19 +704,19 @@
               -->
 
               <div class="mb-3" id="supermavenSection">
-                <label class="form-label">
+                <label class="form-label" data-i18n="label_supermaven">
                   <i class="bi bi-lightning-charge-fill me-1" style="color:#ffd700"></i>Supermaven Code Completion
                 </label>
                 <div class="form-check mb-2">
                   <input class="form-check-input" type="checkbox" id="supermavenEnabled" onchange="toggleSupermaven()" style="accent-color:#32CD32;cursor:pointer">
-                  <label class="form-check-label" for="supermavenEnabled" style="color:rgba(255,255,255,0.9);cursor:pointer;font-size:12px">Use Supermaven for code completions</label>
+                  <label class="form-check-label" for="supermavenEnabled" style="color:rgba(255,255,255,0.9);cursor:pointer;font-size:12px" data-i18n="supermaven_enable">Use Supermaven for code completions</label>
                 </div>
                 <div id="supermavenStatus" style="font-size:10px;color:rgba(255,255,255,0.4);margin-bottom:8px">
                   <span id="supermavenStatusDot" class="status-indicator status-offline" style="width:8px;height:8px"></span>
                   <span id="supermavenStatusText">Not initialized</span>
                 </div>
                 <div id="supermavenModelRow" style="display:none">
-                  <label class="form-label" style="font-size:11px;color:rgba(255,255,255,0.7)">Fallback Model (when Supermaven unavailable)</label>
+                  <label class="form-label" style="font-size:11px;color:rgba(255,255,255,0.7)" data-i18n="label_supermaven_fallback">Fallback Model (when Supermaven unavailable)</label>
                   <div class="test-chat-model-wrap mb-2" style="width:100%;max-width:none">
                     <label class="test-chat-model-label" id="completionsModelLabel" tabindex="0">— none —</label>
                     <select class="test-chat-model-select" id="completionsModelSelect" onchange="saveCompletionsModel()">
@@ -697,11 +737,11 @@
           <div class="card-content">
             <div class="card-header collapsible-header" onclick="toggleSection('github-settings')">
               <i class="bi bi-chevron-down toggle-icon collapsed me-1"></i>
-              <i class="bi bi-github me-2"></i>GitHub Settings
+              <i class="bi bi-github me-2"></i><span data-i18n="section_github_settings">GitHub Settings</span>
             </div>
             <div class="card-body collapse-section collapsed" id="section-github-settings">
               <div class="mb-3">
-                <label class="form-label">SKU Mode</label>
+                <label class="form-label" data-i18n="label_sku_mode">SKU Mode</label>
                 <select class="form-select form-select-sm" id="ghSkuSelect" onchange="saveGithubSettings()">
                   <option value="enterprise">Enterprise</option>
                   <option value="max">Max</option>
@@ -712,11 +752,11 @@
                 <div style="font-size:10px;color:rgba(255,255,255,0.4);margin-top:4px">Copilot plan returned to clients. Enterprise/Max/Business use <code>quota_snapshots</code>, Free/Pro use <code>limited_user_quotas</code>.</div>
               </div>
               <div class="mb-2">
-                <label class="form-label">Fake Username</label>
+                <label class="form-label" data-i18n="label_fake_username">Fake Username</label>
                 <input type="text" class="form-control form-control-sm" id="ghUsernameInput" placeholder="fake-github-user" onchange="saveGithubSettings()" style="font-size:0.85rem">
               </div>
               <div class="mb-2">
-                <label class="form-label">Fake Display Name</label>
+                <label class="form-label" data-i18n="label_fake_display_name">Fake Display Name</label>
                 <input type="text" class="form-control form-control-sm" id="ghDisplayNameInput" placeholder="Fake Github User" onchange="saveGithubSettings()" style="font-size:0.85rem">
               </div>
             </div>
@@ -728,13 +768,13 @@
           <div class="card-content">
             <div class="card-header collapsible-header" onclick="toggleSection('actions')">
               <i class="bi bi-chevron-down toggle-icon collapsed me-1"></i>
-              <i class="bi bi-lightning-charge-fill me-2"></i>Quick Actions
+              <i class="bi bi-lightning-charge-fill me-2"></i><span data-i18n="section_quick_actions">Quick Actions</span>
             </div>
             <div class="card-body collapse-section collapsed" id="section-actions">
               <div class="d-grid gap-2">
-                <button class="btn btn-outline-action" onclick="checkHealth()" style="justify-content: flex-start !important"><i class="bi bi-activity fs-5 me-2"></i>Check Health</button>
-                <button class="btn btn-outline-action" onclick="refreshModels()" style="justify-content: flex-start !important"><i class="bi bi-arrow-clockwise fs-5 me-2"></i>Refresh Models</button>
-                <button class="btn btn-outline-action" id="restartBtn" onclick="restartProxy()" style="justify-content: flex-start !important"><i class="bi bi-arrow-counterclockwise fs-5 me-2"></i>Restart</button>
+                <button class="btn btn-outline-action" onclick="checkHealth()" style="justify-content: flex-start !important"><i class="bi bi-activity fs-5 me-2"></i><span data-i18n="btn_check_health">Check Health</span></button>
+                <button class="btn btn-outline-action" onclick="refreshModels()" style="justify-content: flex-start !important"><i class="bi bi-arrow-clockwise fs-5 me-2"></i><span data-i18n="btn_refresh_models">Refresh Models</span></button>
+                <button class="btn btn-outline-action" id="restartBtn" onclick="restartProxy()" style="justify-content: flex-start !important"><i class="bi bi-arrow-counterclockwise fs-5 me-2"></i><span data-i18n="btn_restart">Restart</span></button>
               </div>
             </div>
           </div>
@@ -745,37 +785,40 @@
           <div class="card-content">
             <div class="card-header collapsible-header" onclick="toggleSection('env')">
               <i class="bi bi-chevron-down toggle-icon collapsed me-1"></i>
-              <i class="bi bi-info-circle-fill me-2"></i>Environment
+              <i class="bi bi-info-circle-fill me-2"></i><span data-i18n="section_environment">Environment</span>
             </div>
-            <div class="card-body collapse-section collapsed" id="section-env" style="font-size:0.75rem">
+            <div class="card-body collapse-section collapsed env-body" id="section-env">
+              <div class="row">
+                <div class="col-6 mb-2"><small class="text-muted" data-i18n="label_runtime">Runtime</small><div class="fw-medium" id="nodeVersion">-</div></div>
+                <div class="col-6 mb-2"><small class="text-muted" data-i18n="label_port">Port</small><div class="fw-medium" id="portInfo">-</div></div>
+              </div>
+              <div class="row">
+                <div class="col-6 mb-2"><small class="text-muted" data-i18n="label_started_at">Started At</small><div class="fw-medium" id="startedAt">-</div></div>
+                <div class="col-6 mb-2"><small class="text-muted" data-i18n="label_platform">Platform</small><div class="fw-medium" id="platform">-</div></div>
+              </div>
               <div class="mb-2">
-                <label class="form-label" style="font-size:0.7rem;color:rgba(255,255,255,0.5);margin-bottom:2px">Working Directory</label>
+                <label class="form-label" data-i18n="label_working_directory">Working Directory</label>
                 <div class="input-group" style="font-size:0.75rem">
-                  <input type="text" class="form-control form-control-sm" id="workDir" value="-" readonly style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.1);color:rgba(255,255,255,0.8);cursor:text;padding:0.2rem 0.5rem" onclick="this.select()">
-                  <button class="btn btn-sm" onclick="navigator.clipboard.writeText(document.getElementById('workDir').value);showToast('Copied!')" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);color:rgba(255,255,255,0.5);border-left:none" title="Copy"><i class="bi bi-clipboard"></i></button>
+                  <input type="text" class="form-control form-control-sm" id="workDirInput" value="-" readonly style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.1);color:rgba(255,255,255,0.8);cursor:text;padding:0.2rem 0.5rem" onclick="this.select()">
+                  <button class="btn btn-sm" onclick="navigator.clipboard.writeText(document.getElementById('workDirInput').value);showToast('Copied!')" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);color:rgba(255,255,255,0.5);border-left:none" title="Copy"><i class="bi bi-clipboard"></i></button>
                 </div>
               </div>
-              <div class="mb-1"><small class="text-muted" style="font-size:0.65rem">Platform</small><div class="fw-medium" id="platform" style="font-size:0.75rem">-</div></div>
-              <div class="mb-1"><small class="text-muted" style="font-size:0.65rem">Runtime</small><div class="fw-medium" id="nodeVersion" style="font-size:0.75rem">-</div></div>
-              <div class="mb-2 mt-2">
-                <label class="form-label" style="font-size:0.7rem;color:rgba(255,255,255,0.5);margin-bottom:2px">Wallpaper</label>
+              <div class="mb-2">
+                <label class="form-label" data-i18n="label_wallpaper">Wallpaper</label>
                 <div class="btn-group w-100" role="group" id="wallpaperGroup">
-                  <input type="radio" class="btn-check" name="wallpaper" id="wp-none" value="none" autocomplete="off" checked>
-                  <label class="btn btn-outline-action" for="wp-none" style="font-size:0.65rem">None</label>
-                  <input type="radio" class="btn-check" name="wallpaper" id="wp-bing" value="bing" autocomplete="off">
-                  <label class="btn btn-outline-action" for="wp-bing" style="font-size:0.65rem">Bing</label>
-                  <input type="radio" class="btn-check" name="wallpaper" id="wp-wallhaven" value="wallhaven" autocomplete="off">
-                  <label class="btn btn-outline-action" for="wp-wallhaven" style="font-size:0.65rem">Wallhaven</label>
-                  <input type="radio" class="btn-check" name="wallpaper" id="wp-ai" value="ai" autocomplete="off" disabled>
-                  <label class="btn btn-outline-action" for="wp-ai" style="opacity:0.4;cursor:not-allowed;font-size:0.65rem" title="Requires an Agnes API key">AI</label>
+                  <button class="btn btn-outline-action btn-wp" data-wp="none" onclick="setWallpaper('none')" data-i18n="wp_none">None</button>
+                  <button class="btn btn-outline-action btn-wp" data-wp="bing" onclick="setWallpaper('bing')" data-i18n="wp_bing">Bing</button>
+                  <button class="btn btn-outline-action btn-wp" data-wp="wallhaven" onclick="setWallpaper('wallhaven')" data-i18n="wp_wallhaven">Wallhaven</button>
+                  <button class="btn btn-outline-action btn-wp" data-wp="ai" onclick="setWallpaper('ai')" disabled style="opacity:0.4;cursor:not-allowed" title="Requires an Agnes API key" data-i18n="wp_ai">AI</button>
                 </div>
               </div>
               <div class="mb-1" id="wallpaperPromptRow" style="display:none">
-                <small class="text-muted" style="font-size:0.65rem">Prompt</small>
+                <label class="form-label" style="font-size:0.65rem;color:rgba(255,255,255,0.5);margin-bottom:2px" data-i18n="wp_prompt">Prompt</label>
                 <div class="d-flex gap-1 mt-1">
-                  <input type="text" class="form-control form-control-sm" id="wallpaperPromptInput" placeholder="Describe the image..." style="font-size:0.7rem;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.1);color:rgba(255,255,255,0.8);padding:0.15rem 0.4rem;flex:1">
-                  <button class="btn btn-sm" onclick="useDefaultWallpaperPrompt()" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);color:rgba(255,255,255,0.4);font-size:0.6rem;white-space:nowrap" title="Load default prompt">Default</button>
-                  <button class="btn btn-sm" onclick="saveWallpaperPrompt()" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);color:rgba(255,255,255,0.5);border-left:none;font-size:0.65rem;white-space:nowrap" title="Save prompt">Save</button>
+                  <input type="text" class="form-control form-control-sm" id="wallpaperPromptInput" placeholder="Describe the image…" style="font-size:0.7rem;background:rgba(255,255,255,0.12);border-color:rgba(255,255,255,0.2);color:white">
+                   <button class="btn btn-outline-action" style="font-size:0.6rem;padding:0.2rem 0.5rem;white-space:nowrap" id="wallpaperDefaultBtn" data-i18n="wp_default">Default</button>
+                  <button class="btn btn-success" style="font-size:0.65rem;padding:0.2rem 0.5rem;white-space:nowrap" id="wallpaperGenerateBtn" data-i18n="wp_save">Save</button>
+
                 </div>
               </div>
             </div>
@@ -798,7 +841,7 @@
                     <label class="form-check-label" for="testChatStreamToggle" style="font-size:10px;cursor:pointer;color:rgba(255,255,255,0.6)">Stream</label>
                   </div>
                 </div>
-                <button class="test-chat-clear" id="testChatClearBtn" onclick="clearTestChat()" title="Clear conversation"><i class="bi bi-trash3"></i></button>
+                <button class="test-chat-clear" id="testChatClearBtn" title="Clear conversation"><i class="bi bi-trash3"></i></button>
               </div>
             </div>
             <div class="test-chat-body">
@@ -815,7 +858,7 @@
               </div>
               <div class="test-chat-input-row">
                 <input type="text" class="test-chat-input" id="testChatInput" placeholder="Type a message..." maxlength="2000" autocomplete="off">
-                <button class="test-chat-send" id="testChatSendBtn" onclick="sendTestChat()"><i class="bi bi-send-fill"></i> Send</button>
+                <button class="test-chat-send" id="testChatSendBtn"><i class="bi bi-send-fill"></i> Send</button>
               </div>
             </div>
           </div>
@@ -827,6 +870,7 @@
 </div>
 
   <div class="toast-container" id="toastContainer"></div>
+
 
     <!-- UMANS Account/Keys Modal -->
   <div class="modal fade" id="keysModal" tabindex="-1">
@@ -1342,11 +1386,154 @@
       if (card) card.style.display = _activeProviders.includes('opencode') ? '' : 'none';
     }
 
+    // ── i18n runtime ──
+    function t(key, fallback) {
+      if (window.__i18n && Object.prototype.hasOwnProperty.call(window.__i18n, key)) return window.__i18n[key];
+      return fallback !== undefined ? fallback : key;
+    }
+    function tHtml(key, fallback) {
+      if (window.__i18n && Object.prototype.hasOwnProperty.call(window.__i18n, key)) return window.__i18n[key];
+      return fallback !== undefined ? fallback : key;
+    }
+    function applyI18nToDocument() {
+      const dict = window.__i18n || {};
+      document.querySelectorAll('[data-i18n]').forEach(el => {
+        const key = el.getAttribute('data-i18n');
+        if (!Object.prototype.hasOwnProperty.call(dict, key)) return;
+        const isTpl = el.hasAttribute('data-i18n-template');
+        if (isTpl && key === 'overlay_translating_sub') {
+          el.textContent = dict[key].replace('{lang}', _currentLocaleNative || _currentLocale || '');
+        } else {
+          el.textContent = dict[key];
+        }
+      });
+      document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
+        const key = el.getAttribute('data-i18n-placeholder');
+        if (Object.prototype.hasOwnProperty.call(dict, key)) el.setAttribute('placeholder', dict[key]);
+      });
+      document.querySelectorAll('[data-i18n-title]').forEach(el => {
+        const key = el.getAttribute('data-i18n-title');
+        if (Object.prototype.hasOwnProperty.call(dict, key)) el.setAttribute('title', dict[key]);
+      });
+    }
+
+    let _currentLocale = 'en';
+    let _currentLocaleNative = 'English';
+    let _hasApiKey = false;
+    let _i18nNavigated = false;
+    const LOCALE_NATIVE_NAMES = {
+      en: 'English', de: 'Deutsch', fr: 'Français', es: 'Español', it: 'Italiano',
+      pt: 'Português', nl: 'Nederlands', pl: 'Polski', ru: 'Русский', uk: 'Українська',
+      tr: 'Türkçe', ja: '日本語', ko: '한국어', zh: '中文', ar: 'العربية',
+      cs: 'Čeština', ro: 'Română', hu: 'Magyar', sv: 'Svenska', da: 'Dansk',
+      fi: 'Suomi', no: 'Norsk', el: 'Ελληνικά', he: 'עברית', th: 'ไทย',
+      vi: 'Tiếng Việt', id: 'Bahasa Indonesia', hi: 'हिन्दी',
+    };
+    function getNativeName(locale) { return LOCALE_NATIVE_NAMES[locale] || (locale || '').toUpperCase(); }
+    function detectDashboardLocale() {
+      try {
+        const override = (new URLSearchParams(location.search).get('locale') || '').toLowerCase().split(/[-_]/)[0];
+        if (override) return override;
+        const stored = (localStorage.getItem('gc2xy_preferredLocale') || '').toLowerCase().split(/[-_]/)[0];
+        if (stored) return stored;
+        const navs = (navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language || 'en']);
+        for (const raw of navs) { const tag = (raw || '').toLowerCase().split(/[-_]/)[0]; if (tag) return tag; }
+      } catch (e) {}
+      return 'en';
+    }
+    async function fetchI18nConfig() {
+      try { const r = await fetch('/api/i18n?config=1&nav=' + encodeURIComponent(detectDashboardLocale())); if (!r.ok) return {}; const d = await r.json(); _hasApiKey = !!d.has_key; return d; } catch (e) { return {}; }
+    }
+    async function fetchTranslations(locale, withGenerate) {
+      const u = new URL('/api/i18n', location.origin);
+      u.searchParams.set('locale', locale);
+      if (withGenerate) u.searchParams.set('generate', '1');
+      const resp = await fetch(u.toString());
+      if (!resp.ok) throw new Error('i18n http ' + resp.status);
+      return await resp.json();
+    }
+    function showTranslateOverlay(subtitle) {
+      const ov = document.getElementById('translateOverlay'); if (!ov) return;
+      const sub = ov.querySelector('.subtitle'); if (sub && subtitle) sub.textContent = subtitle;
+      ov.classList.add('show');
+    }
+    function hideTranslateOverlay() {
+      const ov = document.getElementById('translateOverlay'); if (ov) ov.classList.remove('show');
+    }
+    let _translateCancelled = false;
+    function bindTranslateCancel() {
+      const btn = document.getElementById('translateCancelBtn');
+      if (!btn) return;
+      btn.onclick = () => { _translateCancelled = true; hideTranslateOverlay(); };
+    }
+    async function applyTranslations(bundle, force) {
+      if (_translateCancelled && !force) return;
+      window.__i18n = bundle.strings || {};
+      _currentLocale = bundle.locale || 'en';
+      _currentLocaleNative = getNativeName(_currentLocale);
+      applyI18nToDocument();
+      if (typeof renderModels === 'function') try { renderModels(); } catch (e) {}
+      if (typeof renderOpencodeStats === 'function') try { renderOpencodeStats(); } catch (e) {}
+      if (typeof updateStats === 'function') try { updateStats(); } catch (e) {}
+      if (typeof populateTestChatModelSelect === 'function') try { populateTestChatModelSelect(); } catch (e) {}
+      setTimeout(initLiquidGlass, 50);
+    }
+    async function enableAutotranslate(forcedLocale) {
+      const locale = forcedLocale || detectDashboardLocale();
+      if (locale === 'en' || !_hasApiKey) {
+        if (locale !== 'en' && !_hasApiKey) {
+          showToast(t('toast_translation_failed', 'Translation failed: {error}').replace('{error}', 'No UMANS API key'), 'warning');
+        }
+        return;
+      }
+      _currentLocale = locale;
+      _currentLocaleNative = getNativeName(locale);
+      _translateCancelled = false;
+      const subtitleTpl = t('overlay_translating_sub', 'Translating UI to {lang}...');
+      showTranslateOverlay(subtitleTpl.replace('{lang}', _currentLocaleNative));
+      try {
+        let bundle = await fetchTranslations(locale, false);
+        if (bundle.source !== 'umans-flash' && bundle.source !== 'builtin' && locale !== 'en') {
+          bundle = await fetchTranslations(locale, true);
+        }
+        if (!_translateCancelled) {
+          await applyTranslations(bundle);
+          localStorage.setItem('gc2xy_preferredLocale', locale);
+          const cb = document.getElementById('autotranslateCheckbox');
+          if (cb && !cb.checked) cb.checked = true;
+        }
+      } catch (e) {
+        console.error('[i18n] failed', e);
+        showToast(t('toast_translation_failed', 'Translation failed: {error}').replace('{error}', e.message), 'danger');
+      } finally {
+        hideTranslateOverlay();
+      }
+    }
+    function disableAutotranslate() {
+      localStorage.removeItem('gc2xy_preferredLocale');
+      location.reload();
+    }
+
+    // ── Wallpaper (button group) ──
     let _embeddedWpMode = document.body?.dataset?.wpMode || '';
     let _wallpaperDataUri = '';
+    function setWallpaperActive(source) {
+      document.querySelectorAll('.btn-wp').forEach(b => b.classList.toggle('active', b.dataset.wp === source));
+    }
+    async function setWallpaper(source) {
+      if (source === 'ai' && !_hasAgnesKey) {
+        showToast(t('toast_wallpaper_error', 'Wallpaper error: {error}').replace('{error}', 'AI wallpaper requires an Agnes API key'), 'warning');
+        applyWallpaper('none');
+        return;
+      }
+      applyWallpaper(source);
+      const prompt = source === 'ai' ? document.getElementById('wallpaperPromptInput').value.trim() : undefined;
+      if (source === 'ai' && !prompt) { useDefaultWallpaperPrompt(); }
+      wsSend('setWallpaper', { source, prompt: source === 'ai' ? (prompt || DEFAULT_WALLPAPER_PROMPT) : undefined });
+      if (source === 'ai') showToast(t('wp_generating', 'Generating...'), 'info');
+    }
     function applyWallpaper(source) {
-      const radio = document.querySelector('.btn-check[name="wallpaper"][value="' + source + '"]');
-      if (radio) radio.checked = true;
+      setWallpaperActive(source);
       localStorage.setItem('gc2xy_wallpaper', source);
       const pRow = document.getElementById('wallpaperPromptRow');
       if (pRow) pRow.style.display = source === 'ai' ? '' : 'none';
@@ -1360,22 +1547,16 @@
       }
     }
 
-    // ── AI Wallpaper Button Gating ──
     let _hasAgnesKey = false;
     function updateAiWallpaperButton() {
-      const aiRadio = document.getElementById('wp-ai');
-      const aiLabel = document.querySelector('label[for="wp-ai"]');
-      if (!aiRadio) return;
-      aiRadio.disabled = !_hasAgnesKey;
-      if (aiLabel) {
-        aiLabel.style.opacity = _hasAgnesKey ? '1' : '0.4';
-        aiLabel.style.cursor = _hasAgnesKey ? '' : 'not-allowed';
-        aiLabel.title = _hasAgnesKey ? '' : 'Requires an Agnes API key';
-      }
-      if (!_hasAgnesKey && aiRadio.checked) {
-        aiRadio.checked = false;
-        const noneRadio = document.getElementById('wp-none');
-        if (noneRadio) noneRadio.checked = true;
+      const aiBtn = document.querySelector('.btn-wp[data-wp="ai"]');
+      if (!aiBtn) return;
+      aiBtn.disabled = !_hasAgnesKey;
+      aiBtn.style.opacity = _hasAgnesKey ? '' : '0.4';
+      aiBtn.style.cursor = _hasAgnesKey ? '' : 'not-allowed';
+      aiBtn.title = _hasAgnesKey ? '' : 'Requires an Agnes API key';
+      const isAiActive = aiBtn.classList.contains('active');
+      if (!_hasAgnesKey && isAiActive) {
         applyWallpaper('none');
       }
       const promptRow = document.getElementById('wallpaperPromptRow');
@@ -1384,13 +1565,8 @@
 
     function saveWallpaperPrompt() {
       const val = document.getElementById('wallpaperPromptInput').value.trim();
-      if (!val) { showToast('Prompt is required', 'warning'); return; }
-      const aiRadio = document.getElementById('wp-ai');
-      if (aiRadio) aiRadio.checked = true;
-      applyWallpaper('ai');
-      localStorage.setItem('gc2xy_wallpaper', 'ai');
-      wsSend('setWallpaper', { source: 'ai', prompt: val });
-      showToast('Generating...', 'info');
+      if (!val) { showToast(t('toast_wallpaper_error', 'Wallpaper error: {error}').replace('{error}', 'Prompt is required'), 'warning'); return; }
+      setWallpaper('ai');
     }
 
     const DEFAULT_WALLPAPER_PROMPT = 'A breathtaking sci-fi landscape with glowing neon structures floating above a misty alien ocean, cinematic lighting, 8K, hyper-detailed, ethereal atmosphere';
@@ -1411,7 +1587,7 @@
     }
 
     function updateGenButtonLabel(kind, progress) {
-      const saveBtn = document.querySelector('#wallpaperPromptRow button[onclick="saveWallpaperPrompt()"]');
+      const saveBtn = document.getElementById('wallpaperGenerateBtn');
       if (!saveBtn) return;
       if (progress >= 100) {
         saveBtn.textContent = 'Save';
@@ -1542,6 +1718,16 @@
       if (h.runtime) document.getElementById('nodeVersion').textContent = h.runtime;
       if (h.platform) document.getElementById('platform').textContent = h.platform;
       if (h.status === 'ok' || h.status === 'degraded') setStatusOnline();
+    }
+    function applyStatus(s) {
+      if (s.runtime) document.getElementById('nodeVersion').textContent = s.runtime;
+      if (s.port) document.getElementById('portInfo').textContent = s.port;
+      if (s.startedAt) document.getElementById('startedAt').textContent = new Date(s.startedAt).toLocaleString();
+      if (s.workDir) {
+        document.getElementById('workDirInput').value = s.workDir;
+        const wd = document.getElementById('workDir');
+        if (wd) wd.textContent = s.workDir;
+      }
     }
 
     // ── Models ──
@@ -2478,7 +2664,29 @@
     }
 
     // ── Event Listeners ──
-    document.addEventListener('DOMContentLoaded', () => {
+    document.addEventListener('DOMContentLoaded', async () => {
+      bindTranslateCancel();
+      const cfg = await fetchI18nConfig();
+      _hasApiKey = !!cfg.has_key;
+      const forcedLocale = cfg.forced_locale || null;
+      const atCb = document.getElementById('autotranslateCheckbox');
+      const stored = localStorage.getItem('gc2xy_preferredLocale');
+      if (forcedLocale && forcedLocale !== 'en') {
+        if (atCb) {
+          atCb.checked = true; atCb.disabled = true;
+          const label = atCb.closest('label');
+          if (label && !label.querySelector('.forced-hint')) {
+            const hint = document.createElement('span');
+            hint.className = 'forced-hint';
+            hint.textContent = t('forced_locale_hint', '(forced: {locale})').replace('{locale}', forcedLocale);
+            label.appendChild(hint);
+          }
+        }
+        setTimeout(() => enableAutotranslate(forcedLocale), 50);
+      } else if (stored) {
+        if (atCb) atCb.checked = true;
+        setTimeout(() => enableAutotranslate(), 50);
+      }
       loadInitialData().then(() => {
         connectWs();
         initLiquidGlass();
@@ -2516,22 +2724,13 @@
         }
       });
 
-      document.getElementById('wallpaperGroup').addEventListener('change', function(e) {
-        if (e.target.matches('.btn-check')) {
-          const source = e.target.value;
-          if (source === 'ai' && !_hasAgnesKey) {
-            e.target.checked = false;
-            const noneRadio = document.getElementById('wp-none');
-            if (noneRadio) noneRadio.checked = true;
-            applyWallpaper('none');
-            return;
-          }
-          applyWallpaper(source);
-          localStorage.setItem('gc2xy_wallpaper', source);
-          const prompt = document.getElementById('wallpaperPromptInput').value.trim();
-          wsSend('setWallpaper', { source, prompt });
-        }
-      });
+      // Autotranslate toggle
+      if (atCb) {
+        atCb.addEventListener('change', function() {
+          if (atCb.checked) enableAutotranslate();
+          else disableAutotranslate();
+        });
+      }
 
       let resizeTimer;
       window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(initLiquidGlass, 150); });
@@ -2553,6 +2752,22 @@
       // Safety net: re-populate after all async loads settle
       setTimeout(() => populateTestChatModelSelect(), 1000);
       setTimeout(() => populateTestChatModelSelect(), 3000);
+
+      // UMANS key/account modal bindings (functions referenced by inline handlers must be defined before DOMContentLoaded)
+      const umansAccountTopLabel = document.getElementById('umansAccountTopLabel');
+      if (umansAccountTopLabel) umansAccountTopLabel.onclick = openKeysModal;
+      const umansKeysTopLabel = document.getElementById('umansKeysTopLabel');
+      if (umansKeysTopLabel) umansKeysTopLabel.onclick = openKeysModal;
+      const addKeyBtn = document.getElementById('addKeyBtn');
+      if (addKeyBtn) addKeyBtn.onclick = function(e) { e.stopPropagation(); openKeysModal(); };
+      const wallpaperDefaultBtn = document.getElementById('wallpaperDefaultBtn');
+      if (wallpaperDefaultBtn) wallpaperDefaultBtn.onclick = useDefaultWallpaperPrompt;
+      const wallpaperGenerateBtn = document.getElementById('wallpaperGenerateBtn');
+      if (wallpaperGenerateBtn) wallpaperGenerateBtn.onclick = saveWallpaperPrompt;
+      const testChatSendBtn = document.getElementById('testChatSendBtn');
+      if (testChatSendBtn) testChatSendBtn.onclick = sendTestChat;
+      const testChatClearBtn = document.getElementById('testChatClearBtn');
+      if (testChatClearBtn) testChatClearBtn.onclick = clearTestChat;
     });
 
     // ── Test Chat ──
