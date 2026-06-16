@@ -64,12 +64,12 @@
     .collapsible-header .toggle-icon.collapsed { transform: rotate(-90deg); }
     .collapse-section { transition: all 0.3s ease; }
     .collapse-section.collapsed { display: none; }
-    .model-tag { display: inline-flex; align-items: center; gap: 3px; padding: 2px 7px; border-radius: 4px; cursor: pointer; border: 1px solid rgba(255,255,255,0.12); background: rgba(255,255,255,0.03); opacity: 0.5; user-select: none; transition: all 0.15s ease; margin: 1.5px; }
+    .model-tag { display: inline-flex; align-items: center; gap: 3px; padding: 2px 7px; border-radius: 4px; cursor: pointer; border: 1px solid rgba(255,255,255,0.12); background: rgba(255,255,255,0.03); opacity: 0.5; user-select: none; transition: all 0.15s ease; margin: 1.5px; overflow: hidden; max-width: 100%; }
     .model-tag.enabled { border-color: rgba(50,205,50,0.3); background: rgba(50,205,50,0.1); opacity: 1; }
     .model-tag:hover { opacity: 0.8; }
     .model-tag.enabled:hover { opacity: 1; }
-    .model-tag-name { font-size: 12px; font-weight: 600; color: #fff; white-space: nowrap; cursor: text; border-bottom: 1px dotted rgba(255,255,255,0.15); }
-    .model-tag-id { font-size: 8px; color: #fff; white-space: nowrap; opacity: 0.6; }
+    .model-tag-name { font-size: 10px; font-weight: 600; color: #fff; white-space: nowrap; cursor: text; border-bottom: 1px dotted rgba(255,255,255,0.15); overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+    .model-tag-id { font-size: 8px; color: #fff; white-space: nowrap; opacity: 0.6; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
     .model-tag input[type="checkbox"] { pointer-events: none; transform: scale(0.75); margin: 0; }
     .model-family-group { margin-bottom: 6px; }
     .model-family-group.provider-disabled { position: relative; }
@@ -78,6 +78,10 @@
     .model-family-header { font-size: 12px; font-weight: 600; color: #fff; padding: 2px 0 1px 0; border-bottom: 1px solid rgba(255,255,255,0.05); margin-bottom: 2px; display: flex; align-items: center; }
     .model-family-header .disabled-tag { font-size: 10px; color: rgba(255,255,255,0.35); margin-left: 4px; }
     .model-family-header .badge { font-size: 10px; margin-left: 6px; padding: 0 5px; line-height: 1.4; }
+    .history-scroll { max-height:75vh; overflow-y:auto; width:100%; padding:0 0.75rem; }
+    .history-scroll::-webkit-scrollbar { width: 5px; }
+    .history-scroll::-webkit-scrollbar-track { background:rgba(255,255,255,0.03); border-radius:2px; }
+    .history-scroll::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.15); border-radius:2px; }
     .mode-mock { color: #32CD32; }
     .mode-hybrid { color: #ffd700; }
     .mode-proxy { color: #00bfff; }
@@ -507,7 +511,7 @@
 
 
     <div class="row">
-       <div class="col-lg-8">
+      <div class="col-lg-6">
         <div class="card" data-glass data-section="models">
           <div class="glass-panel"></div>
           <div class="card-content">
@@ -525,7 +529,24 @@
         </div>
       </div>
 
-      <div class="col-lg-4">
+      <div class="col-lg-3">
+        <div class="card h-100" data-glass data-section="usage90">
+          <div class="glass-panel"></div>
+          <div class="card-content h-100 d-flex flex-column">
+            <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;padding-right:1.25rem">
+              <span style="flex:0 0 auto;text-align:left;padding-right:1.5rem"><i class="bi bi-clock-history me-2"></i><span data-i18n="section_usage_history">Usage</span></span>
+              <span style="flex:1 1 0;text-align:center;font-size:11px;font-weight:400;color:rgba(255,255,255,0.6);white-space:nowrap;padding-right:0.5rem"><span style="font-weight:600;color:#fff" id="umans90TotalReqs">0</span></span>
+              <span style="flex:1 1 0;text-align:right;font-size:11px;font-weight:400;color:rgba(255,255,255,0.6);white-space:nowrap;padding-left:0.5rem;display:flex;justify-content:space-between"><span style="flex:1;font-weight:600;color:#fff;text-align:left" id="umans90TotalTokens">0</span><span style="flex:1;color:rgba(255,255,255,0.45);text-align:right" id="umans90TotalCachePct">(0%)</span></span>
+            </div>
+            <div class="card-body p-0 flex-grow-1" style="min-height:0">
+              <div class="history-scroll" id="umansUsageHistoryContainer"><div style="text-align:center;padding:20px;color:rgba(255,255,255,0.3);font-size:12px" class="fw-medium">No usage data yet</div></div>
+            </div>
+            <div id="umansUsagePagination" class="d-flex justify-content-center align-items-center py-1" style="border-top:1px solid rgba(255,255,255,0.08)"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-lg-3">
         <div class="card" data-glass data-section="config">
           <div class="glass-panel"></div>
           <div class="card-content">
@@ -728,11 +749,12 @@
               </div>
               <div class="mb-1" id="wallpaperPromptRow" style="display:none">
                 <label class="form-label" style="font-size:0.65rem;color:rgba(255,255,255,0.5);margin-bottom:2px" data-i18n="wp_prompt">AI (FreeGen) Prompt</label>
-                <div class="d-flex gap-1 mt-1">
-                  <input type="text" class="form-control form-control-sm" id="wallpaperPromptInput" placeholder="Describe the image…" style="font-size:0.7rem;background:rgba(255,255,255,0.12);border-color:rgba(255,255,255,0.2);color:white">
-                   <button class="btn btn-outline-action" style="font-size:0.6rem;padding:0.2rem 0.5rem;white-space:nowrap" id="wallpaperDefaultBtn" data-i18n="wp_default">Default</button>
-                  <button class="btn btn-success" style="font-size:0.65rem;padding:0.2rem 0.5rem;white-space:nowrap" id="wallpaperGenerateBtn" data-i18n="wp_save">Generate</button>
-
+                <div class="d-flex flex-column gap-1 mt-1">
+                  <textarea class="form-control form-control-sm" id="wallpaperPromptInput" placeholder="Describe the image…" rows="3" style="font-size:0.7rem;background:rgba(255,255,255,0.12);border-color:rgba(255,255,255,0.2);color:white;resize:vertical"></textarea>
+                   <div class="d-flex gap-1">
+                     <button class="btn btn-outline-action flex-fill" style="font-size:0.6rem;padding:0.2rem 0.5rem;white-space:nowrap" id="wallpaperDefaultBtn" data-i18n="wp_default">Default</button>
+                     <button class="btn btn-success" style="font-size:0.65rem;padding:0.2rem 0.5rem;white-space:nowrap" id="wallpaperGenerateBtn" data-i18n="wp_save">Generate</button>
+                   </div>
                 </div>
                 <div id="wallpaperStatus" style="font-size:0.65rem;color:rgba(255,255,255,0.55);min-height:1rem;margin-top:2px"></div>
               </div>
@@ -1152,7 +1174,10 @@
           if (msg.data !== undefined) { _umansState.usage = msg.data; updateUmansTopBar(); }
           break;
         case 'umansUsageHistory':
-          if (msg.data !== undefined) { _umansState.usageHistory = msg.data; updateUmansTopBar(); }
+          if (msg.data !== undefined) { _umansState.usageHistory = msg.data; renderUmansUsageHistory(); updateUmansTopBar(); }
+          break;
+        case 'umans90Days':
+          if (msg.data !== undefined) { _umansState.days90 = msg.data; }
           break;
         case 'umansConcurrency':
           if (msg.data !== undefined) { _umansState.concurrency = msg.data; if (msg.data && msg.data.user_id) _umansUserId = msg.data.user_id; updateUmansAccountBadge(); }
@@ -1202,6 +1227,7 @@
       if (data.umans) { _umansState = { ..._umansState, ...data.umans }; if (_umansState.userId) _umansUserId = _umansState.userId; updateUmansAccountBadge(); }
       if (data.umansUsage !== undefined) { _umansState.usage = data.umansUsage; updateUmansTopBar(); }
       if (data.umansUsageHistory !== undefined) { _umansState.usageHistory = data.umansUsageHistory; updateUmansTopBar(); }
+      if (data.umans90Days !== undefined) { _umansState.days90 = data.umans90Days; }
       if (data.umansUserId !== undefined) { _umansUserId = data.umansUserId; updateUmansAccountBadge(); }
       if (data.umansConcurrency !== undefined) { _umansState.concurrency = data.umansConcurrency; if (_umansState.concurrency && _umansState.concurrency.user_id) _umansUserId = _umansState.concurrency.user_id; updateUmansAccountBadge(); }
     }
@@ -1257,11 +1283,13 @@
       if (data.umans) { _umansState = { ..._umansState, ...data.umans }; if (_umansState.userId) _umansUserId = _umansState.userId; updateUmansAccountBadge(); }
       if (data.umansUsage !== undefined) { _umansState.usage = data.umansUsage; updateUmansTopBar(); }
       if (data.umansUsageHistory !== undefined) { _umansState.usageHistory = data.umansUsageHistory; updateUmansTopBar(); }
+      if (data.umans90Days !== undefined) { _umansState.days90 = data.umans90Days; }
       if (data.umansUserId !== undefined) { _umansUserId = data.umansUserId; updateUmansAccountBadge(); }
       if (data.umansConcurrency !== undefined) { _umansState.concurrency = data.umansConcurrency; if (_umansState.concurrency && _umansState.concurrency.user_id) _umansUserId = _umansState.concurrency.user_id; updateUmansAccountBadge(); }
     }
 
     function setProviderToggles(providers) {
+
       const arr = Array.isArray(providers) ? providers : [providers];
       _activeProviders = arr;
       document.querySelectorAll('.provider-cb').forEach(cb => {
@@ -1613,7 +1641,9 @@
     }
 
     // ── UMANS Account / Keys Management ──
-    let _umansState = { account: {}, keys: [], enabledModels: [], usage: null, concurrency: {}, loggedIn: false, usageHistory: null };
+    let _umansState = { account: {}, keys: [], enabledModels: [], usage: null, concurrency: {}, loggedIn: false, usageHistory: null, days90: null };
+    let _umansUsagePage = 0;
+    const _umansUsagePerPage = 7;
     let _umansEditingIndex = -1;
     let _umansUserId = '';
     let blurTokensEnabled = false;
@@ -1891,6 +1921,7 @@
       renderUmansAccount();
       renderUmansKeys();
       renderUmansModels();
+      renderUmansUsageHistory();
       updateUmansTopBar();
       updateSsModeStatus();
     }
@@ -1929,38 +1960,70 @@
       }
     }
 
-    function updateUmans90DaysTopBar() {
-      const reqEl = document.getElementById('quotaRequests');
-      const tokEl = document.getElementById('quotaTokens');
-      if (!reqEl || !tokEl) return;
-      let histReqs = 0, histTokens = 0, histInputTokens = 0, histCached = 0;
+    function compactNum(n) {
+      if (n >= 1_000_000_000) return (n / 1_000_000_000).toFixed(1).replace(/\.0$/, '') + 'B';
+      if (n >= 1_000_000) return (n / 1_000_000).toFixed(1).replace(/\.0$/, '') + 'M';
+      if (n >= 1_000) return (n / 1_000).toFixed(1).replace(/\.0$/, '') + 'K';
+      return n.toLocaleString();
+    }
+
+    function renderUmansUsageHistory() {
+      const container = document.getElementById('umansUsageHistoryContainer');
+      const pagEl = document.getElementById('umansUsagePagination');
+      const totalReqsEl = document.getElementById('umans90TotalReqs');
+      const totalToksEl = document.getElementById('umans90TotalTokens');
+      const totalCacheEl = document.getElementById('umans90TotalCachePct');
+      if (!container) return;
       const hist = _umansState && _umansState.usageHistory;
       const buckets = hist && (hist.buckets || hist.entries || hist.data || []);
-      if (Array.isArray(buckets)) {
-        for (const b of buckets) {
-          histReqs += b.requests || b.request_count || 0;
-          histTokens += (b.tokens_in || 0) + (b.tokens_out || 0);
-          histInputTokens += (b.tokens_in || 0);
-          histCached += (b.tokens_cached_read || b.tokens_cached || 0);
-        }
+      if (!Array.isArray(buckets) || buckets.length === 0) {
+        if (pagEl) pagEl.innerHTML = '';
+        if (totalReqsEl) totalReqsEl.textContent = '0';
+        if (totalToksEl) totalToksEl.textContent = '0';
+        return;
       }
-      const cachedPct = histInputTokens > 0 ? ((histCached / histInputTokens) * 100).toFixed(0) : '0';
-      if (histReqs || histTokens) {
-        reqEl.textContent = histReqs.toLocaleString();
-        tokEl.innerHTML = histTokens.toLocaleString() + '<br><span style="font-size:10px;color:rgba(255,255,255,0.55)">(' + cachedPct + '%)</span>';
-        reqEl.title = 'Requests';
-        tokEl.title = 'Tokens · ' + cachedPct + '% cached';
-      } else {
-        reqEl.textContent = 'n/a';
-        tokEl.textContent = 'n/a';
-        reqEl.title = 'No UMANS usage history';
-        tokEl.title = 'No UMANS usage history';
+      const rows = buckets.map((b) => ({
+        day: (b.bucket || b.timestamp || b.date || b.time || '').substring(0, 10),
+        reqs: b.requests || b.request_count || 0,
+        tokensIn: b.tokens_in || 0,
+        tokensOut: b.tokens_out || 0,
+        cached: b.tokens_cached_read || b.tokens_cached || 0,
+      })).filter(r => r.reqs > 0 || r.tokensIn > 0 || r.tokensOut > 0);
+      let totalReqs = 0, totalTokens = 0, totalInput = 0, totalCached = 0;
+      for (const r of rows) {
+        totalReqs += r.reqs;
+        totalTokens += r.tokensIn + r.tokensOut;
+        totalInput += r.tokensIn;
+        totalCached += r.cached;
       }
+      const cachedTotalPct = totalInput > 0 ? ((totalCached / totalInput) * 100).toFixed(0) : '0';
+      if (totalReqsEl) { totalReqsEl.textContent = compactNum(totalReqs); totalReqsEl.title = totalReqs.toLocaleString() + ' requests'; }
+      if (totalToksEl) { totalToksEl.textContent = compactNum(totalTokens); totalToksEl.title = totalTokens.toLocaleString() + ' tokens'; }
+      if (totalCacheEl) { totalCacheEl.textContent = '(' + cachedTotalPct + '%)'; totalCacheEl.title = cachedTotalPct + '% cached'; }
+      const start = _umansUsagePage * _umansUsagePerPage;
+      const page = rows.slice(start, start + _umansUsagePerPage);
+      const totalPages = Math.ceil(rows.length / _umansUsagePerPage);
+      const hdr = 'font-size:10px;color:rgba(255,255,255,0.6);font-weight:600;';
+      const cellR = 'font-weight:600;font-variant-numeric:tabular-nums;color:#fff;';
+      container.innerHTML = `<div style="width:100%;font-size:11px;white-space:nowrap"><div style="display:flex;${hdr}border-bottom:1px solid rgba(255,255,255,0.08);padding:4px 0 2px 0"><span style="flex:0 0 auto;width:5rem;text-align:left">${t('header_date','Date')}</span><span style="flex:1 1 0;text-align:center">${t('header_requests','Req')}</span><span style="flex:1 1 0;text-align:center"><span style="display:inline-flex;width:100%;justify-content:space-between;gap:0.5rem"><span style="text-align:left;width:55%">${t('header_tokens','Tokens')}</span><span style="text-align:right;width:45%">${t('header_cached_pct','Cache')}</span></span></span></div>` +
+        page.map(r => {
+          const tokens = r.tokensIn + r.tokensOut;
+          const input = r.tokensIn || tokens;
+          const pct = input > 0 ? ((r.cached / input) * 100).toFixed(0) + '%' : '';
+          return `<div style="display:flex;padding:2px 0"><span style="flex:0 0 auto;width:5rem;text-align:left;color:rgba(255,255,255,0.5)">${escapeHtml(r.day)}</span><span style="flex:1 1 0;text-align:center;${cellR}">${r.reqs.toLocaleString()}</span><span style="flex:1 1 0;text-align:center;${cellR}"><span style="display:inline-flex;width:100%;justify-content:space-between;gap:0.5rem"><span style="text-align:left;width:55%">${tokens.toLocaleString()}</span><span style="text-align:right;width:45%">${pct}</span></span></span></div>`;
+        }).join('') + '</div>';
+      if (pagEl) {
+        pagEl.innerHTML =
+          `<button class="btn btn-outline-action btn-sm" onclick="_umansUsagePage=Math.max(0,_umansUsagePage-1);renderUmansUsageHistory()" ${_umansUsagePage===0?'disabled':''}><i class="bi bi-chevron-left"></i></button>` +
+          `<span style="font-size:11px;color:rgba(255,255,255,0.6);padding:0 8px">${_umansUsagePage+1}/${totalPages}</span>` +
+          `<button class="btn btn-outline-action btn-sm" onclick="_umansUsagePage=Math.min(${totalPages-1},_umansUsagePage+1);renderUmansUsageHistory()" ${_umansUsagePage>=totalPages-1?'disabled':''}><i class="bi bi-chevron-right"></i></button>`;
+      }
+      container.title = '90-day totals: ' + totalReqs.toLocaleString() + ' requests · ' + totalTokens.toLocaleString() + ' tokens · ' + cachedTotalPct + '% cached';
     }
 
     function updateUmansTopBar() {
       updateUmansWindowTopBar();
-      updateUmans90DaysTopBar();
+      renderUmansUsageHistory();
       const accountLabel = document.getElementById('umansAccountTopLabel');
       if (accountLabel) {
         if (_umansState.loggedIn) {

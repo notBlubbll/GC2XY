@@ -157,7 +157,11 @@ async function ensureModels() {
     if (seen.has(id)) return;
     seen.add(id);
     const free = isFreeModel(id);
-    const prefix = id.startsWith("freebuff/") ? "🇫🇷ᴇᴇ" : id.startsWith("agnes") ? "💜" : id.startsWith("codestral/") ? "🌀" : "✨";
+    const prefix = id.startsWith("umans-") ? "⭐" :
+                   id.startsWith("bitnet/") || id === "bitnet-demo" ? "⚙️" :
+                   id.startsWith("freebuff/") ? "🇫🇷ᴇᴇ" :
+                   id.startsWith("agnes") ? "💜" :
+                   id.startsWith("codestral/") ? "🌀" : "✨";
     let name = getModelDisplayName(id);
     if (name.length > 17) name = name.replace(/\s/g, "");
     const fullName = `${prefix}￤${name}`;
@@ -167,6 +171,10 @@ async function ensureModels() {
     limits.max_context_window_tokens = realCtx;
     const fakeMult = (realCtx / 100) + 0.01;
     const supports = getSupports(id);
+    const providerTag = getModelProviderTag(id);
+    const pickerCategory = free ? "lightweight" :
+                           providerTag === "bitnet" || providerTag === "go" ? "others" :
+                           picker.category;
 
     const model: any = {
       id,
@@ -175,7 +183,7 @@ async function ensureModels() {
       vendor: detectVendor(id),
       version: id,
       preview: false,
-      model_picker_category: free ? "lightweight" : picker.category,
+      model_picker_category: pickerCategory,
       model_picker_enabled: true,
       is_chat_default: picker.chat_default,
       is_chat_fallback: free ? true : picker.chat_fallback,
@@ -213,7 +221,7 @@ async function ensureModels() {
         ...model,
         id: taggedId,
         name: taggedName,
-        model_picker_category: free ? "lightweight" : "versatile",
+        model_picker_category: free ? "lightweight" : (providerTag === "bitnet" || providerTag === "go" ? "others" : "versatile"),
         model_picker_enabled: true,
         is_chat_default: false,
         is_chat_fallback: false,
@@ -230,10 +238,16 @@ async function ensureModels() {
   // Build separators by cloning a real model to avoid field mismatch
   const template = VS_MODELS.find((m: any) => !m.id.startsWith("_cat_") && !m.id.includes("["));
   if (template && VS_MODELS.length > 0) {
+    const SEP_ORDER = ["codestral", "freebuff", "agnes", "deepseek", "openrouter", "zen", "umans"];
     const PROVIDER_NAMES: Record<string, string> = {
-      go: "\u200D✨ ⸻ OpenCode Go:", freebuff: "\u200D\u200D[🇫🇷ᴇᴇ] ⸻ FreeBuff:", agnes: "\u200D\u200D\u200D💜 ⸻ AgnesAI:", codestral: "\u200D\u200D\u200D\u200D🌀 ⸻ Codestral:", bitnet: "\u200D\u200D\u200D\u200D\u200D✨ ⸻ Bitnet:", deepseek: "\u200D\u200D\u200D\u200D\u200D\u200D✨ ⸻ DeepSeek:", openrouter: "\u200D\u200D\u200D\u200D\u200D\u200D\u200D✨ ⸻ OpenRouter:", zen: "\u200D\u200D\u200D\u200D\u200D\u200D\u200D\u200D⸻ ZEN:", umans: "\u200D\u200D\u200D\u200D\u200D\u200D\u200D\u200D\u200D⸻ UMANS:",
+      freebuff: "\u200D🇫🇷ᴇᴇ ⸻ FreeBuff:",
+      agnes: "\u200D\u200D💜 ⸻ AgnesAI:",
+      codestral: "\u200D\u200D\u200D🌀 ⸻ Codestral:",
+      deepseek: "\u200D\u200D\u200D\u200D✨ ⸻ DeepSeek:",
+      openrouter: "\u200D\u200D\u200D\u200D\u200D✨ ⸻ OpenRouter:",
+      zen: "\u200D\u200D\u200D\u200D\u200D\u200D⸻ ZEN:",
+      umans: "\u200D\u200D\u200D\u200D\u200D\u200D\u200D⭐ ⸻ UMANS:",
     };
-    const SEP_ORDER = ["go", "codestral", "freebuff", "agnes", "bitnet", "deepseek", "openrouter", "zen", "umans"];
     // Header banner at very top
     VS_MODELS.splice(0, 0, {
       ...template,
@@ -244,9 +258,16 @@ async function ensureModels() {
       billing: { ...template.billing, multiplier: 0 },
     });
     const seenTags: string[] = [];
+    const others: any[] = [];
+    for (let i = VS_MODELS.length - 1; i >= 0; i--) {
+      const tag = getModelProviderTag(VS_MODELS[i].id);
+      if (tag === "bitnet" || tag === "go") {
+        others.unshift(VS_MODELS.splice(i, 1)[0]);
+      }
+    }
     for (let i = 0; i < VS_MODELS.length; i++) {
       const tag = getModelProviderTag(VS_MODELS[i].id);
-      if (!tag || seenTags.includes(tag)) continue;
+      if (!tag || tag === "go" || tag === "bitnet" || seenTags.includes(tag)) continue;
       seenTags.push(tag);
       const displayName = PROVIDER_NAMES[tag] || tag.toUpperCase();
       VS_MODELS.splice(i, 0, {
@@ -258,6 +279,18 @@ async function ensureModels() {
         model_picker_price_category: "high",
       });
       i++;
+    }
+    if (others.length > 0) {
+      VS_MODELS.push({
+        ...template,
+        id: `cat_others`,
+        name: "\u200D\u200D\u200D\u200D\u200D\u200D\u200D\u200D⚙️ ⸻ Others:",
+        model_picker_category: "others",
+        is_chat_default: false,
+        is_chat_fallback: false,
+        model_picker_price_category: "high",
+      });
+      VS_MODELS.push(...others);
     }
   }
 

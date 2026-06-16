@@ -32,6 +32,7 @@ import {
   setUmansCurrentKeyIndex, getCurrentKeyIndex as getUmansCurrentKeyIndex,
   getUmansConfig, getModelDisplayName as getUmansModelDisplayName,
   onUmansLoginStateChange, maybeRefreshAccountUserId,
+  extractUsageBuckets as extractUmansUsageBuckets,
 } from "./umans-client.ts";
 import { getModelIds } from "../models.ts";
 import { getTps, restoreTerminal, setEnabledModelIds } from "../split-console.ts";

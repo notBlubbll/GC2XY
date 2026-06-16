@@ -78,6 +78,46 @@ export function setUmansCurrentKeyIndex(index: number) {
   setCurrentKeyIndex(index);
 }
 
+export function normalizeUsageBucket(raw: any): { bucket: string; requests: number; tokens_in: number; tokens_out: number; tokens_cached: number } | null {
+  if (!raw || typeof raw !== "object") return null;
+  const isOld = raw.tokens_in === undefined && raw.tokens_out === undefined && raw.requests !== undefined && raw.units !== undefined;
+  if (isOld) {
+    return {
+      bucket: raw.bucket || raw.timestamp || raw.date || "",
+      requests: Number(raw.requests) || 0,
+      tokens_in: Number(raw.units) || 0,
+      tokens_out: 0,
+      tokens_cached: 0,
+    };
+  }
+  const bucket = raw.bucket || raw.date || "";
+  const requests = Number(raw.requests ?? raw.request_count) || 0;
+  const tokensIn = Number(raw.tokens_in) || 0;
+  const tokensOut = Number(raw.tokens_out) || 0;
+  const cached = Number(raw.tokens_cached_read ?? raw.tokens_cached ?? 0);
+  if (!bucket && requests === 0 && tokensIn === 0 && tokensOut === 0 && cached === 0) return null;
+  return { bucket, requests, tokens_in: tokensIn, tokens_out: tokensOut, tokens_cached: cached };
+}
+
+export function extractUsageBuckets(data: any): { bucket: string; requests: number; tokens_in: number; tokens_out: number; tokens_cached: number }[] | null {
+  if (!data || typeof data !== "object") return null;
+  let arr: any[] | null = null;
+  if (Array.isArray(data.buckets)) arr = data.buckets;
+  else if (Array.isArray(data.history)) arr = data.history;
+  else if (Array.isArray(data.entries)) arr = data.entries;
+  else if (Array.isArray(data.data)) arr = data.data;
+  else if (Array.isArray(data)) arr = data;
+  if (!arr) return null;
+  return arr.map(normalizeUsageBucket).filter((b): b is NonNullable<typeof b> => b !== null);
+}
+
+export function getUsageHistoryDateRange(): { from: string; to: string; today: string } {
+  const now = new Date();
+  const to = now.toISOString();
+  const from = new Date(now.getTime() - 89 * 24 * 60 * 60 * 1000).toISOString();
+  return { from, to, today: new Date().toISOString().slice(0, 10) };
+}
+
 let _umansLoginStateCallback: ((state: any) => void) | null = null;
 export function onUmansLoginStateChange(cb: (state: any) => void) {
   _umansLoginStateCallback = cb;
@@ -641,6 +681,62 @@ export function getAccountInfo(): { loggedIn: boolean; email: string; hasPasswor
   return { loggedIn: !!_config.appSession, email: _config.email || "", hasPassword: !!_config.password, userId: concurrencyCache.user_id };
 }
 
+async function fetchHistoryRange(from: string, to: string): Promise<{ buckets: { bucket: string; requests: number; tokens_in: number; tokens_out: number; tokens_cached: number }[] } | null> {
+  const fromIso = `${from}T00:00:00Z`;
+  const toIso = `${to}T23:59:59Z`;
+  const url = `${APP_BASE}/api/usage/history?from=${encodeURIComponent(fromIso)}&to=${encodeURIComponent(toIso)}&granularity=day`;
+  try {
+    if (isDebug()) console.log(`[usage-history] GET ${url}`);
+    const resp = await fetch(url, {
+      headers: { Cookie: makeAppCookie(_config.appSession), Accept: "application/json" },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!resp.ok) {
+      if (isDebug()) console.log(`[usage-history] upstream ${resp.status}`);
+      return null;
+    }
+    const data = await resp.json();
+    const buckets = extractUsageBuckets(data);
+    if (!buckets) return null;
+    return { buckets };
+  } catch (e: any) {
+    if (isDebug()) console.log(`[usage-history] range failed: ${e.message}`);
+    return null;
+  }
+}
+
+function generateDateStrings(from: string, to: string): string[] {
+  const dates: string[] = [];
+  const start = new Date(from.slice(0, 10));
+  const end = new Date(to.slice(0, 10));
+  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+    dates.push(d.toISOString().slice(0, 10));
+  }
+  return dates;
+}
+
+function toContiguousRanges(dates: string[]): [string, string][] {
+  if (!dates.length) return [];
+  const sorted = [...dates].sort();
+  const ranges: [string, string][] = [];
+  let start = sorted[0];
+  let prev = sorted[0];
+  for (let i = 1; i < sorted.length; i++) {
+    const curr = sorted[i];
+    const prevDate = new Date(prev);
+    prevDate.setDate(prevDate.getDate() + 1);
+    if (curr === prevDate.toISOString().slice(0, 10)) {
+      prev = curr;
+    } else {
+      ranges.push([start, prev]);
+      start = curr;
+      prev = curr;
+    }
+  }
+  ranges.push([start, prev]);
+  return ranges;
+}
+
 export async function fetchUsageHistory(opts: { force?: boolean } = {}): Promise<any> {
   if (!_config.appSession) {
     await loginToApp();
@@ -648,18 +744,45 @@ export async function fetchUsageHistory(opts: { force?: boolean } = {}): Promise
   if (!opts.force && usageHistoryCache.data && Date.now() - usageHistoryCache.time < usageHistoryCache.ttl) return usageHistoryCache.data;
   if (!_config.appSession) return null;
   try {
-    const now = new Date();
-    const to = now.toISOString();
-    const from = new Date(now.getTime() - 89 * 24 * 60 * 60 * 1000).toISOString();
-    const url = `${APP_BASE}/api/usage/history?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&granularity=day`;
-    const resp = await fetch(url, {
-      headers: { Cookie: makeAppCookie(_config.appSession), Accept: "application/json" },
-      signal: AbortSignal.timeout(15000),
-    });
-    if (!resp.ok) return null;
-    const data = await resp.json();
-    usageHistoryCache = { data, time: Date.now(), ttl: 5 * 60 * 1000 };
-    return data;
+    const range = getUsageHistoryDateRange();
+    const missing: string[] = [];
+    const mergedMap: Record<string, { bucket: string; requests: number; tokens_in: number; tokens_out: number; tokens_cached: number }> = {};
+    const allDates = generateDateStrings(range.from, range.to);
+    for (const d of allDates) {
+      if (d !== range.today) missing.push(d);
+      else {
+        mergedMap[d] = { bucket: d, requests: 0, tokens_in: 0, tokens_out: 0, tokens_cached: 0 };
+      }
+    }
+    let fetchedAny = false;
+    if (missing.length > 0) {
+      const ranges = toContiguousRanges(missing);
+      for (const [rFrom, rTo] of ranges) {
+        const data = await fetchHistoryRange(rFrom, rTo);
+        if (data?.buckets) {
+          fetchedAny = true;
+          const returnedDates = new Set<string>();
+          for (const raw of data.buckets) {
+            const bucket = normalizeUsageBucket(raw);
+            if (!bucket) continue;
+            mergedMap[bucket.bucket] = bucket;
+            returnedDates.add(bucket.bucket);
+          }
+          // API omits zero-usage days — treat absent dates as zero
+          for (const d of generateDateStrings(rFrom, rTo)) {
+            if (!returnedDates.has(d)) {
+              mergedMap[d] = { bucket: d, requests: 0, tokens_in: 0, tokens_out: 0, tokens_cached: 0 };
+            }
+          }
+        }
+      }
+    }
+    const buckets = Object.keys(mergedMap).sort().reverse().map(d => mergedMap[d]);
+    const result = { buckets };
+    if (fetchedAny || !usageHistoryCache.data) {
+      usageHistoryCache = { data: result, time: Date.now(), ttl: 5 * 60 * 1000 };
+    }
+    return usageHistoryCache.data;
   } catch (e: any) {
     if (isDebug()) console.log(`[UMANS] usage history fetch failed: ${e.message}`);
     return usageHistoryCache.data;
