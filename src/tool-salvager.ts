@@ -345,8 +345,12 @@ export function normalizeToolCall(tc: any): any | null {
     // VS solution enumeration — no args. Kimi K2.7 calls this with `{}`.
     // No coercion needed; ensure args is a valid empty object.
   } else if (/^get_files_in_project$/i.test(name)) {
-    // VS project file enumeration. Takes a project identifier.
-    safe.project = String(args.project ?? args.projectName ?? args.name ?? "");
+    // VS project file enumeration. VS schema uses `projectPath`; Kimi K2.7
+    // emits `projectPath` correctly. Older models may use `project`/`name`.
+    // Forward under `projectPath` (the VS-expected field) so VS can resolve
+    // the project; otherwise VS returns empty ("\r\n") and the model loops.
+    const proj = String(args.projectPath ?? args.project ?? args.projectName ?? args.name ?? "");
+    safe.projectPath = proj;
   } else if (/^task_complete$/i.test(name)) {
     return tc;
   } else {
@@ -663,6 +667,20 @@ export function salvageToolCall(tc: any): any | null {
       }
       if (terms.length) {
         return { ...tc, function: { ...tc.function, arguments: JSON.stringify({ terms }) } };
+      }
+    }
+    if (/^get_files_in_project$/i.test(name)) {
+      // VS schema: `projectPath`. Streaming chunks often truncate mid-value
+      // (e.g. `{"projectPath": "gc` with no closing quote). Recover whatever
+      // trail is present so the salvager doesn't drop the call entirely.
+      const pp =
+        _extract('"projectPath"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"', src) ||
+        _extract('"projectPath"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)', src) ||
+        _extract('"(?:project|projectName|name)"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"', src) ||
+        _extract('"(?:project|projectName|name)"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)', src);
+      const projectPath = pp ? pp.replace(/\\"/g, '"').replace(/\\\\/g, "\\").trim() : "";
+      if (projectPath) {
+        return { ...tc, function: { ...tc.function, arguments: JSON.stringify({ projectPath }) } };
       }
     }
   } catch {

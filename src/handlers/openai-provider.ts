@@ -2,8 +2,8 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { isDebug } from "../split-console.ts";
-import { getProjectRoot } from "../shared.ts";
-import { openAIChatCompletion, injectCachedReasoning, storeReasoning } from "./openai-client.ts";
+import { getProjectRoot, readJsonSync } from "../shared.ts";
+import { openAIChatCompletion, injectCachedReasoning, storeReasoning, loadDisplayNameOverrides, initModelCtxMap } from "./openai-client.ts";
 import type { OpenAIChatOptions } from "./openai-client.ts";
 export {
   getModelCtx,
@@ -35,7 +35,7 @@ function keyHash(): string {
 function loadKeyHashFromDisk(): string | null {
   try {
     const p = path.join(ensureCacheDir(), "keyhash.json");
-    return JSON.parse(fs.readFileSync(p, "utf8")).h || null;
+    return readJsonSync(p).h || null;
   } catch { return null; }
 }
 
@@ -75,7 +75,7 @@ function loadKeyState(): Record<string, any> {
   try {
     const p = keyStatePath();
     if (!fs.existsSync(p)) return {};
-    const data = JSON.parse(fs.readFileSync(p, "utf8"));
+    const data = readJsonSync(p);
     if (isDebug()) console.log(`\n[KEY CACHE] loaded key state from ${p}`);
     return data;
   } catch { return {}; }
@@ -160,17 +160,6 @@ export function detectSessionSignal(messages: any[]): { sessNum: number; keyIdx:
   const sessionLabel = `${keyLabel}|sess${newEntry.sessNum}`;
 
   return { sessNum: newEntry.sessNum, keyIdx, keyLabel, sessionLabel };
-}
-
-function getOpenRouterApiKeyLive(): string {
-  try {
-    const p = path.join(getProjectRoot(), ".config", "config.json");
-    if (fs.existsSync(p)) {
-      const c = JSON.parse(fs.readFileSync(p, "utf-8"));
-      return c.openrouterKey || "";
-    }
-  } catch {}
-  return "";
 }
 
 const CONFIG = {
@@ -351,18 +340,9 @@ function parseRetryAfter(resp: Response): number {
 
 import { chatCompletion as codestralChat } from "./codestral-client.ts";
 import { chatCompletion as umansChat } from "./umans-client.ts";
+import { getModelProviderTag } from "../shared.ts";
 
-export function getModelProviderTag(modelId: string): string {
-  if (modelId.startsWith("umans-")) return "umans";
-  if (modelId.startsWith("freebuff/")) return "freebuff";
-  if (modelId.startsWith("openrouter/")) return "openrouter";
-  if (modelId.startsWith("agnes")) return "agnes";
-  if (modelId.startsWith("codestral")) return "codestral";
-  if (modelId.startsWith("bitnet/") || modelId === "bitnet-demo") return "bitnet";
-  if (modelId.toLowerCase().includes("deepseek")) return "deepseek";
-  if (modelId.endsWith("-free") || modelId === "big-pickle" || modelId === "nemotron-3-super-free" || modelId === "ring-2.6-1t-free") return "zen";
-  return "go";
-}
+export { getModelProviderTag };
 
 // ── Per-Provider Model Caching ──
 
@@ -372,24 +352,18 @@ function ensureCacheDir(): string {
   return d;
 }
 
-type Provider = "go" | "zen" | "openrouter";
+type Provider = "go" | "zen";
 
 function modelDiskPath(provider: Provider): string {
   return path.join(ensureCacheDir(), `models-${provider}.json`);
-}
-
-function openRouterKeyHash(): string {
-  const key = getOpenRouterApiKeyLive();
-  if (!key) return "no-openrouter-key";
-  return crypto.createHash("sha256").update(key).digest("hex");
 }
 
 function loadProviderModels(provider: Provider): string[] | null {
   try {
     const p = modelDiskPath(provider);
     if (!fs.existsSync(p)) return null;
-    const data = JSON.parse(fs.readFileSync(p, "utf8"));
-    const h = provider === "openrouter" ? openRouterKeyHash() : keyHash();
+    const data = readJsonSync(p);
+    const h = keyHash();
     if (data._keyHash !== h) {
       if (isDebug()) console.log(`\n[MODEL CACHE:${provider.toUpperCase()}] key hash changed — re-fetching`);
       return null;
@@ -401,7 +375,7 @@ function loadProviderModels(provider: Provider): string[] | null {
 function saveProviderModels(provider: Provider, ids: string[]): void {
   try {
     ensureCacheDir();
-    const h = provider === "openrouter" ? openRouterKeyHash() : keyHash();
+    const h = keyHash();
     fs.writeFileSync(modelDiskPath(provider), JSON.stringify({ _modelIds: ids, _keyHash: h }));
     if (isDebug()) console.log(`\n[MODEL CACHE:${provider.toUpperCase()}] saved ${ids.length} model IDs`);
   } catch {}
@@ -436,13 +410,7 @@ async function fetchGoModels(goKey: string): Promise<string[]> {
 
 // ── Per-provider model ID caches ──
 let _cachedGoIds: string[] | null = null;
-let _cachedOpenRouterIds: string[] | null = null;
 let _providersInitialized = false;
-
-async function fetchOpenRouterModels(): Promise<string[]> {
-  // Disabled for now.
-  return [];
-}
 
 async function initProviderModels(provider: Provider, goKey?: string): Promise<string[]> {
   const diskIds = loadProviderModels(provider);
@@ -456,8 +424,6 @@ async function initProviderModels(provider: Provider, goKey?: string): Promise<s
   let fetched: string[] = [];
   if (provider === "go") {
     fetched = await fetchGoModels(goKey || "");
-  } else if (provider === "openrouter") {
-    fetched = await fetchOpenRouterModels();
   }
 
   if (fetched.length > 0) {
@@ -468,7 +434,7 @@ async function initProviderModels(provider: Provider, goKey?: string): Promise<s
 
 export async function initModels(): Promise<string[]> {
   if (_providersInitialized && _cachedGoIds && _cachedGoIds.length > 0) {
-    return [..._cachedGoIds, ...(_cachedOpenRouterIds || [])];
+    return [..._cachedGoIds];
   }
 
   loadDisplayNameOverrides();
@@ -483,35 +449,31 @@ export async function initModels(): Promise<string[]> {
   }
   if (!goKey && keys.length > 0) goKey = keys[0];
 
-  const [goIds, openRouterIds] = await Promise.all([
+  const [goIds] = await Promise.all([
     initProviderModels("go", goKey),
-    initProviderModels("openrouter"),
     initModelCtxMap(),
   ] as any);
 
   _cachedGoIds = goIds || [];
-  _cachedOpenRouterIds = openRouterIds || [];
   _providersInitialized = true;
 
-  const allIds = [..._cachedGoIds, ..._cachedOpenRouterIds];
-  if (isDebug()) console.log(`\n[MODEL CACHE] init complete: ${allIds.length} models (${_cachedGoIds.length} go + ${_cachedOpenRouterIds.length} openrouter)`);
+  const allIds = [..._cachedGoIds];
+  if (isDebug()) console.log(`\n[MODEL CACHE] init complete: ${allIds.length} models (${_cachedGoIds.length} go)`);
   return allIds;
 }
 
 export function getModelIds(): string[] {
   if (!_providersInitialized) return [];
-  return [...(_cachedGoIds || []), ...(_cachedOpenRouterIds || [])];
+  return [...(_cachedGoIds || [])];
 }
 
 export function getProviderModelIds(provider: Provider): string[] {
   if (provider === "go") return _cachedGoIds || [];
-  if (provider === "openrouter") return _cachedOpenRouterIds || [];
   return [];
 }
 
-function getModelTier(modelId: string): "go" | "free" | "openrouter" {
+function getModelTier(modelId: string): "go" | "free" {
   const l = modelId.toLowerCase();
-  if (l.startsWith("openrouter/")) return "openrouter";
   if (l.endsWith("-free") || l === "big-pickle" || l === "nemotron-3-super-free" || l === "ring-2.6-1t-free") return "free";
   return "go";
 }
@@ -521,20 +483,6 @@ export async function chatCompletion(modelId: string, messages: any[], tools?: a
 
   if (tier === "free") {
     throw new Error("Free tier is throttled. Try again later.");
-  }
-
-  if (tier === "openrouter") {
-    const openrouterKey = getOpenRouterApiKeyLive();
-    if (!openrouterKey) throw new Error("No OpenRouter API key configured.");
-    return openAIChatCompletion({
-      baseUrl: "https://openrouter.ai/api/v1",
-      apiKey: openrouterKey,
-      modelId: modelId.replace(/^openrouter\//, ""),
-      messages,
-      tools,
-      stream,
-      extra,
-    });
   }
 
   const key = withKey(pinnedKeyIdx);

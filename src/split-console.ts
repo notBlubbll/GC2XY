@@ -87,6 +87,7 @@ export function agentTag(headers: Record<string, string>): string {
   const ua = (headers["user-agent"] || "").toLowerCase();
   const ev = (headers["editor-version"] || "").toLowerCase();
   if (ev.startsWith("vs/visualstudio")) return `${O}VS${R}`;
+  if (ev.startsWith("vs/ssms")) return `${O}SSMS${R}`;
   if (ua.startsWith("vscopilotclient")) return `${C}VSC${R}`;
   if (ua.startsWith("vsteamexplorer-github")) return `${BLU}TEAM${R}`;
   if (ua.startsWith("github-app")) return `${G}APP${R}`;
@@ -108,6 +109,14 @@ export function agentName(headers: Record<string, string>): string {
       return `Visual Studio ${ver}`;
     }
     return "Visual Studio";
+  }
+  if (ev.startsWith("VS/SSMS")) {
+    const parts = ev.split("/");
+    if (parts.length >= 3) {
+      const ver = parts[2].split(".").slice(0, 2).join(".");
+      return `SSMS ${ver}`;
+    }
+    return "SSMS";
   }
   if (ua.startsWith("github-app/")) {
     const ver = ua.split("/")[1] || "";

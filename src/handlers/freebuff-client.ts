@@ -6,7 +6,7 @@ import { readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync, statSy
 import { join, resolve, parse, basename } from "node:path";
 import { homedir } from "node:os";
 import { randomBytes, randomUUID } from "node:crypto";
-import { getProjectRoot } from "../shared.ts";
+import { getProjectRoot, readJsonSync } from "../shared.ts";
 
 // ── Constants ──
 const UPSTREAM_BASE = "https://www.codebuff.com";
@@ -399,7 +399,7 @@ function discoverCliTokens(): string[] {
   for (const p of searchPaths) {
     try {
       if (!existsSync(p)) continue;
-      const data = JSON.parse(readFileSync(p, "utf8"));
+      const data = readJsonSync(p);
       if (data.default?.authToken) tokens.push(data.default.authToken);
       for (const [, v] of Object.entries(data)) {
         if (v && typeof v === "object" && (v as any).authToken) tokens.push((v as any).authToken);
@@ -419,7 +419,7 @@ function loadTokens(): string[] {
 
   // Config file
   try {
-    const config = JSON.parse(readFileSync(configPath(), "utf8"));
+    const config = readJsonSync(configPath());
     if (Array.isArray(config.freebuffTokens)) {
       tokens.push(...config.freebuffTokens);
     }
@@ -439,7 +439,7 @@ function saveTokensToConfig(tokens: string[]) {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     let config: any = {};
     if (existsSync(cfgPath)) {
-      try { config = JSON.parse(readFileSync(cfgPath, "utf8")); } catch {}
+      try { config = readJsonSync(cfgPath); } catch {}
     }
     config.freebuffTokens = tokens;
     writeFileSync(cfgPath, JSON.stringify(config, null, 2));
@@ -1237,7 +1237,7 @@ export function startTokenReload(intervalMs = 5 * 60 * 1000) {
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
       let config: any = {};
       if (existsSync(cfgPath)) {
-        try { config = JSON.parse(readFileSync(cfgPath, "utf8")); } catch {}
+        try { config = readJsonSync(cfgPath); } catch {}
       }
       config.freebuffTokens = _tokens;
       writeFileSync(cfgPath, JSON.stringify(config, null, 2));

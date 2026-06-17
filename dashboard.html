@@ -583,12 +583,7 @@
                     <input class="form-check-input provider-cb" type="checkbox" id="prov-agnes" value="agnes">
                     <label class="form-check-label" for="prov-agnes"><i class="bi bi-stars me-1"></i><span data-i18n="provider_agnes">AGNES</span></label>
                   </div>
-                  <!-- OpenRouter hidden for now
-                  <div class="form-check">
-                    <input class="form-check-input provider-cb" type="checkbox" id="prov-openrouter" value="openrouter">
-                    <label class="form-check-label" for="prov-openrouter"><i class="bi bi-router-fill me-1"></i>OPENROUTER</label>
-                  </div>
-                  -->
+                  <!-- OpenRouter provider removed -->
                   <div class="form-check">
                     <input class="form-check-input provider-cb" type="checkbox" id="prov-codestral" value="codestral">
                     <label class="form-check-label" for="prov-codestral"><i class="bi bi-code-slash me-1"></i><span data-i18n="provider_codestral">CODESTRAL</span></label>
@@ -597,6 +592,7 @@
                     <input class="form-check-input provider-cb" type="checkbox" id="prov-bitnet" value="bitnet">
                     <label class="form-check-label" for="prov-bitnet"><i class="bi bi-cpu me-1"></i><span data-i18n="provider_bitnet">BITNET</span></label>
                   </div>
+
                 </div>
               </div>
               <div class="mb-3" id="agnesConfigRow" style="display:none">
@@ -617,17 +613,7 @@
                 </div>
                 <div style="font-size:10px;color:rgba(255,255,255,0.4);margin-top:4px">Required for Codestral models. Key shown as <span id="codestralKeyStatus">not set</span></div>
               </div>
-              <!-- OpenRouter hidden for now
-              <div class="mb-3" id="openrouterConfigRow" style="display:none">
-                <label class="form-label">OpenRouter API Key</label>
-                <div class="d-flex gap-2">
-                  <input type="text" class="form-control" id="openrouterKeyInput" placeholder="sk-or-..." style="font-size:0.85rem">
-                  <button class="btn btn-sm btn-outline-action" onclick="saveOpenRouterKey()" style="white-space:nowrap"><i class="bi bi-check-lg"></i></button>
-                  <button class="btn btn-sm btn-outline-action" onclick="clearOpenRouterKey()" style="white-space:nowrap"><i class="bi bi-x-lg"></i></button>
-                </div>
-                <div style="font-size:10px;color:rgba(255,255,255,0.4);margin-top:4px">Required for OpenRouter models. Key shown as <span id="openrouterKeyStatus">not set</span></div>
-              </div>
-              -->
+              <!-- OpenRouter key UI removed -->
 
               <div class="mb-3" id="supermavenSection">
                 <label class="form-label" data-i18n="label_supermaven">
@@ -1192,8 +1178,6 @@
       if (data.health) applyHealth(data.health);
       if (data.hasAgnesKey !== undefined) { _hasAgnesKey = data.hasAgnesKey; updateAiWallpaperButton(); }
       if (data.agnesKey !== undefined) { _agnesKey = data.agnesKey; updateAgnesKeyStatus(); }
-      if (data.hasOpenRouterKey !== undefined) { _hasOpenRouterKey = data.hasOpenRouterKey; }
-      if (data.openrouterKey !== undefined) { _openrouterKey = data.openrouterKey; updateOpenRouterKeyStatus(); }
       if (data.hasCodestralKey !== undefined) { _hasCodestralKey = data.hasCodestralKey; }
       if (data.codestralKey !== undefined) { _codestralKey = data.codestralKey; updateCodestralKeyStatus(); }
       if (data.wallpaper) { applyWallpaper(data.wallpaper); }
@@ -1248,8 +1232,6 @@
       if (data.health) applyHealth(data.health);
       if (data.hasAgnesKey !== undefined) { _hasAgnesKey = data.hasAgnesKey; updateAiWallpaperButton(); }
       if (data.agnesKey !== undefined) { _agnesKey = data.agnesKey; updateAgnesKeyStatus(); }
-      if (data.hasOpenRouterKey !== undefined) { _hasOpenRouterKey = data.hasOpenRouterKey; }
-      if (data.openrouterKey !== undefined) { _openrouterKey = data.openrouterKey; updateOpenRouterKeyStatus(); }
       if (data.hasCodestralKey !== undefined) { _hasCodestralKey = data.hasCodestralKey; }
       if (data.codestralKey !== undefined) { _codestralKey = data.codestralKey; updateCodestralKeyStatus(); }
       if (data.wallpaper) { applyWallpaper(data.wallpaper); }
@@ -1297,8 +1279,6 @@
       });
       const agRow = document.getElementById('agnesConfigRow');
       if (agRow) agRow.style.display = arr.includes('agnes') ? '' : 'none';
-      const orRow = document.getElementById('openrouterConfigRow');
-      if (orRow) orRow.style.display = arr.includes('openrouter') ? '' : 'none';
       const csRow = document.getElementById('codestralConfigRow');
       if (csRow) csRow.style.display = arr.includes('codestral') ? '' : 'none';
     }
@@ -1535,7 +1515,6 @@
       renderUmansAccount();
       renderUmansKeys();
       updateAgnesKeyStatus();
-      updateOpenRouterKeyStatus();
       updateFeatherlessKeyStatus();
       updateCodestralKeyStatus();
       updatePollKeyStatus();
@@ -1543,7 +1522,7 @@
 
     // ── Models ──
     function getProviderDisplayName(tag) {
-      const map = { umans: 'UMANS', freebuff: 'FREEBUFF', agnes: 'AGNES', openrouter: 'OPENROUTER', zen: 'OC-ZEN', bitnet: 'BITNET', codestral: 'CODESTRAL', deepseek: 'DEEPSEEK' };
+      const map = { umans: 'UMANS', freebuff: 'FREEBUFF', agnes: 'AGNES', bitnet: 'BITNET', codestral: 'CODESTRAL' };
       return map[tag] || tag.toUpperCase();
     }
     function renderModels() {
@@ -1557,7 +1536,7 @@
       }
       const enaModels = models.filter(m => m.enabled !== false && m.locked !== true).length;
       document.getElementById('modelCountBadge').textContent = enaModels + ' / ' + models.length;
-      const _provToTag = { umans: 'umans', zen: 'zen', freebuff: 'freebuff', agnes: 'agnes', openrouter: 'openrouter', bitnet: 'bitnet', codestral: 'codestral', deepseek: 'deepseek' };
+      const _provToTag = { umans: 'umans', freebuff: 'freebuff', agnes: 'agnes', bitnet: 'bitnet', codestral: 'codestral' };
       const activeTags = new Set(_activeProviders.map(p => _provToTag[p] || p));
       const groups = {};
       models.forEach((m, idx) => {
@@ -1567,11 +1546,10 @@
       });
         const providerGroups = [
         { name: 'UMANS:', tags: ['umans'] },
-        { name: 'DeepSeek:', tags: ['deepseek'] },
         { name: '[🇫🇷ᴇᴇ] FreeBuff:', tags: ['freebuff'] },
         { name: '💜 AgnesAI:', tags: ['agnes'], controlTag: 'agnes', checkKey: true },
         { name: 'Codestral:', tags: ['codestral'], prefix: '🔷' },
-        { name: 'Others:', tags: ['bitnet', 'go', 'openrouter', 'zen'], prefix: '⚙️' },
+        { name: 'Others:', tags: ['bitnet', 'go'], prefix: '⚙️', defaultHidden: true },
       ];
       container.innerHTML = providerGroups.map(group => {
         const allItems = group.tags.reduce((acc, tag) => {
@@ -1586,7 +1564,7 @@
         if (group.checkKeys) {
           isActive = activeTags.has(group.controlTag);
         } else if (group.checkKey) {
-          const keyMap = { agnes: _agnesKey, codestral: _codestralKey, openrouter: _openrouterKey };
+          const keyMap = { agnes: _agnesKey, codestral: _codestralKey };
           isActive = activeTags.has(group.controlTag) && !!keyMap[group.controlTag];
         } else if (group.controlTag) {
           isActive = activeTags.has(group.controlTag);
@@ -2086,6 +2064,12 @@
       wsSend('setAgnesKey', { key: '' });
       updateAgnesKeyStatus();
       _hasAgnesKey = false;
+      _activeProviders = _activeProviders.filter(p => p !== 'agnes');
+      const cb = document.getElementById('prov-agnes');
+      if (cb) cb.checked = false;
+      const agRow = document.getElementById('agnesConfigRow');
+      if (agRow) agRow.style.display = 'none';
+      renderModels();
       updateAiWallpaperButton();
       showToast('Agnes key cleared', 'success');
     }
@@ -2106,44 +2090,8 @@
 
     let _openrouterKey = '';
     let _hasOpenRouterKey = false;
-    function saveOpenRouterKey() {
-      const val = document.getElementById('openrouterKeyInput').value.trim();
-      if (!val) { showToast('Key is required', 'warning'); return; }
-      _openrouterKey = val;
-      wsSend('setOpenRouterKey', { key: val });
-      updateOpenRouterKeyStatus();
-      _hasOpenRouterKey = true;
-      if (!_activeProviders.includes('openrouter')) {
-        _activeProviders.push('openrouter');
-        const cb = document.getElementById('prov-openrouter');
-        if (cb) cb.checked = true;
-        const orRow = document.getElementById('openrouterConfigRow');
-        if (orRow) orRow.style.display = '';
-        renderModels();
-      }
-      showToast('OpenRouter key saved', 'success');
-    }
-    function clearOpenRouterKey() {
-      _openrouterKey = '';
-      wsSend('setOpenRouterKey', { key: '' });
-      updateOpenRouterKeyStatus();
-      _hasOpenRouterKey = false;
-      showToast('OpenRouter key cleared', 'success');
-    }
-    function updateOpenRouterKeyStatus() {
-      const el = document.getElementById('openrouterKeyStatus');
-      const inp = document.getElementById('openrouterKeyInput');
-      if (el) {
-        if (_openrouterKey) {
-          el.innerHTML = '<span class="' + (blurTokensEnabled ? 'token-blurred' : '') + '">' + escapeHtml(_openrouterKey.slice(0, 5) + '...' + _openrouterKey.slice(-4)) + '</span>';
-          el.style.color = 'rgba(50,205,50,0.8)';
-        } else {
-          el.textContent = 'not set';
-          el.style.color = 'rgba(255,255,255,0.4)';
-        }
-      }
-      if (inp) inp.value = _openrouterKey || '';
-    }
+    // OpenRouter provider removed — handlers and UI deleted; stub kept to avoid breaking older snapshot deltas.
+
 
     // ── Inline Model Rename (double-click model name) ──
     function startInlineRename(event, modelId) {
@@ -2208,6 +2156,12 @@
       wsSend('setCodestralKey', { key: '' });
       updateCodestralKeyStatus();
       _hasCodestralKey = false;
+      _activeProviders = _activeProviders.filter(p => p !== 'codestral');
+      const cb = document.getElementById('prov-codestral');
+      if (cb) cb.checked = false;
+      const csRow = document.getElementById('codestralConfigRow');
+      if (csRow) csRow.style.display = 'none';
+      renderModels();
       showToast('Codestral key cleared', 'success');
     }
     function updateCodestralKeyStatus() {
@@ -2327,7 +2281,7 @@
     function refreshModels() { wsSend('batchModelStates', { states: {} }); showToast('Models refreshed', 'info'); }
     function saveConfiguration() {
       const mode = document.querySelector('.btn-check[name="proxyMode"]:checked')?.value || 'mock';
-      wsSend('saveConfig', { mode, keys: allKeys, models });
+      wsSend('saveConfig', { mode, providers: _activeProviders, agnesKey: _agnesKey, codestralKey: _codestralKey, completionsModel: _completionsModel, supermavenEnabled: _supermavenEnabled });
       showToast('Configuration saved', 'success');
     }
 
@@ -2419,8 +2373,6 @@
           _activeProviders = checked;
           const agRow = document.getElementById('agnesConfigRow');
           if (agRow) agRow.style.display = checked.includes('agnes') ? '' : 'none';
-          const orRow = document.getElementById('openrouterConfigRow');
-          if (orRow) orRow.style.display = checked.includes('openrouter') ? '' : 'none';
           const csRow = document.getElementById('codestralConfigRow');
           if (csRow) csRow.style.display = checked.includes('codestral') ? '' : 'none';
           wsSend('setProviders', { providers: checked });
@@ -2513,14 +2465,14 @@
         .replace(/\x00B(\d+)\x00/g, (_, i) => bolds[parseInt(i, 10)]);
     }
 
-    const TEST_CHAT_PROVIDER_NAMES = { umans: 'UMANS', freebuff: 'FREEBUFF', agnes: 'AGNES', openrouter: 'OPENROUTER', zen: 'OC-ZEN', bitnet: 'BITNET', codestral: 'CODESTRAL', deepseek: 'DEEPSEEK' };
-    const TEST_CHAT_PROVIDER_SHORT = { umans: '[UMANS] ', freebuff: '[FREEBUFF] ', agnes: '[AGNES] ', openrouter: '[OPENROUTER] ', zen: '[OC-ZEN] ', bitnet: '[BITNET] ', codestral: '[CODESTRAL] ', deepseek: '[DEEPSEEK] ' };
+    const TEST_CHAT_PROVIDER_NAMES = { umans: 'UMANS', freebuff: 'FREEBUFF', agnes: 'AGNES', bitnet: 'BITNET', codestral: 'CODESTRAL' };
+    const TEST_CHAT_PROVIDER_SHORT = { umans: '[UMANS] ', freebuff: '[FREEBUFF] ', agnes: '[AGNES] ', bitnet: '[BITNET] ', codestral: '[CODESTRAL] ' };
 
     function populateTestChatModelSelect() {
       const sel = document.getElementById('testChatModelSelect');
       if (!sel) return;
       const currentVal = sel.value;
-      const _provToTag = { umans: 'umans', zen: 'zen', freebuff: 'freebuff', agnes: 'agnes', openrouter: 'openrouter', bitnet: 'bitnet', codestral: 'codestral', deepseek: 'deepseek' };
+      const _provToTag = { umans: 'umans', freebuff: 'freebuff', agnes: 'agnes', bitnet: 'bitnet', codestral: 'codestral' };
        const activeTags = new Set(_activeProviders.map(p => _provToTag[p] || p));
       const visibleModels = models.filter(m => activeTags.has(m.providerTag || 'umans') && m.enabled !== false);
       if (visibleModels.length === 0) {
@@ -2534,7 +2486,7 @@
         if (!groups[pt]) groups[pt] = [];
         groups[pt].push(m);
       });
-      const providerOrder = ['umans', 'agnes', 'freebuff', 'deepseek', 'openrouter', 'zen', 'bitnet', 'codestral'];
+      const providerOrder = ['umans', 'agnes', 'freebuff', 'bitnet', 'codestral'];
       let html = '';
       for (const pt of providerOrder) {
         if (!groups[pt]) continue;

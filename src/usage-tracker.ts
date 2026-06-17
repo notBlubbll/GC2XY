@@ -22,18 +22,7 @@ const _endpoints: Record<EndpointType, EndpointStats> = {
   other: { requests: 0, inputTokens: 0, outputTokens: 0, cost: 0 },
 };
 
-let _persistedZenStats: { requests: number; tokens: number; cost: number; balance: number } | null = null;
-let _lastSync = 0;
-const SYNC_INTERVAL = 30000;
-
-export function setZenStats(stats: { requests: number; tokens: number; cost: number; balance: number }) {
-  _persistedZenStats = stats;
-  _lastSync = Date.now();
-}
-
-export function getZenStats() {
-  return _persistedZenStats;
-}
+const DEFAULT_COST_PER_TOKEN = 0.0000005;
 
 export function trackRequest(endpoint: EndpointType, inputTokens = 0, outputTokens = 0) {
   const e = _endpoints[endpoint] || _endpoints.other;
@@ -41,10 +30,7 @@ export function trackRequest(endpoint: EndpointType, inputTokens = 0, outputToke
   e.inputTokens += inputTokens;
   e.outputTokens += outputTokens;
   if (outputTokens > 0) {
-    const costPerTok = _persistedZenStats && _persistedZenStats.tokens > 0
-      ? _persistedZenStats.cost / _persistedZenStats.tokens
-      : 0.0000005;
-    e.cost += outputTokens * costPerTok;
+    e.cost += outputTokens * DEFAULT_COST_PER_TOKEN;
   }
 }
 
@@ -55,11 +41,12 @@ export function detectEndpoint(req: { url?: string; method?: string; headers?: R
 
   if (ua.startsWith("github-app/")) return "ghcp";
   if (ua.includes("vscopilotclient")) return "copilot";
-  if (ua.includes("vsteamexplorer") || (req.headers?.["editor-version"] || "").toLowerCase().includes("vs/visualstudio")) return "vs";
+  const _edVer = (req.headers?.["editor-version"] || "").toLowerCase();
+  const _interactionType = req.headers?.["x-interaction-type"] || "";
+  if (ua.includes("vsteamexplorer") || _edVer.includes("vs/visualstudio") || _edVer.startsWith("vs/ssms") || _interactionType.includes("ssmsagent")) return "vs";
   if (host.includes("githubcopilot.com") || host.includes("copilot-proxy")) {
     if (url.includes("/chat/completions") || url.includes("/v1/messages") || url.includes("/responses") || url.includes("/agents/")) {
-      const edVer = (req.headers?.["editor-version"] || "").toLowerCase();
-      return edVer.includes("vs/visualstudio") ? "vs" : "copilot";
+      return _edVer.includes("vs/visualstudio") || _edVer.startsWith("vs/ssms") || _interactionType.includes("ssmsagent") ? "vs" : "copilot";
     }
     return "copilot";
   }

@@ -136,7 +136,11 @@ timeout /t 2 /nobreak >nul
 exit /b 0
 
 :read_config_mode
-for /f "usebackq delims=" %%m in (`powershell -NoProfile -Command "try{$c=Get-Content '.config\config.json' -Raw|ConvertFrom-Json;if($c.mode){Write-Output $c.mode}}catch{}" 2^>nul`) do set "INIT_MODE=%%m"
+if exist ".cache\restart-mode" (
+    set /p INIT_MODE=<".cache\restart-mode"
+) else if exist ".config\config.json" (
+    for /f "usebackq delims=" %%m in (`powershell -NoProfile -Command "try{$c=Get-Content '.config\config.json' -Raw|ConvertFrom-Json;if($c.mode){Write-Output $c.mode}}catch{}" 2^>nul`) do set "INIT_MODE=%%m"
+)
 if not defined INIT_MODE set "INIT_MODE=mock"
 exit /b 0
 

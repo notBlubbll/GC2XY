@@ -1,9 +1,8 @@
-import { jsonResponse, HandlerInput, HandlerResult } from "../../shared.ts";
+import { jsonResponse, HandlerInput, HandlerResult, filterModelsByConfig } from "../../shared.ts";
 import { getModelCtx, modelHasVision, getModelDisplayName } from "../openai-provider.ts";
 import { getFreebuffModelPremium } from "../freebuff-client.ts";
 import { addModels } from "../../models.ts";
 import { isDebug } from "../../split-console.ts";
-import { filterModelsByConfig } from "../dashboard-handler.ts";
 
 const GHCP_MODELS: any[] = [];
 let _lastModelIds: string[] = [];

@@ -5,19 +5,21 @@ import { handleAuth } from "./auth-handler.ts";
 import { handleCopilot } from "./copilot-handler.ts";
 import { handleRepo } from "./repo-handler.ts";
 import { handleVisualStudio } from "./vs/handler.ts";
-import { handleVSAuth } from "./vs/auth.ts";
+import { handleVSShell } from "./vs-shell/index.ts";
 import { handleGHCPApp } from "./ghcp-app/index.ts";
-import { handleSQLStudio } from "./sql-studio/index.ts";
+import { handleSQLStudioChat } from "./sql-studio/index.ts";
 import { isDebug } from "../split-console.ts";
 
 export async function handleDeviceLogin(req: HandlerInput): Promise<HandlerResult> {
   try {
     let result: HandlerResult;
 
-    result = handleVSAuth(req);
-    if (result.handled) return result;
-
-    result = await handleSQLStudio(req);
+    // Unified VS-family auth (VS Copilot Client + VS Team Explorer).
+    // Handles copilot_internal/* for both, and explicitly passes through
+    // OAuth/login routes so handleAuth can issue fake tokens — the VS
+    // chat handler's catch-all would otherwise swallow them with a
+    // token-less mock and break sign-in (VS error 723).
+    result = handleVSShell(req);
     if (result.handled) return result;
 
     result = handleAuth(req);
@@ -27,6 +29,11 @@ export async function handleDeviceLogin(req: HandlerInput): Promise<HandlerResul
     if (result.handled) return result;
 
     result = await handleGHCPApp(req);
+    if (result.handled) return result;
+
+    // VS Team Explorer chat requests spoof editor-version then delegate to
+    // the VS chat handler. Auth routes already handled above by handleVSShell.
+    result = await handleSQLStudioChat(req);
     if (result.handled) return result;
 
     result = await handleVisualStudio(req);

@@ -2,7 +2,7 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { isDebug } from "../split-console.ts";
-import { getProjectRoot, normalizeTool, normalizeToolChoice } from "../shared.ts";
+import { getProjectRoot, normalizeTool, normalizeToolChoice, readJsonSync, getModelProviderTag } from "../shared.ts";
 
 // Reasoning cache: stores reasoning_content from DeepSeek responses
 // and re-attaches it on subsequent requests (DeepSeek requires this)
@@ -31,16 +31,10 @@ function keyHash(): string {
   return crypto.createHash("sha256").update(deduped.join("")).digest("hex");
 }
 
-function openRouterKeyHash(): string {
-  const key = getOpenRouterApiKeyLive();
-  if (!key) return "no-openrouter-key";
-  return crypto.createHash("sha256").update(key).digest("hex");
-}
-
 function loadKeyHashFromDisk(): string | null {
   try {
     const p = path.join(ensureCacheDir(), "keyhash.json");
-    return JSON.parse(fs.readFileSync(p, "utf8")).h || null;
+    return readJsonSync(p).h || null;
   } catch { return null; }
 }
 
@@ -80,7 +74,7 @@ function loadKeyState(): Record<string, any> {
   try {
     const p = keyStatePath();
     if (!fs.existsSync(p)) return {};
-    const data = JSON.parse(fs.readFileSync(p, "utf8"));
+    const data = readJsonSync(p);
     if (isDebug()) console.log(`\n[KEY CACHE] loaded key state from ${p}`);
     return data;
   } catch { return {}; }
@@ -191,22 +185,9 @@ function injectCachedReasoning(messages: any[], modelId: string): any[] {
   });
 }
 
-function getOpenRouterApiKeyLive(): string {
-  try {
-    const p = path.join(getProjectRoot(), ".config", "config.json");
-    if (fs.existsSync(p)) {
-      const c = JSON.parse(fs.readFileSync(p, "utf-8"));
-      return c.openrouterKey || "";
-    }
-  } catch {}
-  return "";
-}
-
 const CONFIG = {
   baseUrl: "https://opencode.ai/zen/go/v1",
   baseUrlFree: "https://opencode.ai/zen/v1",
-  openRouterBaseUrl: "https://openrouter.ai/api/v1",
-  get openRouterApiKey(): string { return getOpenRouterApiKeyLive(); },
   maxRetries: 3,
 };
 
@@ -383,10 +364,9 @@ function parseRetryAfter(resp: Response): number {
 
 import { chatCompletion as codestralChat } from "./codestral-client.ts";
 
-function getModelTier(modelId: string): "go" | "free" | "openrouter" | "codestral" {
+function getModelTier(modelId: string): "go" | "free" | "codestral" {
   const l = modelId.toLowerCase();
   if (l.startsWith("codestral")) return "codestral";
-  if (l.startsWith("openrouter/")) return "openrouter";
   if (l.endsWith("-free") || l === "big-pickle" || l === "nemotron-3-super-free" || l === "ring-2.6-1t-free") return "free";
   return "go";
 }
@@ -415,15 +395,14 @@ async function _doChatCompletion(modelId: string, messages: any[], tools?: any[]
     return codestralChat(modelId, messages, tools, stream, extra);
   }
   const isFree = tier === "free";
-  const isOpenRouter = tier === "openrouter";
 
   if (isFree) {
     throw new Error("Free tier is throttled. Try again later.");
   }
 
-  const base: string = isOpenRouter ? CONFIG.openRouterBaseUrl : CONFIG.baseUrl;
+  const base: string = CONFIG.baseUrl;
   const url = `${base}/chat/completions`;
-  const key = isOpenRouter ? CONFIG.openRouterApiKey : withKey(pinnedKeyIdx);
+  const key = withKey(pinnedKeyIdx);
 
   // Extract and normalize tool_choice from extra before body spread
   let _toolChoice: any;
@@ -434,7 +413,7 @@ async function _doChatCompletion(modelId: string, messages: any[], tools?: any[]
 
   const injected = injectCachedReasoning(messages, modelId);
   const body: any = { ...extra };
-  body.model = isOpenRouter ? modelId.replace(/^openrouter\//, "") : modelId;
+  body.model = modelId;
   body.messages = injected.map((msg: any) => {
     const out: any = { role: msg.role, content: msg.content };
     if (msg.tool_calls?.length) out.tool_calls = msg.tool_calls;
@@ -461,18 +440,13 @@ async function _doChatCompletion(modelId: string, messages: any[], tools?: any[]
 
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (sessionLabel) headers["x-session"] = sessionLabel;
-  if (isOpenRouter) {
-    if (key) headers["Authorization"] = `Bearer ${key}`;
-    else throw new Error("No OpenRouter API key configured.");
-  } else {
-    if (key) {
-      headers["Authorization"] = `Bearer ${key}`;
-    } else if (!isFree) {
-      if (balancer && !balancer.hasAvailable()) {
-        throw new Error("All API keys are rate-limited. Please wait for cooldown to expire.");
-      }
-      throw new Error("No API key configured. Free tier models can be used without a key.");
+  if (key) {
+    headers["Authorization"] = `Bearer ${key}`;
+  } else if (!isFree) {
+    if (balancer && !balancer.hasAvailable()) {
+      throw new Error("All API keys are rate-limited. Please wait for cooldown to expire.");
     }
+    throw new Error("No API key configured. Free tier models can be used without a key.");
   }
 
   // Log full request details for debugging
@@ -576,7 +550,7 @@ async function _doChatCompletion(modelId: string, messages: any[], tools?: any[]
 
 // ── Per-Provider Model Caching ──
 
-type Provider = "go" | "zen" | "openrouter";
+type Provider = "go" | "zen";
 
 function modelDiskPath(provider: Provider): string {
   return path.join(ensureCacheDir(), `models-${provider}.json`);
@@ -586,8 +560,8 @@ function loadProviderModels(provider: Provider): string[] | null {
   try {
     const p = modelDiskPath(provider);
     if (!fs.existsSync(p)) return null;
-    const data = JSON.parse(fs.readFileSync(p, "utf8"));
-    const h = provider === "openrouter" ? openRouterKeyHash() : keyHash();
+    const data = readJsonSync(p);
+    const h = keyHash();
     if (data._keyHash !== h) {
       if (isDebug()) console.log(`\n[MODEL CACHE:${provider.toUpperCase()}] key hash changed — re-fetching`);
       return null;
@@ -599,7 +573,7 @@ function loadProviderModels(provider: Provider): string[] | null {
 function saveProviderModels(provider: Provider, ids: string[]): void {
   try {
     ensureCacheDir();
-    const h = provider === "openrouter" ? openRouterKeyHash() : keyHash();
+    const h = keyHash();
     fs.writeFileSync(modelDiskPath(provider), JSON.stringify({ _modelIds: ids, _keyHash: h }));
     if (isDebug()) console.log(`\n[MODEL CACHE:${provider.toUpperCase()}] saved ${ids.length} model IDs`);
   } catch {}
@@ -719,27 +693,7 @@ export function getModelFamily(id: string): string {
 
 // ── Per-provider model ID caches ──
 let _cachedGoIds: string[] | null = null;
-let _cachedOpenRouterIds: string[] | null = null;
 let _providersInitialized = false;
-
-async function fetchOpenRouterModels(): Promise<string[]> {
-  // Disabled for now.
-  // To enable fetching, uncomment and use:
-  //   const apiKey = getOpenRouterApiKeyLive();
-  //   if (!apiKey) return [];
-  //   const resp = await fetchWithTimeout("https://openrouter.ai/api/v1/models", {
-  //     headers: { "Authorization": `Bearer ${apiKey}`, "User-Agent": "gc2xy/3.0" },
-  //   });
-  //   if (resp.ok) {
-  //     const data: any = await resp.json();
-  //     const ids: string[] = (data?.data || []).map((m: any) => typeof m === "string" ? m : m.id || "").filter((id: string) => id.length > 0);
-  //     if (ids.length > 0) {
-  //       saveProviderModels("openrouter", ids);
-  //       return ids;
-  //     }
-  //   }
-  return [];
-}
 
 async function initProviderModels(provider: Provider, goKey?: string): Promise<string[]> {
   const diskIds = loadProviderModels(provider);
@@ -753,8 +707,6 @@ async function initProviderModels(provider: Provider, goKey?: string): Promise<s
   let fetched: string[] = [];
   if (provider === "go") {
     fetched = await fetchGoModels(goKey || "");
-  } else if (provider === "openrouter") {
-    fetched = await fetchOpenRouterModels();
   }
 
   if (fetched.length > 0) {
@@ -765,7 +717,7 @@ async function initProviderModels(provider: Provider, goKey?: string): Promise<s
 
 export async function initModels(): Promise<string[]> {
   if (_providersInitialized && _cachedGoIds && _cachedGoIds.length > 0) {
-    return [..._cachedGoIds, ...(_cachedOpenRouterIds || [])];
+    return [..._cachedGoIds];
   }
 
   loadDisplayNameOverrides();
@@ -780,29 +732,26 @@ export async function initModels(): Promise<string[]> {
   }
   if (!goKey && keys.length > 0) goKey = keys[0];
 
-  const [goIds, openRouterIds] = await Promise.all([
+  const [goIds] = await Promise.all([
     initProviderModels("go", goKey),
-    initProviderModels("openrouter"),
     fetchModelCtxMap(),
   ] as any);
 
   _cachedGoIds = goIds || [];
-  _cachedOpenRouterIds = openRouterIds || [];
   _providersInitialized = true;
 
-  const allIds = [..._cachedGoIds, ..._cachedOpenRouterIds];
-  if (isDebug()) console.log(`\n[MODEL CACHE] init complete: ${allIds.length} models (${_cachedGoIds.length} go + ${_cachedOpenRouterIds.length} openrouter)`);
+  const allIds = [..._cachedGoIds];
+  if (isDebug()) console.log(`\n[MODEL CACHE] init complete: ${allIds.length} models (${_cachedGoIds.length} go)`);
   return allIds;
 }
 
 export function getModelIds(): string[] {
   if (!_providersInitialized) return [];
-  return [...(_cachedGoIds || []), ...(_cachedOpenRouterIds || [])];
+  return [...(_cachedGoIds || [])];
 }
 
 export function getProviderModelIds(provider: Provider): string[] {
   if (provider === "go") return _cachedGoIds || [];
-  if (provider === "openrouter") return _cachedOpenRouterIds || [];
   return [];
 }
 
@@ -813,7 +762,7 @@ export function loadDisplayNameOverrides() {
   try {
     const p = path.join(getProjectRoot(), ".config", "config.json");
     if (fs.existsSync(p)) {
-      const c = JSON.parse(fs.readFileSync(p, "utf-8"));
+      const c = readJsonSync(p);
       if (c.modelDisplayNames && typeof c.modelDisplayNames === "object") {
         _displayNameOverrides = c.modelDisplayNames;
       }
@@ -836,23 +785,14 @@ export function setDisplayNameOverride(id: string, name: string) {
     const p = path.join(getProjectRoot(), ".config", "config.json");
     let config: any = {};
     if (fs.existsSync(p)) {
-      config = JSON.parse(fs.readFileSync(p, "utf-8"));
+      config = readJsonSync(p);
     }
     config.modelDisplayNames = { ..._displayNameOverrides };
     fs.writeFileSync(p, JSON.stringify(config, null, 2));
   } catch {}
 }
 
-export function getModelProviderTag(modelId: string): string {
-  if (modelId.startsWith("freebuff/")) return "freebuff";
-  if (modelId.startsWith("openrouter/")) return "openrouter";
-  if (modelId.startsWith("agnes")) return "agnes";
-  if (modelId.startsWith("codestral")) return "codestral";
-  if (modelId.startsWith("bitnet/") || modelId === "bitnet-demo") return "bitnet";
-  if (modelId.toLowerCase().includes("deepseek")) return "deepseek";
-  if (modelId.endsWith("-free") || modelId === "big-pickle" || modelId === "nemotron-3-super-free" || modelId === "ring-2.6-1t-free") return "zen";
-  return "go";
-}
+export { getModelProviderTag };
 
 export function getKeyStatus(): any[] {
   loadKeys();

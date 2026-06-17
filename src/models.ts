@@ -7,20 +7,22 @@ import { initModels as initAgnes, getModelIds as getAgnes } from "./handlers/agn
 import { initModels as initCodestral, getModelIds as getCodestralIds } from "./handlers/codestral-client.ts";
 import { getModelIds as getBitnetIds } from "./handlers/bitnet-client.ts";
 import { initModels as initUmans, getModelIds as getUmansIds } from "./handlers/umans-client.ts";
+import { initModels as initGo, getModelIds as getGoIds } from "./handlers/openai-provider.ts";
 
 export async function addModels(): Promise<string[]> {
-  const [fbIds, agnesIds, codestralIds, umansIds] = await Promise.all([
+  const [fbIds, agnesIds, codestralIds, umansIds, goIds] = await Promise.all([
     initFreebuffModels(),
     initAgnes(),
     initCodestral(),
     initUmans(),
+    initGo(),
   ]);
 
-  const all = [...new Set([...fbIds, ...agnesIds, ...codestralIds, ...getBitnetIds(), ...umansIds])];
+  const all = [...new Set([...fbIds, ...agnesIds, ...codestralIds, ...getBitnetIds(), ...umansIds, ...goIds])];
   setModelsList(all);
   return all;
 }
 
 export function getModelIds(): string[] {
-  return [...new Set([...getFreebuffModelIds(), ...getAgnes(), ...getCodestralIds(), ...getBitnetIds(), ...getUmansIds()])];
+  return [...new Set([...getFreebuffModelIds(), ...getAgnes(), ...getCodestralIds(), ...getBitnetIds(), ...getUmansIds(), ...getGoIds()])];
 }

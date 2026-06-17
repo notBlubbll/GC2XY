@@ -72,6 +72,7 @@ echo   CA certificate installed.
 :skip_cert
 
 if defined gc2xy_MODE set "CUR_MODE=%gc2xy_MODE%"
+if not defined CUR_MODE if exist ".cache\restart-mode" set /p CUR_MODE=<".cache\restart-mode"
 if not defined CUR_MODE for /f "usebackq delims=" %%m in (`powershell -NoProfile -Command "try{$c=Get-Content '.config\config.json' -Raw|ConvertFrom-Json;if($c.mode){Write-Output $c.mode}}catch{}" 2^>nul`) do set "CUR_MODE=%%m"
 if not defined CUR_MODE set "CUR_MODE=mock"
 
@@ -85,7 +86,9 @@ if "%CUR_MODE%"=="hybrid" set MCLI_FLAGS=--mode-2 && goto :run_detected
 goto :run_detected
 
 :restart_persisted
-for /f "usebackq delims=" %%m in (`powershell -NoProfile -Command "try{$c=Get-Content '.config\config.json' -Raw|ConvertFrom-Json;if($c.mode){Write-Output $c.mode}}catch{}" 2^>nul`) do set "CUR_MODE=%%m"
+if exist ".cache\restart-mode" (
+    set /p CUR_MODE=<".cache\restart-mode"
+) else for /f "usebackq delims=" %%m in (`powershell -NoProfile -Command "try{$c=Get-Content '.config\config.json' -Raw|ConvertFrom-Json;if($c.mode){Write-Output $c.mode}}catch{}" 2^>nul`) do set "CUR_MODE=%%m"
 goto :restart
 
 :set_proxy_mode

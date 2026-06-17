@@ -4,7 +4,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { getProjectRoot, normalizeTool } from "../shared.ts";
+import { getProjectRoot, normalizeTool, readJsonSync } from "../shared.ts";
 import { isDebug } from "../split-console.ts";
 
 const BASE = "https://api.featherless.ai/v1";
@@ -13,7 +13,7 @@ function getFeatherlessKey(): string {
   try {
     const p = path.join(getProjectRoot(), ".config", "config.json");
     if (fs.existsSync(p)) {
-      const c = JSON.parse(fs.readFileSync(p, "utf-8"));
+      const c = readJsonSync(p);
       return c.featherlessKey || "";
     }
   } catch {}
@@ -34,9 +34,8 @@ function loadCachedModels(): string[] | null {
   try {
     const p = modelDiskPath();
     if (fs.existsSync(p)) {
-      const data = JSON.parse(fs.readFileSync(p, "utf-8"));
+      const data = readJsonSync(p);
       if (Array.isArray(data) && data.length > 0) return data;
-    }
   } catch {}
   return null;
 }
@@ -99,7 +98,7 @@ export function getModelIds(): string[] {
   try {
     const p = path.join(getProjectRoot(), ".config", "config.json");
     if (fs.existsSync(p)) {
-      const c = JSON.parse(fs.readFileSync(p, "utf-8"));
+      const c = readJsonSync(p);
       const dm = c.disabledModels as Record<string, string[]> | undefined;
       const disabledSet = new Set(dm?.featherless || []);
       return _cachedIds.filter(id => !disabledSet.has(id));

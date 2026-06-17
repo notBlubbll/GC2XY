@@ -1,6 +1,6 @@
 import forge from "node-forge";
 import { readFileSync, appendFileSync, existsSync, mkdirSync } from "node:fs";
-import { jsonResponse, HandlerInput, HandlerResult, countConsecutiveNags, stripNagMessages, RECENTLY_COMPLETED, RECENT_BODIES, injectIdentity, compactIdentity, scrubTaskComplete, compressToolDefinitions, stripCopilotGreeting, getProjectRoot, normalizeToolCallId } from "../../shared.ts";
+import { jsonResponse, HandlerInput, HandlerResult, countConsecutiveNags, stripNagMessages, RECENTLY_COMPLETED, RECENT_BODIES, injectIdentity, compactIdentity, scrubTaskComplete, compressToolDefinitions, stripCopilotGreeting, getProjectRoot, normalizeToolCallId, safePreviewFromContent } from "../../shared.ts";
 import { chatCompletion as openAIChat, detectSessionSignal, extractUserPrompt, getModelDisplayName, getModelProviderTag } from "../openai-provider.ts";
 import { buildResponsesFromChatCompletion, streamChatCompletionToResponses, streamResponsesObjectToSSE, flattenResponsesInput, ResponsesOptions } from "./response-converter.ts";
 import { StreamResponseLogger } from "../../streaming-log.ts";
@@ -53,7 +53,7 @@ import { trackRequest } from "../../usage-tracker.ts";
 import { appendFileSync } from "node:fs";
 import { getProjectRoot } from "../../shared.ts";
 import { anthropicToOpenAIRequest } from "../anthropic-bridge.ts";
-import { filterModelsByConfig } from "../dashboard-handler.ts";
+import { filterModelsByConfig } from "../../shared.ts";
 
 function isProviderRouted(model: string): boolean {
   if (model.startsWith("freebuff/")) return true;
@@ -146,9 +146,7 @@ import {
 const _WINDOWS_PATH_RE = /([A-Z]:\\(?:[^"'\s,;}\])\\]+\\)*[^"'\s,;}\])\\]+\.\w+)/gi;
 function _extractFilenameFromContext(messages: any[]): string {
   for (const m of messages) {
-    const text = typeof m.content === "string" ? m.content
-      : Array.isArray(m.content) ? m.content.map((c: any) => c.text || "").join(" ")
-      : "";
+    const text = safePreviewFromContent(m.content);
     if (!text) continue;
     const matches = text.match(_WINDOWS_PATH_RE);
     if (matches?.length) return matches[matches.length - 1]; // last path = most specific
@@ -495,8 +493,7 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
 
     // ── VS retry dedup: same model+prompt within 5s → empty stop ──
     const _lastUser = [..._v1NagMessages].reverse().find((m: any) => m.role === "user");
-    const _prompt = typeof _lastUser?.content === "string" ? _lastUser.content.slice(-200) :
-      Array.isArray(_lastUser?.content) ? _lastUser.content.map((c: any) => c.text || "").join("").slice(-200) : "";
+    const _prompt = safePreviewFromContent(_lastUser?.content).slice(-200);
     const _vsDedupKey = `${_v1NagModel}:${_prompt}`;
     if (_prompt && (RECENT_BODIES.get(_vsDedupKey) ?? 0) && Date.now() - (RECENT_BODIES.get(_vsDedupKey) ?? 0) < 5000) {
       const _id = `msg_${forge.util.bytesToHex(forge.random.getBytesSync(8))}`;
@@ -615,10 +612,7 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
       const lastUserMsg = [...bridge.messages].reverse().find((m: any) => m.role === "user");
       const vsTag = agentTag(headers);
       const vsProvider = model.startsWith("umans-") ? "umans" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "go";
-      const messagesPreview = lastUserMsg ? (
-        typeof lastUserMsg.content === "string" ? lastUserMsg.content :
-        Array.isArray(lastUserMsg.content) ? lastUserMsg.content.filter((c: any) => c.type === "text").map((c: any) => c.text || "").join(" ") : ""
-      ) : "";
+      const messagesPreview = lastUserMsg ? safePreviewFromContent(lastUserMsg.content) : "";
       const messagesComplete = reqLog({ tag: vsTag, provider: vsProvider, model, preview: messagesPreview, body: parsed });
 
       v1Log({ type: "bridge", model: bridge.model, messages: bridge.messages.slice(-3), toolsCount: (bridge.tools || []).length, stream: bridge.stream, max_tokens: bridge.max_tokens });
@@ -946,8 +940,7 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
     const _respInitiator = headers["x-initiator"] || "";
     const _respInput = Array.isArray(parsed.input) ? parsed.input : [];
     const _lastUser = [..._respInput].reverse().find((m: any) => m.role === "user" || (m.type === "message" && m.role === "user"));
-    const _userText = typeof _lastUser?.content === "string" ? _lastUser.content :
-      Array.isArray(_lastUser?.content) ? _lastUser.content.map((c: any) => c.text || "").join(" ") : "";
+    const _userText = safePreviewFromContent(_lastUser?.content);
     const _isAgentic = _respInitiator === "agent";
     const _nagCount = _isAgentic ? countConsecutiveNags(_respInput) : 0;
 
@@ -1028,10 +1021,7 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
       const vsProvider = model.startsWith("umans-") ? "umans" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "go";
 
       const lastPreview = [...cleanMessages].reverse().find((m: any) => m.role === "user");
-      const messagesPreview = lastPreview ? (
-        typeof lastPreview.content === "string" ? lastPreview.content :
-        Array.isArray(lastPreview.content) ? lastPreview.content.filter((c: any) => c.type === "text").map((c: any) => c.text || "").join(" ") : ""
-      ) : "";
+      const messagesPreview = lastPreview ? safePreviewFromContent(lastPreview.content) : "";
       responsesComplete = reqLog({ tag: vsTag, provider: vsProvider, model, preview: messagesPreview, body: parsed });
 
       const respExtras: Record<string, any> = {};
@@ -1066,6 +1056,9 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
         parallel_tool_calls: parsed.parallel_tool_calls,
         text: parsed.text,
         store: parsed.store,
+        // Pass conversation history so the tool salvager's detectToolLoop can
+        // walk prior assistant turns on the /responses streaming path.
+        messages: cleanMessages,
       };
 
       const upstreamIsSSE = respCt.includes("event-stream") || rawText.trim().startsWith("data:");
@@ -1180,6 +1173,30 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
       const rr = buildResponsesFromChatCompletion({
         choices: [{ message: { role: "assistant", content: `Mock response (upstream: ${e.message})` } }]
       }, { model: parsed.model || "unknown" });
+      // If the client requested streaming, we MUST respond with SSE — returning
+      // a plain JSON body here leaves VS in SSE-parsing mode and throws
+      // "Can not write new content part while streaming block is open" /
+      // NullReferenceException in CopilotClient.ChatCoreWithResponsesAPIAsync.
+      // The SSE response headers may not have been written yet (the error can
+      // fire before the streaming block at line ~1099), so write them here
+      // before streaming the error object.
+      const sock = req.clientSocket;
+      if (isStream && sock && !sock.destroyed && !sock.closed) {
+        const copilotServiceReqId = headers["x-request-id"] || forge.util.bytesToHex(forge.random.getBytesSync(16));
+        const quotaHeaders = buildQuotaSnapshotHeaders();
+        const respHead = `HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\ncontent-security-policy: default-src 'none'; sandbox\r\nstrict-transport-security: max-age=31536000\r\naccess-control-allow-origin: *\r\nx-accel-buffering: no\r\nx-copilot-service-request-id: ${copilotServiceReqId}\r\n${quotaHeaders}connection: close\r\n\r\n`;
+        try {
+          sock.write(respHead);
+          for await (const chunk of streamResponsesObjectToSSE(rr)) {
+            if (sock.destroyed || sock.closed) break;
+            try { sock.write(chunk); } catch { break; }
+          }
+        } catch (sseErr: any) {
+          vsRespLog(`[FATAL SSE] ${sseErr.message}`);
+        }
+        try { sock.end(); } catch {}
+        return { handled: true, response: { statusCode: 200, headers: {}, body: Buffer.alloc(0), _streamed: true } };
+      }
       return { handled: true, response: jsonResponse(rr) };
     }
   }
@@ -1194,8 +1211,7 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
 
     // ── VS retry dedup: same model+prompt within 5s → empty stop ──
     const _chatLastUser = [...messages].reverse().find((m: any) => m.role === "user");
-    const _chatPrompt = typeof _chatLastUser?.content === "string" ? _chatLastUser.content.slice(-200) :
-      Array.isArray(_chatLastUser?.content) ? _chatLastUser.content.map((c: any) => c.text || "").join("").slice(-200) : "";
+    const _chatPrompt = safePreviewFromContent(_chatLastUser?.content).slice(-200);
     const _chatDedupKey = `${model}:${_chatPrompt}`;
     if (_chatPrompt && (RECENT_BODIES.get(_chatDedupKey) ?? 0) && Date.now() - (RECENT_BODIES.get(_chatDedupKey) ?? 0) < 5000) {
       const _cid = `chatcmpl-${forge.util.bytesToHex(forge.random.getBytesSync(6))}`;
@@ -1422,6 +1438,15 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
   // POST /models - VS model list
   const vsModelsResult = await handleVSModels(req);
   if (vsModelsResult.handled) return vsModelsResult;
+
+  // Never swallow OAuth/auth routes with the catch-all mock — returning
+  // {"ok":true,"message":"VS mock response"} (no access_token) breaks the
+  // GitHub account sign-in flow (VS error 723: "authorization token is null
+  // after OAuth client request"). Let handleAuth handle them.
+  const isAuthRoute = url.includes("/login/oauth/") || url.includes("/login/device") || url === "/login" || url.startsWith("/login?");
+  if (isAuthRoute) {
+    return { handled: false };
+  }
 
   // Catch-all for any other VS endpoint — return mock rather than falling through to upstream
   if (isVisualStudio) {

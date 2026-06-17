@@ -2,7 +2,7 @@
 import * as crypto from "node:crypto";
 import * as https from "node:https";
 import { isDebug } from "../split-console.ts";
-import { normalizeTool as sharedNormalizeTool } from "../shared.ts";
+import { normalizeTool as sharedNormalizeTool, compressToolDefinitions } from "../shared.ts";
 
 const UMANS_API_BASE = "https://api.code.umans.ai/v1";
 const APP_BASE = "https://app.umans.ai";
@@ -934,6 +934,7 @@ async function proxyChatRequest(payload: any, requestedModel: string, skipSessio
     (payload as any).thinking = { type: "enabled" };
   }
 
+  let _toolsCompressedTried = false;
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     const isLast = attempt === MAX_RETRIES;
     try {
@@ -950,9 +951,18 @@ async function proxyChatRequest(payload: any, requestedModel: string, skipSessio
         });
       }
       const errorText = await readBodyText(result.body);
-      // UMANS rejects many VS tool schemas with 400; retry once without tools
+      // UMANS rejects many VS tool schemas with 400; log the upstream error so
+      // we can diagnose which schema field is rejected, then retry with
+      // aggressively compressed schemas first (preserves tool calling), and
+      // only fall back to dropping tools entirely as a last resort.
       if (result.status === 400 && payload.tools?.length) {
-        console.log(`[UMANS] 400 with ${payload.tools.length} tool(s), retrying without tools`);
+        console.log(`[UMANS] 400 with ${payload.tools.length} tool(s): ${errorText.slice(0, 400)}`);
+        if (!_toolsCompressedTried) {
+          _toolsCompressedTried = true;
+          payload.tools = compressToolDefinitions(payload.tools);
+          continue;
+        }
+        console.log(`[UMANS] 400 persists after compress, retrying without tools`);
         payload.tools = undefined;
         continue;
       }

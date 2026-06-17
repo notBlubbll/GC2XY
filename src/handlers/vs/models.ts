@@ -1,12 +1,11 @@
 import forge from "node-forge";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { jsonResponse, HandlerInput, HandlerResult, getProjectRoot } from "../../shared.ts";
+import { jsonResponse, HandlerInput, HandlerResult, getProjectRoot, filterModelsByConfig } from "../../shared.ts";
 import { getModelCtx, getModelDisplayName, getModelProviderTag } from "../openai-provider.ts";
 
 import { addModels } from "../../models.ts";
 import { isDebug } from "../../split-console.ts";
-import { filterModelsByConfig } from "../dashboard-handler.ts";
 
 const VS_MODELS: any[] = [];
 let _lastModelIds: string[] = [];
@@ -173,7 +172,7 @@ async function ensureModels() {
     const supports = getSupports(id);
     const providerTag = getModelProviderTag(id);
     const pickerCategory = free ? "lightweight" :
-                           providerTag === "bitnet" || providerTag === "go" ? "others" :
+                           providerTag === "bitnet" ? "others" :
                            picker.category;
 
     const model: any = {
@@ -221,7 +220,7 @@ async function ensureModels() {
         ...model,
         id: taggedId,
         name: taggedName,
-        model_picker_category: free ? "lightweight" : (providerTag === "bitnet" || providerTag === "go" ? "others" : "versatile"),
+        model_picker_category: free ? "lightweight" : (providerTag === "bitnet" ? "others" : "versatile"),
         model_picker_enabled: true,
         is_chat_default: false,
         is_chat_fallback: false,
@@ -238,36 +237,41 @@ async function ensureModels() {
   // Build separators by cloning a real model to avoid field mismatch
   const template = VS_MODELS.find((m: any) => !m.id.startsWith("_cat_") && !m.id.includes("["));
   if (template && VS_MODELS.length > 0) {
-    const SEP_ORDER = ["codestral", "freebuff", "agnes", "deepseek", "openrouter", "zen", "umans"];
+    const SEP_ORDER = ["codestral", "freebuff", "agnes", "umans"];
     const PROVIDER_NAMES: Record<string, string> = {
       freebuff: "\u200D🇫🇷ᴇᴇ ⸻ FreeBuff:",
       agnes: "\u200D\u200D💜 ⸻ AgnesAI:",
       codestral: "\u200D\u200D\u200D🌀 ⸻ Codestral:",
-      deepseek: "\u200D\u200D\u200D\u200D✨ ⸻ DeepSeek:",
-      openrouter: "\u200D\u200D\u200D\u200D\u200D✨ ⸻ OpenRouter:",
-      zen: "\u200D\u200D\u200D\u200D\u200D\u200D⸻ ZEN:",
       umans: "\u200D\u200D\u200D\u200D\u200D\u200D\u200D✨ ⸻ UMANS:",
     };
     // Header banner at very top
     VS_MODELS.splice(0, 0, {
       ...template,
       id: `_cat_header`,
-      name: ".⸻ Model (/Category) ⸻ ContextLength",
+      name: "⸻ Model (/Category) ⸻ ContextLength",
       is_chat_default: false,
       is_chat_fallback: false,
+      model_picker_price_category: "high",
       billing: { ...template.billing, multiplier: 0 },
     });
     const seenTags: string[] = [];
     const others: any[] = [];
     for (let i = VS_MODELS.length - 1; i >= 0; i--) {
-      const tag = getModelProviderTag(VS_MODELS[i].id);
-      if (tag === "bitnet" || tag === "go") {
+      const mid = VS_MODELS[i].id || "";
+      if (mid.startsWith("cat_") || mid.startsWith("_cat_")) continue;
+      const tag = getModelProviderTag(mid);
+      if (tag === "bitnet") {
         others.unshift(VS_MODELS.splice(i, 1)[0]);
+      }
+      if (tag === "go") {
+        VS_MODELS.splice(i, 1);
       }
     }
     for (let i = 0; i < VS_MODELS.length; i++) {
-      const tag = getModelProviderTag(VS_MODELS[i].id);
-      if (!tag || tag === "go" || tag === "bitnet" || seenTags.includes(tag)) continue;
+      const mid = VS_MODELS[i].id || "";
+      if (mid.startsWith("cat_") || mid.startsWith("_cat_")) continue;
+      const tag = getModelProviderTag(mid);
+      if (!tag || tag === "bitnet" || seenTags.includes(tag)) continue;
       seenTags.push(tag);
       const displayName = PROVIDER_NAMES[tag] || tag.toUpperCase();
       VS_MODELS.splice(i, 0, {
@@ -277,6 +281,7 @@ async function ensureModels() {
         is_chat_default: false,
         is_chat_fallback: false,
         model_picker_price_category: "high",
+        billing: { ...template.billing, multiplier: 0 },
       });
       i++;
     }
@@ -289,6 +294,7 @@ async function ensureModels() {
         is_chat_default: false,
         is_chat_fallback: false,
         model_picker_price_category: "high",
+        billing: { ...template.billing, multiplier: 0 },
       });
       VS_MODELS.push(...others);
     }

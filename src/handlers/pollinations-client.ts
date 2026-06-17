@@ -5,7 +5,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { isDebug } from "../split-console.ts";
-import { getProjectRoot } from "../shared.ts";
+import { getProjectRoot, readJsonSync } from "../shared.ts";
 
 const LEGACY_BASE = "https://text.pollinations.ai/openai";
 const AUTH_BASE = "https://enter.pollinations.ai/api/openai/v1";
@@ -14,7 +14,7 @@ function getPollKey(): string {
   try {
     const p = path.join(getProjectRoot(), ".config", "config.json");
     if (fs.existsSync(p)) {
-      const c = JSON.parse(fs.readFileSync(p, "utf-8"));
+      const c = readJsonSync(p);
       return c.pollApiKey || "";
     }
   } catch {}

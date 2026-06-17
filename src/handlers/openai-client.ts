@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { isDebug } from "../split-console.ts";
-import { getProjectRoot, normalizeTool, normalizeToolChoice } from "../shared.ts";
+import { getProjectRoot, normalizeTool, normalizeToolChoice, readJsonSync } from "../shared.ts";
 
 // Reasoning cache: stores reasoning_content from DeepSeek responses
 // and re-attaches it on subsequent requests (DeepSeek requires this)
@@ -216,7 +216,7 @@ export function loadDisplayNameOverrides() {
   try {
     const p = path.join(getProjectRoot(), ".config", "config.json");
     if (fs.existsSync(p)) {
-      const c = JSON.parse(fs.readFileSync(p, "utf-8"));
+      const c = readJsonSync(p);
       if (c.modelDisplayNames && typeof c.modelDisplayNames === "object") {
         _displayNameOverrides = c.modelDisplayNames;
       }
@@ -239,7 +239,7 @@ export function setDisplayNameOverride(id: string, name: string) {
     const p = path.join(getProjectRoot(), ".config", "config.json");
     let config: any = {};
     if (fs.existsSync(p)) {
-      config = JSON.parse(fs.readFileSync(p, "utf-8"));
+      config = readJsonSync(p);
     }
     config.modelDisplayNames = { ..._displayNameOverrides };
     fs.writeFileSync(p, JSON.stringify(config, null, 2));

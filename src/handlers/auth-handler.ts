@@ -1,7 +1,7 @@
 import forge from "node-forge";
 import { jsonResponse, htmlResponse, HttpResponse, HandlerInput, HandlerResult, getMode, isHybrid, getGithubSku, getGithubUsername, getGithubDisplayName } from "../shared.ts";
-import { handleVSAuth } from "./vs/auth.ts";
-import { trackRequest, getZenStats } from "../usage-tracker.ts";
+import { handleVSShell } from "./vs-shell/index.ts";
+import { trackRequest } from "../usage-tracker.ts";
 
 const ENABLED = process.env.FAKE_DEVICE_LOGIN !== "0";
 const FAKE_USER_CODE = process.env.FAKE_USER_CODE || "ABCD-1234";
@@ -31,12 +31,7 @@ function getSkuFields(): { copilot_plan: string; access_type_sku: string; sku: s
 }
 
 function getRemainingQuota(): { chat: number; completions: number } {
-  const zs = getZenStats();
-  if (!zs || !zs.loggedIn || (zs.cost + zs.balance) === 0) return { chat: 210, completions: 1680 };
-  const usedPct = Math.max(0, Math.min(100, (zs.cost / (zs.cost + zs.balance)) * 100));
-  const chatTotal = 500, completionsTotal = 4000;
-  const usedChat = Math.round(chatTotal * usedPct / 100);
-  return { chat: chatTotal - usedChat, completions: completionsTotal - Math.round(completionsTotal * usedPct / 100) };
+  return { chat: 210, completions: 1680 };
 }
 
 function generateDeviceCode(): string {
@@ -149,7 +144,7 @@ export function handleAuth(req: HandlerInput): HandlerResult {
   }
 
   // VS-specific auth responses (enterprise plan) — checked before regular handlers
-  const vsResult = handleVSAuth(req);
+  const vsResult = handleVSShell(req);
   if (vsResult.handled) return vsResult;
 
   // POST /login/device/code - Device authorization request
@@ -688,7 +683,7 @@ export function handleAuth(req: HandlerInput): HandlerResult {
       can_upgrade_plan: canUpgrade,
       chat_enabled: true,
       cli_enabled: true,
-      copilotignore_enabled: true,
+      copilotignore_enabled: false,
       copilot_plan,
       editor_preview_features_enabled: true,
       is_mcp_enabled: true,
@@ -728,7 +723,7 @@ export function handleAuth(req: HandlerInput): HandlerResult {
       code_quote_enabled: true,
       code_review_enabled: true,
       codesearch: true,
-      copilotignore_enabled: true,
+      copilotignore_enabled: false,
       endpoints: {
         api: "https://api.individual.githubcopilot.com",
         "origin-tracker": "https://origin-tracker.individual.githubcopilot.com",
@@ -766,9 +761,20 @@ export function handleAuth(req: HandlerInput): HandlerResult {
   }
 
   // GET /copilot_internal/content_exclusion - VS content exclusion settings
+  // Real GitHub returns 404 for free-tier users (captured). Our previous 200 with
+  // {exclusions:[],scope:"all",enabled:false} failed to deserialize as
+  // CopilotExclusionRules, causing VS to conservatively exclude ALL files and
+  // fail every chat request with CopilotExclusionRulesLoadingException.
+  // Returning 404 lets VS skip exclusion processing gracefully.
   if (method === "GET" && url.includes("/copilot_internal/content_exclusion")) {
-    console.log(`\n[FAKE COPILOT] Intercepting content exclusion: ${url}`);
-    return { handled: true, response: jsonResponse({ exclusions: [], scope: "all", enabled: false }) };
+    console.log(`\n[FAKE COPILOT] Intercepting content exclusion (404): ${url}`);
+    return {
+      handled: true,
+      response: jsonResponse(
+        { message: "Not Found", documentation_url: "https://docs.github.com/rest", status: "404" },
+        404,
+      ),
+    };
   }
 
   // GET /copilot_internal/repository_search - Copilot repo search

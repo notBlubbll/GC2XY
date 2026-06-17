@@ -4,6 +4,10 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
+export function readJsonSync(filePath: string): any {
+  return JSON.parse(readFileSync(filePath, "utf-8").replace(/^\uFEFF/, ""));
+}
+
 type ProxyMode = "mock" | "hybrid" | "proxy";
 
 let _currentMode: ProxyMode = "mock";
@@ -79,6 +83,26 @@ export function normalizeTool(tool: any): any {
     delete t.description;
   }
   return t;
+}
+
+// ── Safe preview extraction from message content ──
+// Returns a plain string for console logging. Guards against non-string
+// .text fields (objects, arrays, numbers) that would otherwise stringify
+// to "[object Object]" when joined.
+export function safePreviewFromContent(content: any): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  const parts: string[] = [];
+  for (const c of content) {
+    if (typeof c === "string") { parts.push(c); continue; }
+    if (!c || typeof c !== "object") continue;
+    if (c.type === "text" || c.type === "input_text" || c.type === "output_text") {
+      const t = c.text;
+      if (typeof t === "string") parts.push(t);
+      else if (t != null) parts.push(safePreviewFromContent(t));
+    }
+  }
+  return parts.join(" ");
 }
 
 // ── Tool call ID normalization ──
@@ -157,32 +181,28 @@ export function normalizeToolChoice(tc: any): any {
 const _ARGS = new Set(typeof process !== "undefined" ? process.argv.slice(1) : []);
 if (_ARGS.has("--mode-3") || process.env.gc2xy_MODE === "proxy") _currentMode = "proxy";
 else if (_ARGS.has("--mode-2") || process.env.gc2xy_MODE === "hybrid") _currentMode = "hybrid";
-try {
-  const _cDir = join(getProjectRoot(), ".config");
-  const _cPath = join(_cDir, "config.json");
-  const _cfg = existsSync(_cPath) ? JSON.parse(readFileSync(_cPath, "utf-8")) : {};
-  _cfg.mode = _currentMode;
-  if (!existsSync(_cDir)) try { mkdirSync(_cDir, { recursive: true }); } catch {}
-  writeFileSync(_cPath, JSON.stringify(_cfg, null, 2));
-} catch {}
+_writeRestartMode(_currentMode);
 
 export function getMode(): ProxyMode { return _currentMode; }
 export function setMode(m: ProxyMode) {
   _currentMode = m;
   process.env.gc2xy_MODE = m;
+  _writeRestartMode(m);
   try {
     const configDir = join(getProjectRoot(), ".config");
     const configPath = join(configDir, "config.json");
-    const cfg = existsSync(configPath) ? JSON.parse(readFileSync(configPath, "utf-8")) : {};
+    const cfg = existsSync(configPath) ? readJsonSync(configPath) : {};
     cfg.mode = m;
     if (!existsSync(configDir)) try { mkdirSync(configDir, { recursive: true }); } catch {}
     writeFileSync(configPath, JSON.stringify(cfg, null, 2));
-    const envPath = join(configDir, ".env");
-    if (existsSync(envPath)) {
-      let env = readFileSync(envPath, "utf8");
-      env = env.replace(/^gc2xy_MODE=.*\r?\n?/gm, "").trimEnd() + "\n";
-      writeFileSync(envPath, env);
-    }
+  } catch {}
+}
+
+function _writeRestartMode(m: ProxyMode): void {
+  try {
+    const cacheDir = join(getProjectRoot(), ".cache");
+    if (!existsSync(cacheDir)) try { mkdirSync(cacheDir, { recursive: true }); } catch {}
+    writeFileSync(join(cacheDir, "restart-mode"), m, "utf8");
   } catch {}
 }
 export function isProxy() { return _currentMode === "proxy"; }
@@ -426,4 +446,36 @@ export function killPortProcess(port: number): void {
       `Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort ${port} -ErrorAction SilentlyContinue | Select -ExpandProperty OwningProcess | ForEach-Object { taskkill /F /PID $_ 2>$null }`
     ], { timeout: 5000, windowsHide: true });
   } catch {}
+}
+
+export function getModelProviderTag(modelId: string): string {
+  if (modelId.startsWith("umans-")) return "umans";
+  if (modelId.startsWith("freebuff/")) return "freebuff";
+  if (modelId.startsWith("openrouter/")) return "openrouter";
+  if (modelId.startsWith("agnes")) return "agnes";
+  if (modelId.startsWith("codestral")) return "codestral";
+  if (modelId.startsWith("bitnet/") || modelId === "bitnet-demo") return "bitnet";
+  if (modelId.endsWith("-free") || modelId === "big-pickle" || modelId === "nemotron-3-super-free" || modelId === "ring-2.6-1t-free") return "zen";
+  return "go";
+}
+
+export function filterModelsByConfig(modelIds: string[]): string[] {
+  const PROVIDER_MAP: Record<string, string> = { freebuff: "freebuff", agnes: "agnes", codestral: "codestral", bitnet: "bitnet", umans: "umans", openrouter: "openrouter", zen: "zen" };
+  try {
+    const cp = join(getProjectRoot(), ".config", "config.json");
+    if (existsSync(cp)) {
+      const cfg = readJsonSync(cp);
+      const activeProviders: string[] = cfg.providers || ["umans"];
+      const activeTags = new Set<string>();
+      for (const pr of activeProviders) {
+        activeTags.add(PROVIDER_MAP[pr] || pr);
+      }
+      let ids = modelIds.filter(id => activeTags.has(getModelProviderTag(id)));
+      const dm: Record<string, string[]> = cfg.disabledModels || {};
+      const disabledSet = new Set(Object.values(dm).flat() as string[]);
+      ids = ids.filter(id => !disabledSet.has(id));
+      return ids;
+    }
+  } catch {}
+  return modelIds;
 }

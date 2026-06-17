@@ -15,9 +15,9 @@ const FREEGEN_PROMPT_SIGNER = "https://prompt-signer.freegen.app/api/test";
 const FREEGEN_IMAGE_GENERATOR = "https://image-generator.freegen.app/api/test";
 const FREEGEN_WS_BRIDGE = "wss://websocket-bridge.freegen.app/ws";
 
-import { HandlerInput, HandlerResult, jsonResponse, getProjectRoot, getMode, setMode, killPortProcess } from "../shared.ts";
+import { HandlerInput, HandlerResult, jsonResponse, getProjectRoot, getMode, setMode, killPortProcess, readJsonSync, getModelProviderTag } from "../shared.ts";
 import { setGithubSku, setGithubUsername, setGithubDisplayName, getGithubSku, getGithubUsername, getGithubDisplayName } from "../shared.ts";
-import { getModelFamily, getModelDisplayName, getModelProviderTag, chatCompletion as openAIChat, getModelCtx, modelHasVision } from "./openai-provider.ts";
+import { getModelFamily, getModelDisplayName, chatCompletion as openAIChat, getModelCtx, modelHasVision } from "./openai-provider.ts";
 import { getFreebuffModelIds, getFreebuffModelPremium, chatCompletion as freebuffChat } from "./freebuff-client.ts";
 import { getModelIds as getBitnetModelIds, chatCompletion as bitnetChat } from "./bitnet-client.ts";
 import { chatCompletion as agnesChat } from "./agnes-client.ts";
@@ -144,8 +144,6 @@ function takeSnapshot(): Record<string, any> {
       const st = getSupermavenStatus();
       return { enabled: _supermavenEnabled, initialized: st.initialized, binaryPath: st.binaryPath };
     })(),
-    openrouterKey: _openRouterApiKey ? `${_openRouterApiKey.slice(0, 5)}...${_openRouterApiKey.slice(-4)}` : "",
-    hasOpenRouterKey: !!_openRouterApiKey,
     codestralKey: _codestralApiKey ? `${_codestralApiKey.slice(0, 5)}...${_codestralApiKey.slice(-4)}` : "",
     hasCodestralKey: !!_codestralApiKey,
     wallpaperProgress: _genProgress,
@@ -225,6 +223,9 @@ function detectDashboardLocale(payload?: any): string {
 
 async function handleWsMessage(ws: WebSocket, msg: any) {
   const { action, payload } = msg;
+  if (action !== "testChat" && action !== "getI18nConfig" && action !== "getI18nBundle") {
+    console.log(`[WS] action=${action}`);
+  }
   switch (action) {
     case "setMode": {
       if (payload?.mode) setMode(payload.mode.toLowerCase());
@@ -233,13 +234,14 @@ async function handleWsMessage(ws: WebSocket, msg: any) {
     }
     case "toggleModel": {
       if (payload?.modelId && payload?.enabled !== undefined) _modelStates[payload.modelId] = payload.enabled;
+      console.log(`[CONFIG] toggleModel: ${payload?.modelId} = ${payload?.enabled}`);
       saveConfig();
       _pushModelStatesToConsole();
       pushStatusToWs();
       break;
     }
     case "batchModelStates": {
-      if (payload?.states) { _modelStates = { ..._modelStates, ...payload.states }; _pushModelStatesToConsole(); }
+      if (payload?.states && Object.keys(payload.states).length > 0) { _modelStates = { ..._modelStates, ...payload.states }; saveConfig(); _pushModelStatesToConsole(); }
       pushStatusToWs();
       break;
     }
@@ -361,6 +363,22 @@ async function handleWsMessage(ws: WebSocket, msg: any) {
         const { keys: _, models: __, ...safeBody } = payload;
         _dashboardConfig = { ..._dashboardConfig, ...safeBody };
         if (payload.mode) setMode(payload.mode.toLowerCase());
+        if (Array.isArray(payload.providers)) {
+          const valid = ["umans", "freebuff", "agnes", "bitnet", "codestral"];
+          _activeProviders = payload.providers.filter((p: string) => valid.includes(p));
+        }
+        if (payload.agnesKey !== undefined) {
+          _agnesApiKey = payload.agnesKey || "";
+          if (_agnesApiKey && _activeProviders.indexOf("agnes") === -1) _activeProviders.push("agnes");
+          else if (!_agnesApiKey) { const idx = _activeProviders.indexOf("agnes"); if (idx !== -1) _activeProviders.splice(idx, 1); }
+        }
+        if (payload.codestralKey !== undefined) {
+          _codestralApiKey = payload.codestralKey || "";
+          if (_codestralApiKey && _activeProviders.indexOf("codestral") === -1) _activeProviders.push("codestral");
+          else if (!_codestralApiKey) { const idx = _activeProviders.indexOf("codestral"); if (idx !== -1) _activeProviders.splice(idx, 1); }
+        }
+        if (payload.completionsModel) _completionsModel = payload.completionsModel;
+        if (typeof payload.supermavenEnabled === "boolean") { _supermavenEnabled = payload.supermavenEnabled; setSupermavenEnabled(_supermavenEnabled); }
         saveConfig();
       }
       pushStatusToWs();
@@ -374,19 +392,9 @@ async function handleWsMessage(ws: WebSocket, msg: any) {
         const idx = _activeProviders.indexOf("agnes");
         if (idx !== -1) _activeProviders.splice(idx, 1);
       }
+      console.log(`[CONFIG] setAgnesKey: ${_agnesApiKey ? "set" : "cleared"}, providers: ${_activeProviders.join(", ")}`);
       saveConfig();
-      pushStatusToWs();
-      break;
-    }
-    case "setOpenRouterKey": {
-      _openRouterApiKey = payload?.key || "";
-      if (_openRouterApiKey && _activeProviders.indexOf("openrouter") === -1) {
-        _activeProviders.push("openrouter");
-      } else if (!_openRouterApiKey) {
-        const idx = _activeProviders.indexOf("openrouter");
-        if (idx !== -1) _activeProviders.splice(idx, 1);
-      }
-      saveConfig();
+      _pushModelStatesToConsole();
       pushStatusToWs();
       break;
     }
@@ -398,7 +406,9 @@ async function handleWsMessage(ws: WebSocket, msg: any) {
         const idx = _activeProviders.indexOf("codestral");
         if (idx !== -1) _activeProviders.splice(idx, 1);
       }
+      console.log(`[CONFIG] setCodestralKey: ${_codestralApiKey ? "set" : "cleared"}, providers: ${_activeProviders.join(", ")}`);
       saveConfig();
+      _pushModelStatesToConsole();
       pushStatusToWs();
       break;
     }
@@ -434,10 +444,12 @@ async function handleWsMessage(ws: WebSocket, msg: any) {
       break;
     }
     case "setProviders": {
-      const valid = ["umans", "zen", "freebuff", "agnes", "openrouter", "bitnet", "codestral", "deepseek"];
+      const valid = ["umans", "freebuff", "agnes", "bitnet", "codestral", "go"];
       if (Array.isArray(payload?.providers)) {
         _activeProviders = payload.providers.filter((p: string) => valid.includes(p));
+        console.log(`[CONFIG] setProviders: ${_activeProviders.join(", ")}`);
         saveConfig();
+        _pushModelStatesToConsole();
       }
       pushStatusToWs();
       break;
@@ -683,7 +695,14 @@ try {
   }
 } catch (e) {}
 
-const PROVIDER_TAG_MAP: Record<string, string> = { zen: "zen", freebuff: "freebuff", agnes: "agnes", codestral: "codestral", bitnet: "bitnet", deepseek: "deepseek", umans: "umans" };
+const PROVIDER_TAG_MAP: Record<string, string> = { freebuff: "freebuff", agnes: "agnes", codestral: "codestral", bitnet: "bitnet", umans: "umans", zen: "zen", openrouter: "openrouter" };
+function activeModelTags(): Set<string> {
+  const tags = new Set<string>();
+  for (const p of _activeProviders) {
+    const t = PROVIDER_TAG_MAP[p] || p; tags.add(t);
+  }
+  return tags;
+}
 
 function syncUmansTranslationKey() {
   const cfg = getUmansConfig();
@@ -698,7 +717,7 @@ let _modelStates: Record<string, boolean> = {};
 function _pushModelStatesToConsole() {
   const modelIds = getModelIds();
 
-  const activeTags = new Set(_activeProviders.map(p => PROVIDER_TAG_MAP[p] || p));
+  const activeTags = activeModelTags();
   const enabled = new Set(modelIds.filter(id => activeTags.has(getModelProviderTag(id)) && _modelStates[id] !== false));
   setEnabledModelIds(enabled);
 }
@@ -710,8 +729,6 @@ let _wallpaperSource = "none";
 let _wallpaperPrompt = "";
 
 let _agnesApiKey = "";
-
-let _openRouterApiKey = "";
 
 let _codestralApiKey = "";
 
@@ -778,7 +795,6 @@ let _dashboardConfig: Record<string, any> = {
   models: [],
   wallpaper: "none",
   agnesKey: "",
-  openrouterKey: "",
   providers: ["umans"],
 };
 
@@ -1031,6 +1047,7 @@ function sendWallpaperData(ws?: WebSocket) {
 
 // Load persisted keys from .config/config.json on startup
 loadConfig();
+saveConfig();
 
 // Start Supermaven client in background (don't block startup)
 initSupermaven().catch((e: any) => console.log("[Supermaven] Init error:", e.message));
@@ -1039,18 +1056,17 @@ function loadConfig() {
   try {
     const p = join(getProjectRoot(), ".config", "config.json");
     if (existsSync(p)) {
-      const c = JSON.parse(readFileSync(p, "utf-8"));
+      const c = readJsonSync(p);
       if (c.wallpaper) _wallpaperSource = c.wallpaper;
       if (c.wallpaperPrompt || c.freegenPrompt) _wallpaperPrompt = c.freegenPrompt || c.wallpaperPrompt;
       if (c.providers && Array.isArray(c.providers)) {
         _activeProviders = c.providers.filter((p: string) => p !== "opencode");
       } else if (c.provider) _activeProviders = [c.provider]; // migrate old single-value
       if (c.agnesKey) { _agnesApiKey = c.agnesKey; if (_activeProviders.indexOf("agnes") === -1) _activeProviders.push("agnes"); }
-      if (c.openrouterKey) { _openRouterApiKey = c.openrouterKey; if (_activeProviders.indexOf("openrouter") === -1) _activeProviders.push("openrouter"); }
       if (c.codestralKey) { _codestralApiKey = c.codestralKey; if (_activeProviders.indexOf("codestral") === -1) _activeProviders.push("codestral"); }
       // migrate legacy providers out of active list
-      if (_activeProviders.some((p: string) => ["opencode", "poll", "featherless"].includes(p))) {
-        _activeProviders = _activeProviders.filter((p: string) => !["opencode", "poll", "featherless"].includes(p));
+      if (_activeProviders.some((p: string) => ["opencode", "poll", "featherless", "openrouter", "zen"].includes(p))) {
+        _activeProviders = _activeProviders.filter((p: string) => !["opencode", "poll", "featherless", "openrouter", "zen"].includes(p));
         if (_activeProviders.length === 0) _activeProviders = ["umans"];
       }
       if (c.githubSettings) {
@@ -1084,8 +1100,13 @@ function loadConfig() {
           if (Array.isArray(ids)) for (const id of ids) _modelStates[id as string] = false;
         }
       }
+      console.log(`[CONFIG] loaded from ${p}: ${_activeProviders.length} providers, ${Object.keys(_modelStates).length} model states`);
+    } else {
+      console.log(`[CONFIG] no config.json found at ${p}`);
     }
-  } catch {}
+  } catch (e: any) {
+    console.log(`[CONFIG] loadConfig failed: ${e?.message}`);
+  }
 }
 
 function saveConfig() {
@@ -1093,12 +1114,12 @@ function saveConfig() {
     const dir = join(getProjectRoot(), ".config");
     if (!existsSync(dir)) try { writeFileSync(join(dir, ".gitkeep"), ""); } catch {}
     const p = join(dir, "config.json");
-    const existing = existsSync(p) ? JSON.parse(readFileSync(p, "utf-8")) : {};
+    const existing = existsSync(p) ? readJsonSync(p) : {};
+    existing.mode = getMode();
     existing.wallpaper = _wallpaperSource;
     existing.wallpaperPrompt = _wallpaperPrompt;
     existing.freegenPrompt = _wallpaperPrompt;
     existing.agnesKey = _agnesApiKey;
-    existing.openrouterKey = _openRouterApiKey;
     existing.codestralKey = _codestralApiKey;
     existing.providers = _activeProviders;
     existing.completionsModel = _completionsModel;
@@ -1114,20 +1135,25 @@ function saveConfig() {
       currentKeyIndex: getUmansCurrentKeyIndex(),
       userId: _umansState.userId || null,
     };
-    const allIds = getModelIds();
-    if (allIds.length > 0) {
-      const dm: Record<string, string[]> = {};
-      for (const id of allIds) {
-        if (_modelStates[id] === false) {
-          const tag = getModelProviderTag(id);
-          if (!dm[tag]) dm[tag] = [];
-          dm[tag].push(id);
+    try {
+      const allIds = getModelIds();
+      if (allIds.length > 0) {
+        const dm: Record<string, string[]> = {};
+        for (const id of allIds) {
+          if (_modelStates[id] === false) {
+            const tag = getModelProviderTag(id);
+            if (!dm[tag]) dm[tag] = [];
+            dm[tag].push(id);
+          }
         }
+        existing.disabledModels = dm;
       }
-      existing.disabledModels = dm;
-    }
+    } catch (e: any) { console.log(`[CONFIG] disabledModels rebuild failed: ${e?.message}`); }
     writeFileSync(p, JSON.stringify(existing, null, 2));
-  } catch {}
+    console.log(`[CONFIG] saved to ${p} (providers: ${_activeProviders.join(",")})`);
+  } catch (e: any) {
+    console.log(`[CONFIG] saveConfig failed: ${e?.message}`);
+  }
 }
 
 function getDashboardHtml(): string {
@@ -1158,7 +1184,7 @@ function getDisplayNameOverride(id: string): string | null {
   try {
     const p = join(getProjectRoot(), ".config", "config.json");
     if (existsSync(p)) {
-      const c = JSON.parse(readFileSync(p, "utf-8"));
+      const c = readJsonSync(p);
       if (c.modelDisplayNames && c.modelDisplayNames[id]) return c.modelDisplayNames[id];
     }
   } catch {}
@@ -1183,32 +1209,17 @@ function formatModelName(id: string): string {
   return `💡 ${parts} [${modes.map(m => tagMap[m] || m).join(", ")}]`;
 }
 
-function getOpenRouterModels(): any[] {
-  const modelIds = getModelIds();
-  const hasKey = !!_openRouterApiKey;
-  return modelIds.filter(id => getModelProviderTag(id) === "openrouter").map((id: string) => {
-    return {
-      id, name: formatModelName(id),
-      family: getModelFamily(id) || "openrouter",
-      providerTag: "openrouter",
-      enabled: hasKey && _modelStates[id] !== false,
-      free: false, locked: !hasKey,
-    };
-  });
-}
-
 function getAgnesModels(): any[] {
   const modelIds = getModelIds();
   return modelIds.map((id: string) => {
     const isFreebuff = id.startsWith("freebuff/");
     const isAgnes = id.startsWith("agnes");
-    const isOpenRouter = id.startsWith("openrouter/");
     const isCodestral = id.startsWith("codestral/");
     const family = getModelFamily(id);
     const providerTag = getModelProviderTag(id);
     return {
       id, name: formatModelName(id),
-      family: family || (isOpenRouter ? "openrouter" : isFreebuff ? "freebuff" : isAgnes ? "agnes" : isCodestral ? "codestral" : "unknown"),
+      family: family || (isFreebuff ? "freebuff" : isAgnes ? "agnes" : isCodestral ? "codestral" : "unknown"),
       providerTag,
       enabled: _modelStates[id] !== false,
       free: isFreebuff, locked: false,
@@ -1220,19 +1231,17 @@ function getModels(): any[] {
   const apiIds = getModelIds();
   const modelIds = [...new Set([...apiIds])];
   const hasAgnes = !!_agnesApiKey;
-  const hasOpenRouter = !!_openRouterApiKey;
 
-  const activeTags = new Set(_activeProviders.map(p => (p === "umans" ? "umans" : p)));
+  const activeTags = activeModelTags();
   return modelIds.filter((id: string) => activeTags.has(getModelProviderTag(id))).map((id: string) => {
     const isFreebuff = id.startsWith("freebuff/");
     const isAgnes = id.startsWith("agnes");
-    const isOpenRouter = id.startsWith("openrouter/");
     const family = getModelFamily(id);
     const providerTag = getModelProviderTag(id);
-    const needsKey = isOpenRouter ? !hasOpenRouter : isAgnes ? !hasAgnes : false;
+    const needsKey = isAgnes ? !hasAgnes : false;
     return {
       id, name: formatModelName(id),
-      family: family || (isOpenRouter ? "openrouter" : isFreebuff ? "freebuff" : isAgnes ? "agnes" : "unknown"),
+      family: family || (isFreebuff ? "freebuff" : isAgnes ? "agnes" : "unknown"),
       providerTag,
       enabled: _modelStates[id] !== false,
       free: isFreebuff, locked: needsKey,
@@ -1395,26 +1404,4 @@ function obfuscateEmail(email: string): string {
 
 export function getAgnesApiKey(): string {
   return _agnesApiKey;
-}
-
-export function getOpenRouterApiKey(): string {
-  return _openRouterApiKey;
-}
-
-export function filterModelsByConfig(modelIds: string[]): string[] {
-  const PROVIDER_MAP: Record<string, string> = { zen: "zen", freebuff: "freebuff", agnes: "agnes", codestral: "codestral", bitnet: "bitnet", deepseek: "deepseek", umans: "umans" };
-  try {
-    const cp = join(getProjectRoot(), ".config", "config.json");
-    if (existsSync(cp)) {
-      const cfg = JSON.parse(readFileSync(cp, "utf-8"));
-      const activeProviders: string[] = cfg.providers || ["umans"];
-      const activeTags = new Set(activeProviders.map((pr: string) => PROVIDER_MAP[pr] || pr));
-      let ids = modelIds.filter(id => activeTags.has(getModelProviderTag(id)));
-      const dm: Record<string, string[]> = cfg.disabledModels || {};
-      const disabledSet = new Set(Object.values(dm).flat() as string[]);
-      ids = ids.filter(id => !disabledSet.has(id));
-      return ids;
-    }
-  } catch {}
-  return modelIds;
 }

@@ -1,7 +1,7 @@
 import forge from "node-forge";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { jsonResponse, HandlerInput, HandlerResult, countConsecutiveNags, stripNagMessages, RECENTLY_COMPLETED, RECENT_BODIES, injectIdentity, getProjectRoot, scrubTaskComplete, compressToolDefinitions, stripCopilotGreeting, normalizeToolCallId } from "../shared.ts";
+import { jsonResponse, HandlerInput, HandlerResult, countConsecutiveNags, stripNagMessages, RECENTLY_COMPLETED, RECENT_BODIES, injectIdentity, getProjectRoot, scrubTaskComplete, compressToolDefinitions, stripCopilotGreeting, normalizeToolCallId, safePreviewFromContent } from "../shared.ts";
 import { chatCompletion as openAIChat, storeReasoning, getModelCtx, modelHasVision, detectSessionSignal, extractUserPrompt, getModelDisplayName, getModelProviderTag } from "./openai-provider.ts";
 import { chatCompletion as freebuffChat, getFreebuffModelPremium } from "./freebuff-client.ts";
 import { chatCompletion as agnesChat } from "./agnes-client.ts";
@@ -297,10 +297,7 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
       return { handled: true, response: { statusCode: 200, headers: { "content-type": "text/event-stream", "cache-control": "no-store", "access-control-allow-origin": "*", "connection": "close" }, body: Buffer.from(sse) } };
     }
     const lastUserMsg = [...messages].reverse().find((m: any) => m.role === "user");
-    const queryPreview = lastUserMsg ? (
-      typeof lastUserMsg.content === "string" ? lastUserMsg.content :
-      Array.isArray(lastUserMsg.content) ? lastUserMsg.content.filter((c: any) => c.type === "text").map((c: any) => c.text || "").join(" ") : ""
-    ) : "";
+    const queryPreview = lastUserMsg ? safePreviewFromContent(lastUserMsg.content) : "";
     const tag = agentTag(headers);
     const provider = model.startsWith("umans-") ? "umans" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "go";
     const completeLog = reqLog({ tag, provider, model, preview: queryPreview, body: parsed });
@@ -705,10 +702,7 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
     _lastUserContent = _initiator !== "agent" ? extractUserPrompt(messages) : _lastUserContent;
 
     const lastUserMsg = [...messages].reverse().find((m: any) => m.role === "user");
-    const chatPreview = lastUserMsg ? (
-      typeof lastUserMsg.content === "string" ? lastUserMsg.content :
-      Array.isArray(lastUserMsg.content) ? lastUserMsg.content.filter((c: any) => c.type === "text").map((c: any) => c.text || "").join(" ") : ""
-    ) : "";
+    const chatPreview = lastUserMsg ? safePreviewFromContent(lastUserMsg.content) : "";
     const tag = agentTag(headers);
     const provider = model.startsWith("umans-") ? "umans" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "go";
     const completeLog = reqLog({ tag, provider, model, preview: chatPreview, body: parsed });
@@ -1026,7 +1020,7 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
     const isStream = parsed.stream === true;
 
     const userContent = typeof input === "string" ? input :
-      Array.isArray(input) ? input.map((m: any) => m.content || "").join("\n") : "Hello";
+      Array.isArray(input) ? input.map((m: any) => safePreviewFromContent(m.content) || safePreviewFromContent(m) || "").join("\n") : "Hello";
 
     await ensureModels();
     const modelOverrides: Record<string, string> = {
@@ -1216,7 +1210,6 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
         const decoder = new TextDecoder();
         let fullContent = "";
         const toolCallAccum: Record<number, { id: string; name: string; args: string; ouputIndex: number }> = {};
-        const toolCallEvents: any[] = [];
         let nextToolOutputIdx = 1;
         let gBuf = "";
         let gDone = false;
@@ -1260,7 +1253,6 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
                     if (!toolCallAccum[idx]) {
                       const safeId = normalizeToolCallId(tc.id, "openai");
                       toolCallAccum[idx] = { id: safeId, name: "", args: "", ouputIndex: nextToolOutputIdx++ };
-                      toolCallEvents.push({ type: "added", ouputIndex: toolCallAccum[idx].ouputIndex, id: safeId });
                     }
                     // Recover name from ID when the LLM embeds it in the
                     // tool_call ID (`functions.<name>:N`) instead of the
@@ -1270,11 +1262,9 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
                     const recoveredName = tc.function?.name || extractNameFromToolId(tc.id);
                     if (recoveredName && !toolCallAccum[idx].name) {
                       toolCallAccum[idx].name = recoveredName;
-                      toolCallEvents.push({ type: "delta_name", id: toolCallAccum[idx].id, ouputIndex: toolCallAccum[idx].ouputIndex, name: recoveredName });
                     }
                     if (tc.function?.arguments) {
                       toolCallAccum[idx].args += tc.function.arguments;
-                      toolCallEvents.push({ type: "delta_args", id: toolCallAccum[idx].id, ouputIndex: toolCallAccum[idx].ouputIndex, args: tc.function.arguments });
                     }
                     streamLog.addToolCall(idx, toolCallAccum[idx].id, tc.function?.name || extractNameFromToolId(tc.id) || "", tc.function?.arguments || "");
                   }
@@ -1340,20 +1330,21 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
           sock.write(`event: response.function_call_arguments.delta\ndata: ${JSON.stringify({ response_id: respId, item_id: tcId, output_index: tcOutIdx, delta: '{}"}' })}\n\n`);
           sock.write(`event: response.output_item.done\ndata: ${JSON.stringify({ response_id: respId, output_index: tcOutIdx, item: { id: tcId, type: "function_call", status: "completed", name: "task_complete", call_id: tcId, arguments: "{}" } })}\n\n`);
         } else {
-          // Emit buffered tool call events
-          for (const ev of toolCallEvents) {
-            if (ev.type === "added") {
-              sock.write(`event: response.output_item.added\ndata: ${JSON.stringify({ response_id: respId, output_index: ev.ouputIndex, item: { id: ev.id, type: "function_call", status: "in_progress", name: "", arguments: "" } })}\n\n`);
-            } else if (ev.type === "delta_name") {
-              sock.write(`event: response.function_call_arguments.delta\ndata: ${JSON.stringify({ response_id: respId, item_id: ev.id, output_index: ev.ouputIndex, delta: `{"name":"${ev.name}","arguments":"` })}\n\n`);
-            } else if (ev.type === "delta_args") {
-              sock.write(`event: response.function_call_arguments.delta\ndata: ${JSON.stringify({ response_id: respId, item_id: ev.id, output_index: ev.ouputIndex, delta: ev.args })}\n\n`);
-            }
-          }
+          // Emit buffered tool call events.
+          // IMPORTANT: response.function_call_arguments.delta must contain the
+          // RAW arguments string (e.g. `{}`), NOT a wrapped
+          // `{"name":"...","arguments":"..."}` JSON object. The old code built
+          // such a wrapper by string concatenation and never closed it,
+          // producing malformed JSON that VS couldn't parse. The tool name
+          // belongs in the output_item.added event, not in the args delta.
           for (const [idxStr, acc] of Object.entries(toolCallAccum)) {
             const idx = +idxStr;
-            outputItems.push({ id: acc.id, type: "function_call", status: "completed", name: acc.name, call_id: acc.id, arguments: acc.args });
-            sock.write(`event: response.output_item.done\ndata: ${JSON.stringify({ response_id: respId, output_index: acc.ouputIndex, item: { id: acc.id, type: "function_call", status: "completed", name: acc.name, call_id: acc.id, arguments: acc.args } })}\n\n`);
+            sock.write(`event: response.output_item.added\ndata: ${JSON.stringify({ response_id: respId, output_index: acc.ouputIndex, item: { id: acc.id, type: "function_call", status: "in_progress", name: acc.name, call_id: acc.id, arguments: "" } })}\n\n`);
+            const args = acc.args || "{}";
+            sock.write(`event: response.function_call_arguments.delta\ndata: ${JSON.stringify({ response_id: respId, item_id: acc.id, output_index: acc.ouputIndex, call_id: acc.id, delta: args })}\n\n`);
+            sock.write(`event: response.function_call_arguments.done\ndata: ${JSON.stringify({ response_id: respId, item_id: acc.id, output_index: acc.ouputIndex, call_id: acc.id, arguments: args })}\n\n`);
+            outputItems.push({ id: acc.id, type: "function_call", status: "completed", name: acc.name, call_id: acc.id, arguments: args });
+            sock.write(`event: response.output_item.done\ndata: ${JSON.stringify({ response_id: respId, output_index: acc.ouputIndex, item: { id: acc.id, type: "function_call", status: "completed", name: acc.name, call_id: acc.id, arguments: args } })}\n\n`);
           }
         }
         sock.write(`event: response.completed\ndata: ${JSON.stringify({ response: { id: respId, object: "response", created_at: Math.floor(Date.now() / 1000), model, instructions, status: "completed", incomplete_details: null, output: outputItems, usage: { input_tokens: 0, output_tokens: fullContent.length, total_tokens: fullContent.length } } })}\n\n`);

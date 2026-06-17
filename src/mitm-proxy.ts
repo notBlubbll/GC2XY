@@ -94,7 +94,8 @@ function logPlainEnglish(reqNum: number, direction: "REQUEST" | "RESPONSE", meth
   const agent = agentOverride || agentTag(headers);
   const dir = direction === "REQUEST" ? "REQ" : "RES";
 
-  const isDebugLine = (headers["editor-version"] || "").startsWith("VS/VisualStudio") ||
+  const _ev = headers["editor-version"] || "";
+  const isDebugLine = _ev.startsWith("VS/VisualStudio") || _ev.startsWith("VS/SSMS") ||
     (agentOverride || "").includes("VS") || agent.includes("VS") || agent.includes("TEAM") || agent.includes("APP") || agent.includes("GO-HT") ||
     url.includes("/telemetry") || url.includes("/agents/sessions/") || url === "/" || url === "/favicon.ico" ||
     headers["x-gc2xy-test"] === "1";
@@ -620,11 +621,11 @@ async function forwardWithInterceptor(client: TLSSocket | Socket, method: string
   const reqBody = buffer.length > bodyOffset ? buffer.slice(bodyOffset, bodyEnd) : null;
 
   const _newAgent = agentName(headers);
-  const _whitelisted = ["Visual Studio", "GitHub Copilot Desktop"]; // agents worth showing in status bar
+  const _whitelisted = ["Visual Studio", "SSMS", "GitHub Copilot Desktop"]; // agents worth showing in status bar
   if (_whitelisted.some(w => _newAgent.startsWith(w))) lastAgentName = _newAgent;
 
   const editorVer = headers["editor-version"] || "";
-  if (editorVer.startsWith("VS/VisualStudio")) {
+  if (editorVer.startsWith("VS/VisualStudio") || editorVer.startsWith("VS/SSMS")) {
     const baggage = headers["baggage"] || "";
     const initiator = headers["x-initiator"] || "";
     const initType = baggage.match(/vs\.copilot\.InteractionType\s*=\s*(\S+)/)?.[1] || "";
@@ -833,7 +834,7 @@ function createInterceptServers() {
           requestHandled = true;
           // Check if this is a Visual Studio sync WS connection
           const editorVersion = (parsed.headers["editor-version"] || "").toLowerCase();
-          const isVS = editorVersion.startsWith("vs/visualstudio") || /^vs\/\d/.test(editorVersion);
+          const isVS = editorVersion.startsWith("vs/visualstudio") || editorVersion.startsWith("vs/ssms") || /^vs\/\d/.test(editorVersion);
           if (isVS) {
             // Accept VS WebSocket and keep alive with ping frames
             const key = parsed.headers["sec-websocket-key"] || "";
@@ -924,7 +925,7 @@ function createInterceptServers() {
         const raw = data.toString("utf-8");
         const editorVersionMatch = raw.match(/editor-version:\s*([^\r\n]+)/i);
         const editorVersion = editorVersionMatch ? editorVersionMatch[1].toLowerCase() : "";
-        const isVS = editorVersion.startsWith("vs/visualstudio") || /^vs\/\d/.test(editorVersion);
+        const isVS = editorVersion.startsWith("vs/visualstudio") || editorVersion.startsWith("vs/ssms") || /^vs\/\d/.test(editorVersion);
         if (isVS) {
           const keyMatch = raw.match(/sec-websocket-key:\s*([^\r\n]+)/i);
           const key = keyMatch ? keyMatch[1].trim() : "";

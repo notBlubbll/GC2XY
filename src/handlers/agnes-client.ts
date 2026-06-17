@@ -4,7 +4,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import { getProjectRoot, normalizeTool, normalizeToolChoice } from "../shared.ts";
+import { getProjectRoot, normalizeTool, normalizeToolChoice, readJsonSync } from "../shared.ts";
 import { isDebug } from "../split-console.ts";
 
 const BASE = "https://apihub.agnes-ai.com/v1";
@@ -15,13 +15,13 @@ function getAgnesKey(): string {
   try {
     const p = path.join(getProjectRoot(), ".config", "config.json");
     if (fs.existsSync(p)) {
-      const c = JSON.parse(fs.readFileSync(p, "utf-8"));
+      const c = readJsonSync(p);
       if (c.agnesKey) return c.agnesKey;
     }
     // Fallback to AGNES-PROXY config key
     const proxyCfg = path.join(AGNES_PROXY_DIR, ".config", "config.json");
     if (fs.existsSync(proxyCfg)) {
-      const c = JSON.parse(fs.readFileSync(proxyCfg, "utf-8"));
+      const c = readJsonSync(proxyCfg);
       if (c.API_KEY) return c.API_KEY;
       if (Array.isArray(c.KEYS) && c.KEYS[0]?.key) return c.KEYS[0].key;
       if (Array.isArray(c.API_KEYS) && c.API_KEYS[0]) return c.API_KEYS[0];
@@ -44,7 +44,7 @@ function loadCachedModels(): string[] | null {
   try {
     const p = modelDiskPath();
     if (fs.existsSync(p)) {
-      const data = JSON.parse(fs.readFileSync(p, "utf-8"));
+      const data = readJsonSync(p);
       if (Array.isArray(data) && data.length > 0) return data;
     }
   } catch {}
@@ -64,7 +64,7 @@ function loadAgnesProxyModels(): string[] {
       if (isDebug()) console.log(`\n[AGNES] proxy config not found at ${cfgPath}`);
       return [];
     }
-    const c = JSON.parse(fs.readFileSync(cfgPath, "utf-8"));
+    const c = readJsonSync(cfgPath);
     let ids: string[] = [];
 
     // Primary source: ENABLED_MODELS list

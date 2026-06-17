@@ -1,6 +1,3 @@
-import { HandlerInput, HandlerResult } from "../../shared.ts";
-import { handleSQLStudioAuth } from "./auth.ts";
+import { handleSQLStudioChat, isSQLStudio } from "./auth.ts";
 
-export async function handleSQLStudio(req: HandlerInput): Promise<HandlerResult> {
-  return await handleSQLStudioAuth(req);
-}
+export { handleSQLStudioChat, isSQLStudio };

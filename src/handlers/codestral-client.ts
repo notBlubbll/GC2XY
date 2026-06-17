@@ -3,16 +3,20 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { getProjectRoot, normalizeTool, normalizeToolChoice } from "../shared.ts";
+import { getProjectRoot, normalizeTool, normalizeToolChoice, readJsonSync } from "../shared.ts";
 import { isDebug } from "../split-console.ts";
 
-const BASE = "https://api.mistral.ai/v1";
+// Codestral API keys are issued for codestral.mistral.ai (the dedicated Codestral
+// endpoint), NOT api.mistral.ai (La Plateforme). Posting Codestral keys to
+// api.mistral.ai returns 401 {"detail":"Unauthorized"} because that endpoint
+// only accepts La Plateforme keys. Keep FIM/chat on the Codestral subdomain.
+const BASE = "https://codestral.mistral.ai/v1";
 
 function getCodestralKey(): string {
   try {
     const p = path.join(getProjectRoot(), ".config", "config.json");
     if (fs.existsSync(p)) {
-      const c = JSON.parse(fs.readFileSync(p, "utf-8"));
+      const c = readJsonSync(p);
       return c.codestralKey || "";
     }
   } catch {}
@@ -24,7 +28,7 @@ export function setCodestralKey(key: string) {
     const dir = path.join(getProjectRoot(), ".config");
     const p = path.join(dir, "config.json");
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    const c = fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, "utf-8")) : {};
+    const c = fs.existsSync(p) ? readJsonSync(p) : {};
     c.codestralKey = key;
     fs.writeFileSync(p, JSON.stringify(c, null, 2));
   } catch {}
@@ -44,7 +48,7 @@ function loadCachedModels(): string[] | null {
   try {
     const p = modelDiskPath();
     if (fs.existsSync(p)) {
-      const data = JSON.parse(fs.readFileSync(p, "utf-8"));
+      const data = readJsonSync(p);
       if (Array.isArray(data) && data.length > 0) return data;
     }
   } catch {}
