@@ -190,7 +190,7 @@ async function ensureModels() {
       billing: getBilling(id, fakeMult),
       policy: { state: "enabled", terms: `Enable access to the ${id} model. [Learn more](https://opencode.ai)` },
     };
-    model.supported_endpoints = ["/v1/messages", "/chat/completions"];
+    model.supported_endpoints = ["/v1/messages", "/chat/completions", "/responses", "ws:/responses"];
     model.capabilities = {
       family: id,
       object: "model_capabilities",

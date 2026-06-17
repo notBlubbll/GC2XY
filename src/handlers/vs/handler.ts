@@ -1,6 +1,6 @@
 import forge from "node-forge";
 import { readFileSync, appendFileSync, existsSync, mkdirSync } from "node:fs";
-import { jsonResponse, HandlerInput, HandlerResult, countConsecutiveNags, stripNagMessages, RECENTLY_COMPLETED, RECENT_BODIES, injectIdentity, compactIdentity, scrubTaskComplete, compressToolDefinitions, stripCopilotGreeting, getProjectRoot } from "../../shared.ts";
+import { jsonResponse, HandlerInput, HandlerResult, countConsecutiveNags, stripNagMessages, RECENTLY_COMPLETED, RECENT_BODIES, injectIdentity, compactIdentity, scrubTaskComplete, compressToolDefinitions, stripCopilotGreeting, getProjectRoot, normalizeToolCallId } from "../../shared.ts";
 import { chatCompletion as openAIChat, detectSessionSignal, extractUserPrompt, getModelDisplayName, getModelProviderTag } from "../openai-provider.ts";
 import { buildResponsesFromChatCompletion, streamChatCompletionToResponses, streamResponsesObjectToSSE, flattenResponsesInput, ResponsesOptions } from "./response-converter.ts";
 import { StreamResponseLogger } from "../../streaming-log.ts";
@@ -137,6 +137,7 @@ import {
   buildAnthropicTaskComplete,
   buildOpenAITaskComplete,
   bumpSalvageStat,
+  extractNameFromToolId,
 } from "../../tool-salvager.ts";
 
 // ── Filename context extractor ─────────────────────────────────────────────
@@ -435,7 +436,7 @@ async function ensureModels() {
       is_chat_fallback: true,
       billing: { is_premium: true, multiplier: 1, restricted_to: ["pro", "pro_plus", "business", "enterprise", "max"] },
 
-      supported_endpoints: ["/chat/completions", "/v1/messages"],
+      supported_endpoints: ["/chat/completions", "/v1/messages", "/responses", "ws:/responses"],
       capabilities: {
         family: id, object: "model_capabilities", type: "chat", tokenizer: "o200k_base",
         limits: modelLimits(id),
@@ -681,7 +682,7 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
             const fn = tc.function || tc;
             let args: any = {};
             try { args = JSON.parse(typeof fn.arguments === "string" ? fn.arguments : "{}"); } catch {}
-            contentBlocks.push({ type: "tool_use", id: tc.id, name: fn.name || "unknown", input: args });
+            contentBlocks.push({ type: "tool_use", id: normalizeToolCallId(tc.id, "anthropic"), name: fn.name || extractNameFromToolId(tc.id) || "unknown", input: args });
           }
           stopReason = "tool_use";
         }
@@ -768,7 +769,12 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
                   if (!greetingDone) {
                     greetingBuf += delta.content;
                     const stripped = stripCopilotGreeting(greetingBuf);
-                    if (stripped.length !== greetingBuf.length || greetingBuf.length >= 200) {
+                    const finishReason = d.choices?.[0]?.finish_reason;
+                    // Flush greeting buffer when: greeting matched, buffer exceeds
+                    // 200 chars, OR the upstream signaled completion (short
+                    // single-chunk responses from agnes/bitnet/etc. would
+                    // otherwise be trapped in greetingBuf and never forwarded).
+                    if (stripped.length !== greetingBuf.length || greetingBuf.length >= 200 || finishReason) {
                       greetingDone = true;
                       if (stripped.length > 0) {
                         fullContent += stripped;
@@ -792,19 +798,28 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
                   for (const tc of delta.tool_calls) {
                     const idx = tc.index ?? 0;
                     if (!toolCallAccum[idx]) {
-                      toolCallAccum[idx] = { id: tc.id || "", name: "", args: "" };
-                      if (tc.id) {
+                      const safeId = normalizeToolCallId(tc.id, "anthropic");
+                      // Custom LLMs (Kimi K2.7, Qwen 3.6, Agnes) embed the
+                      // tool name in the ID (`functions.<name>:N`) and leave
+                      // `function.name` empty on the first delta. Recover it
+                      // here so we don't emit a nameless `content_block_start`
+                      // to VS — VS can't dispatch a nameless tool and returns
+                      // null, polluting the next turn's context.
+                      const tcName = tc.function?.name || extractNameFromToolId(tc.id);
+                      toolCallAccum[idx] = { id: safeId, name: tcName, args: "" };
+                      if (tc.id || tcName) {
                         nextContentIdx++;
-                        sseEvent(sock, "content_block_start", { type: "content_block_start", index: nextContentIdx, content_block: { type: "tool_use", id: tc.id, name: "", input: {} } });
+                        sseEvent(sock, "content_block_start", { type: "content_block_start", index: nextContentIdx, content_block: { type: "tool_use", id: safeId, name: tcName, input: {} } });
                       }
                     }
-                    if (tc.id) toolCallAccum[idx].id = tc.id;
-                    if (tc.function?.name) toolCallAccum[idx].name += tc.function.name;
+                    if (tc.function?.name && !toolCallAccum[idx].name) {
+                      toolCallAccum[idx].name = tc.function.name;
+                    }
                     if (tc.function?.arguments) {
                       toolCallAccum[idx].args += tc.function.arguments;
                       sseEvent(sock, "content_block_delta", { type: "content_block_delta", index: nextContentIdx, delta: { type: "input_json_delta", partial_json: tc.function.arguments } });
                     }
-                    streamLog.addToolCall(idx, tc.id || "", tc.function?.name || "", tc.function?.arguments || "");
+                    streamLog.addToolCall(idx, toolCallAccum[idx].id, tc.function?.name || extractNameFromToolId(tc.id) || toolCallAccum[idx].name, tc.function?.arguments || "");
                   }
                 }
                 if (d.choices?.[0]?.finish_reason) streamLog.setFinishReason(d.choices[0].finish_reason);
@@ -812,6 +827,19 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
               } catch {}
             }
           }
+        }
+
+        // Final flush of greeting buffer: some upstreams (agnes, bitnet) emit
+        // a short complete response in one chunk with finish_reason=null and
+        // then close the stream. Without this, the content sits in greetingBuf
+        // and never reaches VS.
+        if (!greetingDone && greetingBuf.length > 0) {
+          const stripped = stripCopilotGreeting(greetingBuf);
+          if (stripped.length > 0) {
+            fullContent += stripped;
+            sseEvent(sock, "content_block_delta", { type: "content_block_delta", index: nextContentIdx, delta: { type: "text_delta", text: stripped } });
+          }
+          greetingDone = true;
         }
 
         sseEvent(sock, "content_block_stop", { type: "content_block_stop", index: 0 });
@@ -1334,7 +1362,7 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
                 if (delta?.tool_calls) {
                   for (const tc of delta.tool_calls) {
                     const idx = tc.index ?? 0;
-                    streamLog.addToolCall(idx, tc.id || "", tc.function?.name || "", tc.function?.arguments || "");
+                    streamLog.addToolCall(idx, tc.id || "", tc.function?.name || extractNameFromToolId(tc.id) || "", tc.function?.arguments || "");
                   }
                 }
                 if (d.choices?.[0]?.finish_reason) streamLog.setFinishReason(d.choices[0].finish_reason);

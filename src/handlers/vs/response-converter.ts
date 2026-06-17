@@ -1,6 +1,7 @@
 // Convert upstream OpenAI chat-completion responses into OpenAI Responses API
 // format for Visual Studio's /responses endpoint.
 import forge from "node-forge";
+import { extractNameFromToolId } from "../../tool-salvager.ts";
 
 function randomRespId() {
   return `resp_${forge.util.bytesToHex(forge.random.getBytesSync(16))}`;
@@ -125,7 +126,7 @@ export function buildResponsesFromChatCompletion(data: any, opts: ResponsesOptio
       type: "function_call",
       status: "completed",
       call_id: randomCallId(),
-      name: fn.name || "unknown",
+      name: fn.name || extractNameFromToolId(tc.id) || "unknown",
       arguments: typeof fn.arguments === "string" ? fn.arguments : JSON.stringify(fn.arguments || {}),
     });
   }
@@ -239,7 +240,7 @@ export async function* streamChatCompletionToResponses(
     const outIdx = 2 + i;
     yield sseEvent("response.output_item.done", {
       output_index: outIdx,
-      item: { id: tc.id, type: "function_call", status: "completed", call_id: tc.callId, name: tc.name, arguments: tc.args || "{}" },
+      item: { id: tc.callId, type: "function_call", status: "completed", call_id: tc.callId, name: tc.name, arguments: tc.args || "{}" },
       sequence_number: nextSeq(),
       type: "response.output_item.done",
     });
@@ -450,15 +451,21 @@ function* handleChatDelta(d: any, acc: AccState, messageId: string, model: strin
         acc.toolCalls[idx] = { id: tc.id || randomItemId(), name: "", args: "", callId: randomCallId(), emitted: false };
       }
       const t = acc.toolCalls[idx];
-      if (tc.id) t.id = tc.id;
-      if (tc.function?.name) t.name += tc.function.name;
+      // Recover name from ID when the LLM embeds it in the tool_call ID
+      // (`functions.<name>:N`) instead of `function.name` (Kimi K2.7, Qwen).
+      // Set-once: LLMs send the full name in every delta, so appending would
+      // corrupt it to "foofoofoo".
+      if (!t.name) {
+        const recovered = tc.function?.name || extractNameFromToolId(tc.id);
+        if (recovered) t.name = recovered;
+      }
       if (tc.function?.arguments) t.args += tc.function.arguments;
 
       if (!t.emitted) {
         t.emitted = true;
         yield sseEvent("response.output_item.added", {
           output_index: 2 + idx,
-          item: { id: t.id, type: "function_call", status: "in_progress", call_id: t.callId, name: t.name || "", arguments: "" },
+          item: { id: t.callId, type: "function_call", status: "in_progress", call_id: t.callId, name: t.name || "", arguments: "" },
           sequence_number: nextSeq(),
           type: "response.output_item.added",
         });

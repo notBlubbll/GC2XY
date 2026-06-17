@@ -81,6 +81,21 @@ export function normalizeTool(tool: any): any {
   return t;
 }
 
+// ── Tool call ID normalization ──
+// Upstream LLMs (umans, agnes, freebuff) often emit non-standard tool_call IDs
+// like "functions.get_projects_in_solution:0" or "call_24c64518159842a492cd00ee".
+// VS requires proper prefixed IDs to match tool_results back:
+//   - Anthropic /v1/messages format: "toolu_" prefix
+//   - OpenAI /responses format: "call_" prefix
+// If the upstream ID doesn't match the expected prefix, generate a proper one.
+export function normalizeToolCallId(id: string | undefined, format: "anthropic" | "openai" = "anthropic"): string {
+  const prefix = format === "anthropic" ? "toolu_" : "call_";
+  if (id && id.startsWith(prefix) && id.length > prefix.length + 8) {
+    return id;
+  }
+  return `${prefix}${forge.util.bytesToHex(forge.random.getBytesSync(12))}`;
+}
+
 // ── Tool description compression (from gc2oc token-optimizer.js) ──
 export function compressDescription(desc: string): string {
   if (!desc) return "";

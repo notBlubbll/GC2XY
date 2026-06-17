@@ -71,7 +71,9 @@ export class StreamResponseLogger {
   addToolCall(idx: number, id: string, name: string, argsDelta: string): void {
     if (!this.toolCalls[idx]) this.toolCalls[idx] = { id: id || "", name: "", args: "" };
     if (id) this.toolCalls[idx].id = id;
-    if (name) this.toolCalls[idx].name += name;
+    // Name is set-once: LLMs send the full tool name in every delta chunk, so
+    // appending would corrupt it to "foofoofoo". Only set if empty.
+    if (name && !this.toolCalls[idx].name) this.toolCalls[idx].name = name;
     if (argsDelta) this.toolCalls[idx].args += argsDelta;
   }
 

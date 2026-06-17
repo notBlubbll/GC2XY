@@ -31,6 +31,32 @@
 
 import forge from "node-forge";
 
+// ── Tool name recovery from ID ─────────────────────────────────────────────
+//
+// Small/upstream LLMs (Kimi K2.7, Qwen 3.6, Agnes-2.0-Flash, etc.) frequently
+// emit tool calls where the function name is embedded in the tool_call ID
+// rather than in `function.name`. Observed patterns from proxy captures:
+//
+//   id="functions.get_projects_in_solution:0"  name=""
+//   id="functions.ask_question:0"             name=""
+//   id="functions.file_search:1"              name=""
+//   id="functions.run_command_in_terminal:2"  name=""
+//
+// VS requires a non-empty `name` on every `tool_use` block — a blank name
+// means VS cannot dispatch the tool, returns a null tool_result, and the
+// polluted (nameless) assistant turn leaks into the next request's context
+// (see `.proxy-logs/vs-messages.log` lines 154/158/178/198/202/214/218/222
+// where `function.name` is `""` and the follow-up tool_result is null).
+//
+// This helper extracts the tool name from such IDs so the salvager and the
+// streaming emitters can recover it before forwarding to VS.
+const TOOL_NAME_FROM_ID_RE = /^functions?\.(.+?):\d+$/;
+export function extractNameFromToolId(id: string | undefined | null): string {
+  if (!id || typeof id !== "string") return "";
+  const m = TOOL_NAME_FROM_ID_RE.exec(id.trim());
+  return m ? m[1] : "";
+}
+
 // ── Path escape fix ────────────────────────────────────────────────────────
 // AI writes Windows paths like `dir\ntl\file` inside JSON strings. JSON.parse
 // interprets `\n` as a newline, `\t` as a tab, `\r` as CR — destroying the
@@ -60,7 +86,26 @@ function _test(reSrc: string, src: string): boolean {
 //
 // If JSON.parse throws, the caller should fall through to `salvageToolCall`.
 export function normalizeToolCall(tc: any): any | null {
-  const name = (tc?.function?.name || "").trim();
+  // Recover the tool name when the LLM embedded it in the tool_call ID
+  // instead of `function.name` (Kimi K2.7, Qwen 3.6, Agnes — see
+  // `.proxy-logs/streaming-responses.log` for `functions.<name>:N` IDs
+  // paired with empty names). We patch the clone's name in-place so the
+  // rest of the salvager (and the SSE emitter) sees a real name.
+  let name = (tc?.function?.name || "").trim();
+  if (!name) {
+    const recovered = extractNameFromToolId(tc?.id || tc?.function?.id);
+    if (recovered) {
+      name = recovered;
+      // Mutate a shallow clone so callers that reuse `tc` upstream still
+      // see the original (broken) shape; downstream consumers get the fix.
+      tc = {
+        ...tc,
+        id: tc?.id,
+        type: tc?.type || "function",
+        function: { ...(tc?.function || {}), name },
+      };
+    }
+  }
   if (!name) return null;
 
   const raw = tc.function.arguments || "{}";
@@ -87,11 +132,15 @@ export function normalizeToolCall(tc: any): any | null {
     return `"query":"${v}"`;
   });
   // Multi-word unquoted string values: "summary": List files → "summary":"List files"
+  // Only matches when the value is NOT already a quoted string, object, array,
+  // number, or boolean. The negative lookahead `(?!\s*["{\[\d-])` at the value
+  // start ensures we skip already-valid JSON values. The value body
+  // `[^,}]+?` is non-greedy up to the next comma/brace.
   json = json.replace(
-    /"(summary|description|details|agentName|memory|reason|prompt)"\s*:\s*([^,}]+?)(?=\s*,\s*"|\s*}$|$)/g,
+    /"(summary|description|details|agentName|memory|reason|prompt)"\s*:\s*(?!\s*["'{\[\d-])([^,}]+?)(?=\s*,\s*"|\s*}$|$)/g,
     (_, field: string, val: string) => {
-      const t = val.trim();
-      if (!t || /^(?:null|true|false|-?\d)/.test(t)) return `"${field}":${val}`;
+      const t = val.trim().replace(/\\n/g, "\n").replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+      if (!t) return `"${field}":""`;
       return `"${field}":"${t}"`;
     }
   );
@@ -286,6 +335,18 @@ export function normalizeToolCall(tc: any): any | null {
   } else if (/^lookup_vs$/i.test(name)) {
     const rawTerms = args.terms ?? args.query ?? args.queries ?? args.search ?? args.searchTerms ?? "";
     safe.terms = Array.isArray(rawTerms) ? rawTerms.map(String) : [String(rawTerms)];
+  } else if (/^ask_question$/i.test(name)) {
+    // VS / VS Code ask-the-user tool. Accepts either an array of question
+    // objects or a single string (LLMs often emit `{"questions": "..."}`).
+    safe.questions = args.questions ?? args.question ?? [];
+    if (!Array.isArray(safe.questions)) safe.questions = [String(safe.questions ?? "")];
+    else safe.questions = safe.questions.map((q: any) => typeof q === "string" ? q : { ...q });
+  } else if (/^get_projects_in_solution$/i.test(name)) {
+    // VS solution enumeration — no args. Kimi K2.7 calls this with `{}`.
+    // No coercion needed; ensure args is a valid empty object.
+  } else if (/^get_files_in_project$/i.test(name)) {
+    // VS project file enumeration. Takes a project identifier.
+    safe.project = String(args.project ?? args.projectName ?? args.name ?? "");
   } else if (/^task_complete$/i.test(name)) {
     return tc;
   } else {

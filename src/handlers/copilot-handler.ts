@@ -1,7 +1,7 @@
 import forge from "node-forge";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { jsonResponse, HandlerInput, HandlerResult, countConsecutiveNags, stripNagMessages, RECENTLY_COMPLETED, RECENT_BODIES, injectIdentity, getProjectRoot, scrubTaskComplete, compressToolDefinitions, stripCopilotGreeting } from "../shared.ts";
+import { jsonResponse, HandlerInput, HandlerResult, countConsecutiveNags, stripNagMessages, RECENTLY_COMPLETED, RECENT_BODIES, injectIdentity, getProjectRoot, scrubTaskComplete, compressToolDefinitions, stripCopilotGreeting, normalizeToolCallId } from "../shared.ts";
 import { chatCompletion as openAIChat, storeReasoning, getModelCtx, modelHasVision, detectSessionSignal, extractUserPrompt, getModelDisplayName, getModelProviderTag } from "./openai-provider.ts";
 import { chatCompletion as freebuffChat, getFreebuffModelPremium } from "./freebuff-client.ts";
 import { chatCompletion as agnesChat } from "./agnes-client.ts";
@@ -12,7 +12,7 @@ import { chatCompletion as umansChat } from "./umans-client.ts";
 import { isSupermavenEnabled, isSupermavenReady, supermavenCodeComplete } from "./supermaven-client.ts";
 import { reqLog, agentTag } from "../split-console.ts";
 import { trackRequest } from "../usage-tracker.ts";
-import { repairToolCalls, detectApologyText, detectToolLoop, bumpSalvageStat } from "../tool-salvager.ts";
+import { repairToolCalls, detectApologyText, detectToolLoop, bumpSalvageStat, extractNameFromToolId } from "../tool-salvager.ts";
 import { StreamResponseLogger } from "../streaming-log.ts";
 import { anthropicToOpenAIRequest } from "./anthropic-bridge.ts";
 import { ensureVSModels, VS_MODELS, detectVendor } from "./vs/models.ts";
@@ -401,9 +401,17 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
                     const idx = tc.index ?? 0;
                     if (!toolCallAccum[idx]) toolCallAccum[idx] = { id: tc.id || "", type: "function", function: { name: "", arguments: "" } };
                     if (tc.id) toolCallAccum[idx].id = tc.id;
-                    if (tc.function?.name) toolCallAccum[idx].function.name += tc.function.name;
+                    // Recover name from ID when the LLM embeds it in the
+                    // tool_call ID (`functions.<name>:N`) instead of
+                    // `function.name` (Kimi K2.7, Qwen 3.6, Agnes).
+                    // Set-once: LLMs repeat the full name per delta, so
+                    // appending would corrupt it to "foofoofoo".
+                    const recoveredName = tc.function?.name || extractNameFromToolId(tc.id);
+                    if (recoveredName && !toolCallAccum[idx].function.name) {
+                      toolCallAccum[idx].function.name = recoveredName;
+                    }
                     if (tc.function?.arguments) toolCallAccum[idx].function.arguments += tc.function.arguments;
-                    streamLog.addToolCall(idx, tc.id || "", tc.function?.name || "", tc.function?.arguments || "");
+                    streamLog.addToolCall(idx, tc.id || "", tc.function?.name || extractNameFromToolId(tc.id) || "", tc.function?.arguments || "");
                   }
                 }
                 if (d.choices?.[0]?.finish_reason) streamLog.setFinishReason(d.choices[0].finish_reason);
@@ -473,7 +481,7 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
         const fn = tc.function || tc;
         let args: any = {};
         try { args = JSON.parse(typeof fn.arguments === "string" ? fn.arguments : "{}"); } catch {}
-        return { type: "tool_use", id: tc.id, name: fn.name || "unknown", input: args };
+        return { type: "tool_use", id: normalizeToolCallId(tc.id, "anthropic"), name: fn.name || extractNameFromToolId(tc.id) || "unknown", input: args };
       };
       const upstreamToolBlocks = toolCalls?.length ? toolCalls.map(openAIToCalls) : [];
 
@@ -751,7 +759,8 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
           if (msg.tool_calls?.length) {
             msg.tool_calls.forEach((tc: any, i: number) => {
               const fn = tc.function || tc;
-              sseChunks.push(`event: content_block_start\ndata: ${JSON.stringify({ type: "content_block_start", index: msg.content ? i + 1 : i, content_block: { type: "tool_use", id: tc.id, name: fn.name || "unknown", input: typeof fn.arguments === "string" ? JSON.parse(fn.arguments) : fn.arguments || {} } })}\n\n`);
+              const safeToolId = normalizeToolCallId(tc.id, "anthropic");
+              sseChunks.push(`event: content_block_start\ndata: ${JSON.stringify({ type: "content_block_start", index: msg.content ? i + 1 : i, content_block: { type: "tool_use", id: safeToolId, name: fn.name || extractNameFromToolId(tc.id) || "unknown", input: typeof fn.arguments === "string" ? JSON.parse(fn.arguments) : fn.arguments || {} } })}\n\n`);
               sseChunks.push(`event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: msg.content ? i + 1 : i })}\n\n`);
             });
           }
@@ -799,7 +808,7 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
                 if (delta?.tool_calls) {
                   for (const tc of delta.tool_calls) {
                     const idx = tc.index ?? 0;
-                    streamLog.addToolCall(idx, tc.id || "", tc.function?.name || "", tc.function?.arguments || "");
+                    streamLog.addToolCall(idx, tc.id || "", tc.function?.name || extractNameFromToolId(tc.id) || "", tc.function?.arguments || "");
                   }
                 }
                 if (d.choices?.[0]?.finish_reason) streamLog.setFinishReason(d.choices[0].finish_reason);
@@ -1112,22 +1121,22 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
           const allDropped = msg.tool_calls.length > 0 && repaired.length === 0;
           const isApology = detectApologyText(msg.content || "");
           const isLoop = repaired.length
-            ? detectToolLoop(bridge.messages, { name: repaired[0].function?.name || "", arguments: repaired[0].function?.arguments || "{}" })
+            ? detectToolLoop(messages, { name: repaired[0].function?.name || "", arguments: repaired[0].function?.arguments || "{}" })
             : { inLoop: false, count: 0, tool: "", args: "" };
           if ((isApology && allDropped) || isLoop.inLoop) {
             bumpSalvageStat(isLoop.inLoop ? "loopInjected" : "apologyInjected");
-            console.log(`[TOOL SALVAGE] ${bridge.model}: ${isLoop.inLoop ? `loop(${isLoop.tool}×${isLoop.count})` : "apology"} → task_complete`);
+            console.log(`[TOOL SALVAGE] ${model}: ${isLoop.inLoop ? `loop(${isLoop.tool}×${isLoop.count})` : "apology"} → task_complete`);
             msg.tool_calls = [{ id: `call_${forge.util.bytesToHex(forge.random.getBytesSync(6))}`, type: "function", function: { name: "task_complete", arguments: "{}" } }];
           } else {
             const originalLen = msg.tool_calls.length;
             msg.tool_calls = repaired;
             if (repaired.length !== originalLen || dropped.length) {
-              console.log(`[TOOL SALVAGE] ${bridge.model}: ${repaired.length}/${originalLen} tool_calls repaired, ${dropped.length} dropped`);
+              console.log(`[TOOL SALVAGE] ${model}: ${repaired.length}/${originalLen} tool_calls repaired, ${dropped.length} dropped`);
             }
           }
         } else if (detectApologyText(msg.content || "")) {
           bumpSalvageStat("apologyInjected");
-          console.log(`[TOOL SALVAGE] ${bridge.model}: pure apology text → task_complete`);
+          console.log(`[TOOL SALVAGE] ${model}: pure apology text → task_complete`);
           msg.tool_calls = [{ id: `call_${forge.util.bytesToHex(forge.random.getBytesSync(6))}`, type: "function", function: { name: "task_complete", arguments: "{}" } }];
         }
 
@@ -1141,12 +1150,13 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
         if (msg.tool_calls?.length) {
           for (const tc of msg.tool_calls) {
             const fn = tc.function || tc;
+            const safeCallId = normalizeToolCallId(tc.id, "openai");
             output.push({
               type: "function_call",
-              id: tc.id,
+              id: safeCallId,
               status: "completed",
-              name: fn.name || "unknown",
-              call_id: tc.id,
+              name: fn.name || extractNameFromToolId(tc.id) || "unknown",
+              call_id: safeCallId,
               arguments: typeof fn.arguments === "string" ? fn.arguments : JSON.stringify(fn.arguments || {}),
             });
           }
@@ -1181,9 +1191,9 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
           if (msg.tool_calls?.length) {
             for (const tc of msg.tool_calls) {
               const fn = tc.function || tc;
-              const callId = tc.id || `call_${forge.util.bytesToHex(forge.random.getBytesSync(6))}`;
+              const callId = normalizeToolCallId(tc.id, "openai");
               const args = typeof fn.arguments === "string" ? fn.arguments : JSON.stringify(fn.arguments || {});
-              sock.write(`event: response.output_item.added\ndata: ${JSON.stringify({ response_id: respId, output_index: outIdx, item: { id: callId, type: "function_call", status: "completed", name: fn.name || "unknown", arguments: args } })}\n\n`);
+              sock.write(`event: response.output_item.added\ndata: ${JSON.stringify({ response_id: respId, output_index: outIdx, item: { id: callId, type: "function_call", status: "completed", name: fn.name || extractNameFromToolId(tc.id) || "unknown", arguments: args, call_id: callId } })}\n\n`);
               outIdx++;
             }
           }
@@ -1227,7 +1237,12 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
                   if (!gDone) {
                     gBuf += delta.content;
                     const s = stripCopilotGreeting(gBuf);
-                    if (s.length !== gBuf.length || gBuf.length >= 200) {
+                    const finishReason = d.choices?.[0]?.finish_reason;
+                    // Flush greeting buffer when: greeting matched, buffer exceeds
+                    // 200 chars, OR the upstream signaled completion (short
+                    // single-chunk responses from agnes/bitnet/etc. would
+                    // otherwise be trapped in gBuf and never forwarded).
+                    if (s.length !== gBuf.length || gBuf.length >= 200 || finishReason) {
                       gDone = true;
                       if (s.length > 0) {
                         fullContent += s;
@@ -1243,21 +1258,25 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
                   for (const tc of delta.tool_calls) {
                     const idx = tc.index ?? 0;
                     if (!toolCallAccum[idx]) {
-                      toolCallAccum[idx] = { id: tc.id || "", name: "", args: "", ouputIndex: nextToolOutputIdx++ };
-                      toolCallEvents.push({ type: "added", ouputIndex: toolCallAccum[idx].ouputIndex, id: tc.id || "" });
+                      const safeId = normalizeToolCallId(tc.id, "openai");
+                      toolCallAccum[idx] = { id: safeId, name: "", args: "", ouputIndex: nextToolOutputIdx++ };
+                      toolCallEvents.push({ type: "added", ouputIndex: toolCallAccum[idx].ouputIndex, id: safeId });
                     }
-                    if (tc.id) toolCallAccum[idx].id = tc.id;
-                    if (tc.function?.name) {
-                      toolCallAccum[idx].name += tc.function.name;
-                      if (tc.function.name) {
-                        toolCallEvents.push({ type: "delta_name", id: toolCallAccum[idx].id, ouputIndex: toolCallAccum[idx].ouputIndex, name: tc.function.name });
-                      }
+                    // Recover name from ID when the LLM embeds it in the
+                    // tool_call ID (`functions.<name>:N`) instead of the
+                    // `function.name` field (Kimi K2.7, Qwen 3.6, Agnes).
+                    // LLMs often repeat the full tool name in every delta —
+                    // set-once (don't append) to avoid "foofoofoo" corruption.
+                    const recoveredName = tc.function?.name || extractNameFromToolId(tc.id);
+                    if (recoveredName && !toolCallAccum[idx].name) {
+                      toolCallAccum[idx].name = recoveredName;
+                      toolCallEvents.push({ type: "delta_name", id: toolCallAccum[idx].id, ouputIndex: toolCallAccum[idx].ouputIndex, name: recoveredName });
                     }
                     if (tc.function?.arguments) {
                       toolCallAccum[idx].args += tc.function.arguments;
                       toolCallEvents.push({ type: "delta_args", id: toolCallAccum[idx].id, ouputIndex: toolCallAccum[idx].ouputIndex, args: tc.function.arguments });
                     }
-                    streamLog.addToolCall(idx, tc.id || "", tc.function?.name || "", tc.function?.arguments || "");
+                    streamLog.addToolCall(idx, toolCallAccum[idx].id, tc.function?.name || extractNameFromToolId(tc.id) || "", tc.function?.arguments || "");
                   }
                 }
                 if (d.choices?.[0]?.finish_reason) streamLog.setFinishReason(d.choices[0].finish_reason);
@@ -1265,6 +1284,19 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
               } catch {}
             }
           }
+        }
+
+        // Final flush of greeting buffer: some upstreams (agnes, bitnet) emit
+        // a short complete response in one chunk with finish_reason=null and
+        // then close the stream. Without this, the content sits in gBuf and
+        // never reaches the client.
+        if (!gDone && gBuf.length > 0) {
+          const s = stripCopilotGreeting(gBuf);
+          if (s.length > 0) {
+            fullContent += s;
+            sock.write(`event: response.output_text.delta\ndata: ${JSON.stringify({ response_id: respId, item_id: msgId, output_index: outputIndex, content_index: 0, delta: s })}\n\n`);
+          }
+          gDone = true;
         }
 
         const outputItems: any[] = [{ id: msgId, type: "message", role: "assistant", content: [{ type: "text", text: fullContent }] }];
@@ -1283,18 +1315,18 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
           const allDropped = accumulatedToolCalls.length > 0 && repaired.length === 0;
           const isApology = detectApologyText(fullContent);
           const isLoop = repaired.length
-            ? detectToolLoop(bridge.messages, { name: repaired[0].function?.name || "", arguments: repaired[0].function?.arguments || "{}" })
+            ? detectToolLoop(messages, { name: repaired[0].function?.name || "", arguments: repaired[0].function?.arguments || "{}" })
             : { inLoop: false, count: 0, tool: "", args: "" };
           if ((isApology && allDropped) || isLoop.inLoop) {
             bumpSalvageStat(isLoop.inLoop ? "loopInjected" : "apologyInjected");
-            console.log(`[TOOL SALVAGE] ${bridge.model}: ${isLoop.inLoop ? `loop(${isLoop.tool}×${isLoop.count})` : "apology"} → task_complete`);
+            console.log(`[TOOL SALVAGE] ${model}: ${isLoop.inLoop ? `loop(${isLoop.tool}×${isLoop.count})` : "apology"} → task_complete`);
             useTaskComplete = true;
           } else if (repaired.length !== accumulatedToolCalls.length || dropped.length) {
-            console.log(`[TOOL SALVAGE] ${bridge.model}: ${repaired.length}/${accumulatedToolCalls.length} tool_calls repaired, ${dropped.length} dropped`);
+            console.log(`[TOOL SALVAGE] ${model}: ${repaired.length}/${accumulatedToolCalls.length} tool_calls repaired, ${dropped.length} dropped`);
           }
         } else if (detectApologyText(fullContent)) {
           bumpSalvageStat("apologyInjected");
-          console.log(`[TOOL SALVAGE] ${bridge.model}: pure apology text → task_complete`);
+          console.log(`[TOOL SALVAGE] ${model}: pure apology text → task_complete`);
           useTaskComplete = true;
         }
 
