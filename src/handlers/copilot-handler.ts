@@ -1198,7 +1198,7 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
         }
         const respId = `resp_${forge.util.bytesToHex(forge.random.getBytesSync(8))}`;
       const msgId = `msg_${forge.util.bytesToHex(forge.random.getBytesSync(8))}`;
-      const head = `HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-store\r\naccess-control-allow-origin: *\r\nx-accel-buffering: no\r\nx-quota-snapshot-chat: ent=500&ov=0.0&ovPerm=false&rem=0.0&rst=2120-01-01T00:00:00Z&totRem=0.0\r\nx-quota-snapshot-completions: ent=4000&ov=0.0&ovPerm=false&rem=98.3&rst=2120-01-01T00:00:00Z&totRem=3932.0\r\nconnection: close\r\n\r\n`;
+      const head = `HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-store\r\naccess-control-allow-origin: *\r\nx-accel-buffering: no\r\nx-quota-snapshot-chat: ent=500&ov=0.0&ovPerm=false&rem=58.0&rst=${new Date(new Date().getFullYear(), new Date().getMonth() + 1, 1).toISOString()}&totRem=290.0\r\nx-quota-snapshot-completions: ent=4000&ov=0.0&ovPerm=false&rem=58.0&rst=${new Date(new Date().getFullYear(), new Date().getMonth() + 1, 1).toISOString()}&totRem=2320.0\r\nconnection: close\r\n\r\n`;
         sock.write(head);
 
         sock.write(`event: response.created\ndata: ${JSON.stringify({ response: { id: respId, object: "response", created_at: Math.floor(Date.now() / 1000), model, instructions, status: "in_progress", incomplete_details: null, output: [], usage: null } })}\n\n`);

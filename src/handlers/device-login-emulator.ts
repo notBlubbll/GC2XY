@@ -7,12 +7,19 @@ import { handleRepo } from "./repo-handler.ts";
 import { handleVisualStudio } from "./vs/handler.ts";
 import { handleVSShell } from "./vs-shell/index.ts";
 import { handleGHCPApp } from "./ghcp-app/index.ts";
-import { handleSQLStudioChat } from "./sql-studio/index.ts";
+import { handleSQLStudioChat, handleSSMSUsage } from "./sql-studio/index.ts";
 import { isDebug } from "../split-console.ts";
 
 export async function handleDeviceLogin(req: HandlerInput): Promise<HandlerResult> {
   try {
     let result: HandlerResult;
+
+    // SSMS usage/quota handler runs FIRST — SSMS uses a different quota
+    // format than VS (full quota_snapshots with token_based_billing) and
+    // breaks if it gets the VS-style 6-field format. Only handles
+    // /copilot_internal/user and /copilot_internal/v2/token for SSMS clients.
+    result = handleSSMSUsage(req);
+    if (result.handled) return result;
 
     // Unified VS-family auth (VS Copilot Client + VS Team Explorer).
     // Handles copilot_internal/* for both, and explicitly passes through

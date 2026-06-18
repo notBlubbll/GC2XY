@@ -67,27 +67,12 @@ function getSkuFromGh(): { copilot_plan: string; access_type_sku: string; sku: s
 }
 
 function getRemainingQuota(): { chat: number; completions: number } {
-  // 42% used: chat 290/500 remaining, completions 2320/4000 remaining
+  // 42% used: chat 290/500, completions 2320/4000
   return { chat: 290, completions: 2320 };
 }
 
 function generateTrackingId(): string {
   return forge.util.bytesToHex(forge.random.getBytesSync(16));
-}
-
-// Next month start at 00:00:00 UTC — matches GitHub's real quota_reset_date.
-// Real captured token used 1783382400 = 2026-07-01T00:00:00Z for a 2026-06-17 request.
-function getNextMonthStartUTC(): Date {
-  const now = new Date();
-  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1, 0, 0, 0));
-}
-
-function getNextMonthStartStr(): string {
-  return getNextMonthStartUTC().toISOString().slice(0, 10);
-}
-
-function getNextMonthStartTS(): number {
-  return Math.floor(getNextMonthStartUTC().getTime() / 1000);
 }
 
 // VS OAuth app credentials (from VS 2026) — used by isVSOAuthFlow passthrough check
@@ -131,31 +116,11 @@ export function handleVSShellCopilotUser(req: HandlerInput): HandlerResult | nul
   const ghUser = getGithubUsername();
   const { copilot_plan, access_type_sku } = getSkuFromGh();
   const tid = generateTrackingId();
+  const resetDate = new Date("2120-01-01T00:00:00Z");
+  const resetStr = resetDate.toISOString().slice(0, 10);
   const assignedDate = new Date(Date.now() - 12 * 86400000);
   const q = getRemainingQuota();
   const canUpgrade = access_type_sku === "free_limited_copilot" || access_type_sku === "copilot_for_individual";
-  const resetDateStr = getNextMonthStartStr();
-  const resetDateUtc = getNextMonthStartUTC().toISOString();
-  const now = Date.now();
-  const chatEnt = 500;
-  const compEnt = 4000;
-  function snapshot(id: string, remaining: number, entitlement: number, hasQuota: boolean) {
-    const pct = entitlement > 0 ? Math.round((remaining / entitlement) * 1000) / 10 : 0;
-    return {
-      overage_count: 0,
-      overage_permitted: false,
-      percent_remaining: pct,
-      quota_id: id,
-      quota_remaining: Number((remaining).toFixed(1)),
-      unlimited: false,
-      timestamp_utc: new Date(now).toISOString(),
-      has_quota: hasQuota,
-      quota_reset_at: 0,
-      token_based_billing: true,
-      remaining,
-      entitlement,
-    };
-  }
   return {
     handled: true,
     response: jsonResponse({
@@ -168,41 +133,26 @@ export function handleVSShellCopilotUser(req: HandlerInput): HandlerResult | nul
       chat_enabled: true,
       cli_enabled: true,
       cli_remote_control_enabled: true,
-      copilotignore_enabled: false,
+      copilotignore_enabled: true,
       copilot_plan,
       editor_preview_features_enabled: true,
       is_mcp_enabled: true,
-      is_staff: false,
       organization_login_list: [],
       organization_list: [],
       restricted_telemetry: false,
-      cloud_session_storage_enabled: false,
+      cloud_session_storage_enabled: true,
       endpoints: {
         api: "https://api.individual.githubcopilot.com",
         "origin-tracker": "https://origin-tracker.individual.githubcopilot.com",
         proxy: "https://proxy.individual.githubcopilot.com",
         telemetry: "https://telemetry.individual.githubcopilot.com",
       },
-      token_based_billing: true,
-      quota_reset_date: resetDateStr,
-      quota_reset_date_utc: resetDateUtc,
+      quota_reset_date: resetStr,
+      limited_user_quotas: { chat: q.chat, completions: q.completions },
       quota_snapshots: {
-        chat: snapshot("chat", q.chat, chatEnt, true),
-        completions: snapshot("completions", q.completions, compEnt, true),
-        premium_interactions: {
-          overage_count: 0,
-          overage_permitted: false,
-          percent_remaining: 0.0,
-          quota_id: "premium_interactions",
-          quota_remaining: 0.0,
-          unlimited: false,
-          timestamp_utc: new Date(now).toISOString(),
-          has_quota: false,
-          quota_reset_at: 0,
-          token_based_billing: true,
-          remaining: 0,
-          entitlement: 0,
-        },
+        chat: { entitlement: 500, remaining: q.chat, percent_remaining: Math.round(q.chat / 500 * 100), unlimited: false, overage_permitted: false, overage_count: 0 },
+        completions: { entitlement: 4000, remaining: q.completions, percent_remaining: Math.round(q.completions / 4000 * 100), unlimited: false, overage_permitted: false, overage_count: 0 },
+        premium_interactions: { entitlement: 1000, remaining: 580, percent_remaining: 58, unlimited: true, overage_permitted: true, overage_count: 100 },
       },
     }),
   };
@@ -217,10 +167,11 @@ export function handleVSShellToken(req: HandlerInput): HandlerResult | null {
   const tid = generateTrackingId();
   const exp = now + 1800;
   const iat = now;
+  const resetDate = new Date("2120-01-01T00:00:00Z");
+  const resetTs = Math.floor(resetDate.getTime() / 1000);
   const q = getRemainingQuota();
   const { sku } = getSkuFromGh();
-  const resetTS = getNextMonthStartTS();
-  const token = `tid=${tid};exp=${exp};iat=${iat};sku=${sku};proxy-ep=proxy.individual.githubcopilot.com;st=dotcom;chat=1;cit=1;malfil=1;editor_preview_features=1;agent_mode=1;agent_mode_auto_approval=1;mcp=1;blackbird_external_indexing=1;client_byok=0;rt=1;ip=0.0.0.0;asn=AS000000;cq=${q.completions};rd=${resetTS}`;
+  const token = `tid=${tid};exp=${exp};iat=${iat};sku=${sku};proxy-ep=proxy.individual.githubcopilot.com;st=dotcom;chat=1;cit=1;malfil=1;editor_preview_features=1;agent_mode=1;agent_mode_auto_approval=1;mcp=1;blackbird_external_indexing=1;client_byok=0;rt=1;ip=0.0.0.0;asn=AS000000;cq=3934;rd=${resetTs}`;
   return {
     handled: true,
     response: jsonResponse({
@@ -232,9 +183,9 @@ export function handleVSShellToken(req: HandlerInput): HandlerResult | null {
       chat_enabled: true,
       chat_jetbrains_enabled: true,
       code_quote_enabled: true,
-      code_review_enabled: false,
+      code_review_enabled: true,
       codesearch: true,
-      copilotignore_enabled: false,
+      copilotignore_enabled: true,
       endpoints: {
         api: "https://api.individual.githubcopilot.com",
         "origin-tracker": "https://origin-tracker.individual.githubcopilot.com",
@@ -243,17 +194,15 @@ export function handleVSShellToken(req: HandlerInput): HandlerResult | null {
       },
       expires_at: exp,
       iat,
-      individual: true,
       limited_user_quotas: { chat: q.chat, completions: q.completions },
-      limited_user_reset_date: resetTS,
+      limited_user_reset_date: resetTs,
+      quota_reset_date: resetTs,
       public_suggestions: "disabled",
       refresh_in: 1500,
       sku,
       telemetry: "disabled",
       token,
       tracking_id: tid,
-      xcode: true,
-      xcode_chat: false,
     }),
   };
 }

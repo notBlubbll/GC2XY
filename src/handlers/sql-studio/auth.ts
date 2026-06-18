@@ -22,6 +22,7 @@ import { HandlerInput, HandlerResult, jsonResponse, scrubTaskComplete, compressT
 import { trackRequest } from "../../usage-tracker.ts";
 import { handleVSModels } from "../vs/models.ts";
 import { handleVisualStudio } from "../vs/handler.ts";
+import { buildSSMSQuotaSnapshotHeaders } from "./usage.ts";
 import { chatCompletion as openAIChat, getModelDisplayName, getModelProviderTag, detectSessionSignal, extractUserPrompt } from "../openai-provider.ts";
 import { chatCompletion as freebuffChat } from "../freebuff-client.ts";
 import { chatCompletion as agnesChat } from "../agnes-client.ts";
@@ -64,15 +65,6 @@ function routeChat(model: string, messages: any[], tools: any[] | undefined, str
 
 // Copilot content-filter wrapper — real GitHub includes this on every chunk.
 const SAFE_FILTER = { hate: { filtered: false, severity: "safe" }, self_harm: { filtered: false, severity: "safe" }, sexual: { filtered: false, severity: "safe" }, violence: { filtered: false, severity: "safe" } };
-
-function buildQuotaSnapshotHeaders(): string {
-  const rst = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 1).toISOString();
-  return [
-    `x-quota-snapshot-chat: ent=200&ov=0.0&ovPerm=false&rem=96.0&rst=${rst}&totRem=192.0\r\n`,
-    `x-quota-snapshot-completions: ent=2000&ov=0.0&ovPerm=false&rem=99.9&rst=${rst}&totRem=1998.0\r\n`,
-    `x-quota-snapshot-premium_interactions: ent=0&ov=0.0&ovPerm=false&rem=0.0&rst=${rst}&totRem=0.0\r\n`,
-  ].join("");
-}
 
 // Parse a thinking-mode tag out of a VS model display name (e.g. "DeepSeek V4 [HI]").
 function parseThinkingMode(modelName: string): { model: string; thinking: string | null } {
@@ -236,7 +228,7 @@ async function handleSSMSChatCompletions(req: HandlerInput): Promise<HandlerResu
       `x-copilot-api-exp-assignment-context: 5133j383:1109202;c_a15ch289:1165001;\r\n` +
       `x-github-backend: Kubernetes\r\n` +
       `x-github-request-id: D048:330F51:${forge.util.bytesToHex(forge.random.getBytesSync(3)).toUpperCase()}:${forge.util.bytesToHex(forge.random.getBytesSync(3)).toUpperCase()}:${forge.util.bytesToHex(forge.random.getBytesSync(4)).toUpperCase()}\r\n` +
-      buildQuotaSnapshotHeaders() +
+      buildSSMSQuotaSnapshotHeaders() +
       `connection: close\r\n\r\n`;
 
     // Helper: write a Copilot-format SSE data line
