@@ -1112,7 +1112,7 @@ function loadConfig() {
 function saveConfig() {
   try {
     const dir = join(getProjectRoot(), ".config");
-    if (!existsSync(dir)) try { writeFileSync(join(dir, ".gitkeep"), ""); } catch {}
+    if (!existsSync(dir)) try { mkdirSync(dir, { recursive: true }); } catch {}
     const p = join(dir, "config.json");
     const existing = existsSync(p) ? readJsonSync(p) : {};
     existing.mode = getMode();

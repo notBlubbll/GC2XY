@@ -244,49 +244,65 @@ function initCA() {
     try {
       const certInfo = getInterceptCert();
       const cert = forge.pki.certificateFromPem(certInfo.cert.toString());
-      const thumbprint = getCertThumbprint(cert);
 
       // Export to PFX with cert + key (no CA chain — netsh binding needs clean PFX)
       const pfxPath = join(CERT_DIR, "intercept.pfx");
       const key = forge.pki.privateKeyFromPem(certInfo.key.toString());
       const p12Asn1 = forge.pkcs12.toPkcs12Asn1(key, [cert], "", { algorithm: "3des" });
       writeFileSync(pfxPath, Buffer.from(forge.asn1.toDer(p12Asn1).getBytes(), "binary"));
-      log("INFO", `Intercept cert thumbprint: ${thumbprint}`);
 
-      // Import PFX to LocalMachine\My via PowerShell (certutil defaults to CurrentUser)
-      const psImport = `$pfx=[IO.File]::ReadAllBytes('${pfxPath.replace(/\\/g, "\\\\")}');` +
-        `$p=New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($pfx,'',[System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]0);` +
-        `$s=New-Object System.Security.Cryptography.X509Certificates.X509Store('My','LocalMachine');` +
-        `$s.Open('ReadWrite');$s.Add($p);$s.Close();Write-Host "imported $($p.Thumbprint)"`;
-      const imp = spawnSync("powershell", ["-NoProfile", "-Command", psImport], { encoding: "utf8", timeout: 15000 });
-      const impOut = (imp.stdout || "").trim();
-      log("INFO", `PS import: status=${imp.status} ${impOut}`);
-      if (!impOut.includes(thumbprint)) {
-        const impErr = (imp.stderr || "").trim();
-        log("WARN", `PS import failed: ${impErr}`);
+      // Remove any old CNG/KSP-backed MITM Proxy certs (incompatible with netsh)
+      // Use subject match since thumbprint may differ between forge and Windows
+      const delOld = spawnSync("powershell", ["-NoProfile", "-Command",
+        "Get-ChildItem Cert:\\LocalMachine\\My | Where-Object {$_.Subject -eq 'CN=MITM Proxy' -and $_.PrivateKey -eq $null} | Remove-Item -Force"
+      ], { stdio: "ignore", timeout: 10000 });
+
+      // Import PFX to LocalMachine\My via certutil (uses legacy CSP, compatible with netsh/http.sys)
+      // PowerShell X509KeyStorageFlags=0 stores key via CNG/KSP which netsh cannot bind (Error 1312)
+      const certUtilImport = spawnSync("certutil", ["-f", "-p", "", "-importpfx", "MY", pfxPath], { encoding: "utf8", timeout: 15000 });
+      const cuOut = (certUtilImport.stdout || "").trim();
+      log("INFO", `certutil import: status=${certUtilImport.status} ${cuOut}`);
+      if (certUtilImport.status !== 0) {
+        // Fallback: PowerShell with MachineKeySet|PersistKeySet for legacy CSP
+        const psImport = `$pfx=[IO.File]::ReadAllBytes('${pfxPath.replace(/\\/g, "\\\\")}');` +
+          `$flags=[System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]'MachineKeySet,PersistKeySet';` +
+          `$p=New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($pfx,'',$flags);` +
+          `$s=New-Object System.Security.Cryptography.X509Certificates.X509Store('My','LocalMachine');` +
+          `$s.Open('ReadWrite');$s.Add($p);$s.Close();Write-Host "imported $($p.Thumbprint)"`;
+        const imp = spawnSync("powershell", ["-NoProfile", "-Command", psImport], { encoding: "utf8", timeout: 15000 });
+        const impOut = (imp.stdout || "").trim();
+        log("INFO", `PS import: status=${imp.status} ${impOut}`);
       }
 
-      // Delete stale hostname-specific SSL bindings (from old iis-setup.cmd)
-      for (const h of ["github.com", "www.github.com", "api.github.com", "api.githubcopilot.com",
+      // Read the ACTUAL thumbprint from Windows cert store after import
+      // (forge-computed thumbprint may differ from Windows due to DER encoding differences)
+      const getThumb = spawnSync("powershell", ["-NoProfile", "-Command",
+        "Get-ChildItem Cert:\\LocalMachine\\My | Where-Object {$_.Subject -eq 'CN=MITM Proxy' -and $_.HasPrivateKey} | Select-Object -First 1 -ExpandProperty Thumbprint"
+      ], { encoding: "utf8", timeout: 10000 });
+      const thumbprint = (getThumb.stdout || "").trim().toUpperCase();
+      if (!thumbprint || thumbprint.length < 20) {
+        throw new Error(`Cannot read MITM cert thumbprint from store: '${thumbprint}'`);
+      }
+      log("INFO", `Intercept cert thumbprint (from store): ${thumbprint}`);
+
+      // SNI-based bindings per intercepted host (only our hostnames get the MITM cert)
+      // Never use ipport=0.0.0.0:443 — that poisons other IIS sites sharing port 443
+      const interceptedHosts = ["github.com", "www.github.com", "api.github.com", "api.githubcopilot.com",
         "copilot-proxy.githubusercontent.com", "api.individual.githubcopilot.com",
         "origin-tracker.individual.githubcopilot.com", "proxy.individual.githubcopilot.com",
-        "telemetry.individual.githubcopilot.com"]) {
+        "telemetry.individual.githubcopilot.com"];
+      let bindOk = 0;
+      for (const h of interceptedHosts) {
         spawnSync("netsh", ["http", "delete", "sslcert", `hostnameport=${h}:443`], { stdio: "ignore", timeout: 3000 });
+        const r = spawnSync("netsh", ["http", "add", "sslcert", `hostnameport=${h}:443`, `certhash=${thumbprint}`, "certstorename=MY", "appid={4dc3e181-e14b-4a21-b022-59fc669b0914}"], { encoding: "utf8", timeout: 10000 });
+        if (r.status === 0) bindOk++;
+        else log("WARN", `netsh ${h}:443: ${(r.stderr || r.stdout || "").trim()}`);
       }
-      // Delete any IP-based bindings
-      spawnSync("netsh", ["http", "delete", "sslcert", "ipport=0.0.0.0:443"], { stdio: "ignore", timeout: 5000 });
-      spawnSync("netsh", ["http", "delete", "sslcert", "ipport=[::]:443"], { stdio: "ignore", timeout: 5000 });
-
-      // Bind to both IPv4 and IPv6 port 443
-      const r4 = spawnSync("netsh", ["http", "add", "sslcert", "ipport=0.0.0.0:443", `certhash=${thumbprint}`, "certstorename=MY", "appid={4dc3e181-e14b-4a21-b022-59fc669b0914}"], { encoding: "utf8", timeout: 10000 });
-      log("INFO", `netsh 0.0.0.0:443: ${r4.status === 0 ? "OK" : (r4.stderr || r4.stdout || "").trim()}`);
-
-      const r6 = spawnSync("netsh", ["http", "add", "sslcert", "ipport=[::]:443", `certhash=${thumbprint}`, "certstorename=MY", "appid={4dc3e181-e14b-4a21-b022-59fc669b0914}"], { encoding: "utf8", timeout: 10000 });
-      log("INFO", `netsh [::]:443: ${r6.status === 0 ? "OK" : (r6.stderr || r6.stdout || "").trim()}`);
+      log("INFO", `SNI bindings: ${bindOk}/${interceptedHosts.length} OK`);
 
       // Verify binding
       const verify = spawnSync("netsh", ["http", "show", "sslcert"], { encoding: "utf8", timeout: 5000 });
-      const hasBind = (verify.stdout || "").includes(thumbprint);
+      const hasBind = (verify.stdout || "").toLowerCase().includes(thumbprint.toLowerCase());
       log("INFO", `Binding verified: ${hasBind ? "YES" : "NO - binding not found!"}`);
     } catch (e) {
       log("WARN", `IIS cert binding error: ${(e as Error).message}`);
@@ -1085,8 +1101,9 @@ async function handlePlainHttpRequest(clientSocket: Socket, data: Buffer, port: 
   }
 
   const headers: Record<string, string> = {};
+  const preservedProto = allHeaders["x-forwarded-proto"];
   for (const [key, value] of Object.entries(allHeaders)) {
-    if (!["host", "proxy-connection", "connection"].includes(key)) {
+    if (!["host", "proxy-connection", "connection", "x-forwarded-for", "x-arr-log-id", "x-arr-clientcert", "x-original-url"].includes(key)) {
       headers[key] = value;
     }
   }
@@ -1142,14 +1159,16 @@ async function handlePlainHttpRequest(clientSocket: Socket, data: Buffer, port: 
   }
 
   const useHttps = IIS_PROXY
-    ? (headers["x-forwarded-proto"] === "https" || port === 443 || port === PROXY_PORT)
+    ? true
     : (port === 443 || port === PROXY_PORT);
   const targetPort = useHttps ? 443 : 80;
   const upstreamHost = await getRealIp(host);
 
+  const upstreamHeaders = { ...headers, host };
+  delete upstreamHeaders["x-forwarded-proto"];
   const req = (useHttps ? httpsRequest : httpRequest)({
     hostname: upstreamHost, port: targetPort, path: url, method,
-    headers: { ...headers, host },
+    headers: upstreamHeaders,
     rejectUnauthorized: false,
   }, (res) => {
     const chunks: Buffer[] = [];
@@ -1159,8 +1178,10 @@ async function handlePlainHttpRequest(clientSocket: Socket, data: Buffer, port: 
       logPlainEnglish(++requestCounter, "REQUEST", method, url, host, null, headers, null);
       logPlainEnglish(requestCounter, "RESPONSE", method, url, host, res.statusCode || 0, res.headers, body.toString());
       let respHeader = `HTTP/1.1 ${res.statusCode} ${res.statusMessage}\r\n`;
-      respHeader += serializeHeaders(res.headers as Record<string, any>);
-      respHeader += "\r\n";
+      respHeader += serializeHeaders(res.headers as Record<string, any>, [
+        "transfer-encoding", "connection", "keep-alive", "content-length",
+      ]);
+      respHeader += `Content-Length: ${body.length}\r\nConnection: close\r\n\r\n`;
       clientSocket.write(respHeader);
       clientSocket.write(body);
       clientSocket.end();

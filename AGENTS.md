@@ -49,6 +49,64 @@ Instead of hosts file + raw TLS, gc2xy can run behind IIS:
 - Status bar shows `Port: 443 → 3080` when IIS mode is active
 - HTTP handler detects `x-forwarded-proto: https` from IIS to upstream correctly as HTTPS
 
+### IIS Architecture
+
+```
+Browser → https://github.com/ → IIS (port 443, TLS termination)
+  → ARR URL Rewrite → http://127.0.0.1:3080/
+  → gc2xy proxy (HTTP server) → fake handler / upstream
+  → Response back through IIS → Browser
+```
+
+**Key constraint**: The browser must resolve `github.com` → `127.0.0.1` to reach IIS. This requires:
+1. **Hosts file redirect** — `127.0.0.1 github.com ...` in `C:\Windows\System32\drivers\etc\hosts`
+2. **Chrome DNS-over-HTTPS disabled** — Chrome's Secure DNS (DoH) bypasses the OS hosts file by resolving via Cloudflare/Google DoH servers directly. Without disabling it, Chrome connects to real GitHub IPs (140.82.x.x) and never reaches IIS.
+
+### IIS Site Setup (`!ACTIVATE.cmd`)
+
+`!ACTIVATE.cmd` performs these IIS-specific steps when W3SVC is detected:
+
+1. **Clean up stale SSL bindings** — removes leftover `ipport=0.0.0.0:443` and `[::]:443` global bindings from previous runs (these poison other IIS sites on port 443), plus SNI `hostnameport=` bindings for our intercepted hosts
+2. **Create/update IIS site** — `gc2xy` site (id:6) with SNI bindings (`sslFlags='1'`) for all intercepted hostnames on ports 80 and 443, using `.iis-site/` as physical path
+3. **Write `web.config`** — ensures `.iis-site/web.config` exists with the ARR reverse proxy rewrite rule
+4. **Import SSL certificate** — `certutil -importpfx MY .certs\intercept.pfx` (legacy CSP-backed, compatible with `netsh http`). Reads the actual thumbprint from the Windows cert store after import (forge-computed thumbprint may differ)
+5. **Register SNI SSL bindings** — `netsh http add sslcert hostnameport=<host>:443 certhash=<thumbprint>` for each intercepted host. Uses SNI only — never `ipport=0.0.0.0:443` which would poison other IIS sites
+6. **Preserve other IIS sites** — `iis-preserve-sites.ps1` discovers non-gc2xy sites with HTTPS:443 bindings and registers their SSL certs as SNI bindings in http.sys. Required because removing the global `0.0.0.0:443` binding breaks non-SNI sites (like the `secure` site at `dexx-dev04.toshibatec-tgis.com`)
+7. **Enable ARR reverse proxy** — `appcmd set config -section:system.webServer/proxy /enabled:True`
+8. **`iisreset` + start site** — restarts IIS, then starts the `gc2xy` app pool and site with retry logic (up to 5 retries, 1s between each, waiting for `state:Started`)
+9. **Patch hosts file** — appends `127.0.0.1 github.com www.github.com ...` if not already present, then `ipconfig /flushdns`
+10. **Disable Chrome DoH** — sets `HKLM\SOFTWARE\Policies\Google\Chrome\DnsOverHttpsMode=off` to prevent Chrome from bypassing the hosts file via DNS-over-HTTPS
+
+### IIS Site Cleanup (`!REMOVE.cmd`)
+
+1. Remove all `gc2xy` site bindings (`/-bindings`)
+2. Stop site and app pool
+3. Delete global `ipport=0.0.0.0:443` and `[::]:443` SSL bindings (leftover from old runs)
+4. Delete SNI `hostnameport=` bindings for all intercepted hosts
+5. Clean hosts file — remove `127.0.0.1 github.com ...` entries
+6. `iisreset`
+7. Restore other IIS sites' SSL bindings via `iis-preserve-sites.ps1`
+8. Remove Chrome DoH policy
+
+### Chrome DNS-over-HTTPS (Critical)
+
+Chrome's Secure DNS feature resolves hostnames via encrypted DNS (DoH) servers (Cloudflare, Google) instead of the OS resolver. This **completely bypasses** the `hosts` file redirect, so Chrome connects to real GitHub IPs and never reaches IIS.
+
+**Symptom**: `ping github.com` resolves to `127.0.0.1` (hosts file works), but `https://github.com/` in Chrome shows the real GitHub site (DoH bypasses hosts).
+
+**Fix**: `!ACTIVATE.cmd` sets `HKLM\SOFTWARE\Policies\Google\Chrome\DnsOverHttpsMode=off` via registry. This forces Chrome to use the OS DNS resolver which respects the hosts file. **Users must close ALL Chrome windows and reopen** for the policy to take effect.
+
+`!REMOVE.cmd` does NOT currently restore the DoH policy — it leaves it disabled. This is intentional since most corporate environments prefer OS DNS anyway.
+
+### IIS SNI vs Non-SNI Bindings
+
+| Binding Type | Format | Behavior | gc2xy Usage |
+|-------------|--------|----------|-------------|
+| **SNI** | `hostnameport=<host>:443` with `sslFlags='1'` | Matches only the specified hostname via TLS SNI extension | All gc2xy intercepted hosts |
+| **Non-SNI (global)** | `ipport=0.0.0.0:443` with `sslFlags='0'` | Matches ALL HTTPS on port 443 regardless of hostname | **NEVER used** — poisons other IIS sites |
+
+Other IIS sites with non-SNI HTTPS bindings on port 443 (like the `secure` site at `*:443:dexx-dev04.toshibatec-tgis.com sslFlags=0`) need their SSL certs registered as SNI bindings in http.sys. Without this, removing the global `0.0.0.0:443` binding breaks them. `iis-preserve-sites.ps1` handles this automatically.
+
 ### IIS Service Recovery
 
 ```batch
@@ -61,13 +119,14 @@ sc failure w3svc reset= 86400 actions= restart/5000/restart/10000/restart/30000
 
 | File | Purpose |
 |------|---------|
-| `!ACTIVATE.cmd` | **Unified launcher**: DNS flush, CA install, mode selection (mock/hybrid/proxy). IIS detection, Bun/Node fallback. Passes `--mode-2`/`--mode-3` launch args |
+| `!ACTIVATE.cmd` | **Unified launcher**: DNS flush, CA install, mode selection (mock/hybrid/proxy). IIS detection with site setup, SSL cert binding (SNI only), other-site preservation, hosts file patch, Chrome DoH disable. Bun/Node fallback. Passes `--mode-2`/`--mode-3` launch args |
 | `start.cmd` | Shorthand wrapper that calls `!ACTIVATE.cmd` with optional mode arg |
 | `start-mock.cmd` | Standalone mock launcher (auto-elevate, IIS detect, Bun/Node fallback) |
 | `start-hybrid.cmd` | Standalone hybrid launcher (same features) |
 | `start-proxy.cmd` | Standalone proxy launcher (same features) |
 | `_start-node.cmd` | Node.js-only fallback launcher (auto-elevate, IIS detect, mode switching via exit codes, no Bun required) |
-| `!REMOVE.cmd` | Kill proxy, clean hosts, remove CA cert (IIS-aware port cleanup) |
+| `!REMOVE.cmd` | Kill proxy, clean hosts, remove CA cert (IIS-aware port cleanup, restores other sites' SSL bindings) |
+| `iis-preserve-sites.ps1` | Discovers non-gc2xy IIS sites with HTTPS:443 bindings and outputs their cert thumbprints + hostnames. Used by `!ACTIVATE.cmd` and `!REMOVE.cmd` to register/restore other sites' SSL certs as SNI bindings in http.sys |
 | `mitm-proxy.ts` | Main proxy: TLS/HTTP servers, hosts redirect, interceptor engine, request forwarding, cache integration, **deletes `package-lock.json` on startup** (avoids stale lock) |
 | `cache.ts` | Auto-cache: saves upstream responses to `cache/<sanitized-url>.json`; loads before fake handlers in mock mode |
 | `split-console.ts` | Console dashboard TUI: status banner with model column (grouped by provider: FREEBUFF / CODESTRAL / OC-GO / OTHER), log buffer, keyboard commands, debug/record/restart toggles, mode switching, terminal resize handling, **Windows Terminal tab color** via `settings.json` hot-reload |
@@ -885,6 +944,11 @@ See `skills.md` → **Using the Console Dashboard** for keyboard shortcuts, log 
 - **Node.js tsx runner**: Scripts use `node node_modules\tsx\dist\cli.cjs` instead of `npx tsx` or `node node_modules\.bin\tsx.cmd`. The `.cmd` wrapper cannot be executed via `node` (tries to parse batch as JavaScript), and `npx` prompts for installation on first use.
 - **`windivert` removed**: The unused `windivert` native module was removed from `package.json`. It required `node-gyp` (Python + VC++ build tools) and blocked `npm install` in Node.js fallback mode.
 - **IIS auto-detection**: All launcher scripts check `sc query w3svc | findstr "RUNNING"` at startup. If W3SVC is running, `IIS_PROXY=1` and `gc2xy_HTTP_PORT=3080` are set automatically, and port 80/443 cleanup is skipped (IIS owns those ports). The status banner shows `Port: 443 → 3080` when IIS mode is active.
+- **IIS site start retry**: After `iisreset`, WAS may not be ready immediately. `!ACTIVATE.cmd` retries `start apppool` + `start site` up to 5 times with 1s delays, checking for `state:Started` each time. The `appcmd` output for pool/site start is suppressed (both named `gc2xy` which was confusing); the meaningful confirmation is `IIS site started successfully.` from the retry check.
+- **IIS global SSL binding cleanup**: Previous versions registered `ipport=0.0.0.0:443` (non-SNI) which poisoned ALL other IIS sites on port 443. Current version uses only SNI `hostnameport=` bindings and aggressively cleans up leftover `0.0.0.0:443` and `[::]:443` bindings on both activate and remove.
+- **IIS other-site preservation**: `iis-preserve-sites.ps1` reads `applicationHost.config` (using `$cfg.configuration['system.applicationHost']` — the bracket syntax is required because the element name contains a dot), finds non-gc2xy sites with HTTPS:443 bindings, matches their hostnames to SSL certs in `LocalMachine\My` (handles wildcard certs like `*.toshibatec-tgis.com` matching `dexx-dev04.toshibatec-tgis.com` by extracting the parent domain), and registers them as SNI bindings via `netsh http add sslcert hostnameport=<host>:443`.
+- **Chrome DNS-over-HTTPS bypass**: Chrome's Secure DNS (DoH) resolves hostnames via Cloudflare/Google DoH servers, completely bypassing the OS hosts file. `!ACTIVATE.cmd` sets `HKLM\SOFTWARE\Policies\Google\Chrome\DnsOverHttpsMode=off` to force OS DNS. **Users must close ALL Chrome windows and reopen** for the policy to take effect. Symptom: `ping github.com` shows `127.0.0.1` but Chrome shows real GitHub.
+- **IIS mode always patches hosts file**: The hosts file redirect is required even in IIS mode — the browser must resolve `github.com` → `127.0.0.1` to reach IIS. `!ACTIVATE.cmd` always verifies and patches the hosts file (previously skipped in IIS mode), plus flushes DNS cache.
 - TLS server uses ALPN `http/1.1` only (no HTTP/2)
 - `Connection: close` is forced on all responses (no keep-alive for intercepted flows)
 - Transfer-encoding, connection, keep-alive headers are stripped from upstream responses

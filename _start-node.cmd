@@ -2,6 +2,7 @@
 title gc2xy - Node.js Mode
 cd /d "%~dp0"
 
+if not exist ".config" mkdir ".config"
 if exist ".config\.env" for /f "usebackq delims=" %%x in (".config\.env") do set "%%x" 2>nul
 
 net session >nul 2>&1
@@ -101,6 +102,15 @@ goto :run_detected
 where node >nul 2>&1
 if %ERRORLEVEL% NEQ 0 goto :try_bun
 
+if exist "node_modules" goto :npm_skip
+echo [INFO] Installing Node.js dependencies...
+npm install --no-audit --no-fund
+if errorlevel 1 (
+    echo ERROR: npm install failed.
+    pause
+    exit /b 1
+)
+:npm_skip
 echo [2/4] Runtime: Node.js
 echo [3/4] Checking hosts redirect...
 if not "%IIS_PROXY%"=="1" findstr /C:"# BEGIN gc2xy PROXY" "C:\Windows\System32\drivers\etc\hosts" >nul 2>&1 && (echo   Hosts file already patched.) || (echo   Hosts file NOT patched - proxy will apply on startup.)

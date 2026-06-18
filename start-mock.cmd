@@ -2,6 +2,7 @@
 title gc2xy
 cd /d "%~dp0"
 
+if not exist ".config" mkdir ".config"
 if exist ".config\.env" for /f "usebackq delims=" %%x in (".config\.env") do set "%%x" 2>nul
 
 net session >nul 2>&1
@@ -44,7 +45,7 @@ if %ERRORLEVEL% NEQ 0 (
     appcmd add site /name:"%SITE_NAME%" /physicalPath:"%IIS_DIR%" /serverAutoStart:true >nul 2>&1
     for %%h in (github.com www.github.com api.github.com api.githubcopilot.com copilot-proxy.githubusercontent.com api.individual.githubcopilot.com origin-tracker.individual.githubcopilot.com proxy.individual.githubcopilot.com telemetry.individual.githubcopilot.com) do (
         appcmd set site "%SITE_NAME%" "/+bindings.[protocol='http',bindingInformation='*:80:%%h']" >nul 2>&1
-        appcmd set site "%SITE_NAME%" "/+bindings.[protocol='https',bindingInformation='*:443:%%h',sslFlags='0']" >nul 2>&1
+        appcmd set site "%SITE_NAME%" "/+bindings.[protocol='https',bindingInformation='*:443:%%h',sslFlags='1']" >nul 2>&1
     )
     appcmd start site "%SITE_NAME%" >nul 2>&1
     echo   IIS site created with reverse proxy bindings.

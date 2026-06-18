@@ -2,6 +2,7 @@
 title gc2xy
 cd /d "%~dp0"
 
+if not exist ".config" mkdir ".config"
 if exist ".config\.env" for /f "usebackq delims=" %%x in (".config\.env") do set "%%x" 2>nul
 
 net session >nul 2>&1

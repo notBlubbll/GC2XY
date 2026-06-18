@@ -62,26 +62,50 @@ gc2xy can run behind IIS as a reverse proxy target — IIS handles TLS terminati
 - Status bar shows `Port: 443 → 3080` when IIS mode is active
 - HTTP handler detects `x-forwarded-proto: https` from IIS and forwards upstream as HTTPS accordingly
 
-### IIS Service Recovery
+### IIS Architecture
 
-Configure W3SVC to auto-start and never stop:
 ```
-sc config w3svc start= auto
-sc start w3svc
-sc failure w3svc reset= 86400 actions= restart/5000/restart/10000/restart/30000
+Browser → https://github.com/ → IIS (port 443, TLS termination)
+  → ARR URL Rewrite → http://127.0.0.1:3080/
+  → gc2xy proxy (HTTP server) → fake handler / upstream
+  → Response back through IIS → Browser
 ```
+
+### IIS Site Setup (`!ACTIVATE.cmd`)
+
+When W3SVC is detected, `!ACTIVATE.cmd` automatically:
+
+1. Creates/updates the `gc2xy` IIS site with **SNI bindings** (`sslFlags='1'`) for all intercepted hostnames on ports 80/443, using `.iis-site/` as physical path
+2. Imports the intercept SSL certificate via `certutil -importpfx` (CSP-backed, compatible with `netsh http`)
+3. Registers SNI SSL bindings via `netsh http add sslcert hostnameport=<host>:443` — **never** uses global `ipport=0.0.0.0:443` which would poison other IIS sites
+4. Preserves other IIS sites on port 443 via `iis-preserve-sites.ps1` — discovers non-gc2xy sites with HTTPS bindings and registers their SSL certs as SNI bindings in http.sys
+5. Enables ARR reverse proxy, runs `iisreset`, starts site with retry logic
+6. Patches hosts file (`127.0.0.1 github.com ...`) and flushes DNS cache
+7. Disables Chrome DNS-over-HTTPS (`HKLM\SOFTWARE\Policies\Google\Chrome\DnsOverHttpsMode=off`)
+
+### Chrome DNS-over-HTTPS (Critical)
+
+Chrome's Secure DNS (DoH) resolves hostnames via Cloudflare/Google DoH servers instead of the OS resolver. This **completely bypasses** the hosts file redirect — Chrome connects to real GitHub IPs and never reaches IIS.
+
+**Symptom**: `ping github.com` shows `127.0.0.1` but Chrome shows the real GitHub site.
+
+**Fix**: `!ACTIVATE.cmd` sets `DnsOverHttpsMode=off` via registry. **Close ALL Chrome windows and reopen** for the policy to take effect.
+
+### IIS Cleanup (`!REMOVE.cmd`)
+
+Removes gc2xy site bindings, stops site/pool, deletes all SSL bindings (global + SNI), cleans hosts file, runs `iisreset`, and restores other sites' SSL bindings via `iis-preserve-sites.ps1`.
 
 ## Launcher Scripts
 
 | Script | Description |
 |--------|-------------|
-| `!ACTIVATE.cmd` | **Unified launcher**: DNS flush, CA install, mode selection, IIS auto-detection, Bun/Node fallback. Passes `--mode-2`/`--mode-3` launch args. |
+| `!ACTIVATE.cmd` | **Unified launcher**: DNS flush, CA install, mode selection, IIS auto-detection (site setup, SSL cert binding, other-site preservation, hosts file patch, Chrome DoH disable), Bun/Node fallback. Passes `--mode-2`/`--mode-3` launch args. |
 | `start.cmd` | Shorthand wrapper — prompts for mode then calls `!ACTIVATE.cmd`. |
 | `start-mock.cmd` | Standalone mock mode launcher (auto-elevates, detects IIS, Bun/Node fallback). |
 | `start-hybrid.cmd` | Standalone hybrid mode launcher. |
 | `start-proxy.cmd` | Standalone proxy mode launcher. |
 | `_start-node.cmd` | Node.js-only fallback launcher (auto-elevates, IIS detection, mode switching via exit codes). |
-| `!REMOVE.cmd` | Kill proxy, clean hosts file, remove CA cert. |
+| `!REMOVE.cmd` | Kill proxy, clean hosts file, remove CA cert. IIS-aware: removes site bindings, cleans SSL certs, restores other sites' bindings via `iis-preserve-sites.ps1`. |
 | `build.cmd` | Build standalone EXEs (Bun or Node.js). Output in `.dist/`. |
 
 ## Intercepted Hosts
@@ -190,12 +214,6 @@ Visual Studio sends "You have not yet marked the task as complete" when the LLM 
 3. **Drain** — any request within 20s of a `task_complete` response returns `task_complete` again
 
 Shared helpers in `shared.ts`: `countConsecutiveNags()`, `stripNagMessages()`, `RECENTLY_COMPLETED` map. Nag responses use SSE buffer with `Content-Length` + `Connection: close` (not chunked) for VS compatibility.
-| `3` | Switch to PROXY mode |
-| `r` | Restart proxy (picks up code changes) |
-| `e` | Toggle recording |
-| `d` | Toggle debug entries (noisy handler logs, VS/GHCP/telemetry traffic) |
-| `m` | Toggle model list overlay |
-| `s` | Stop proxy |
 
 ## License
 

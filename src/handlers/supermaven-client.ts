@@ -79,51 +79,59 @@ export class SupermavenClient {
   async updateBinary(): Promise<void> {
     console.log("[Supermaven] Checking for updates...");
     const cachedPath = this.getBinaryPath();
+    const savedVer = this.getVersionInfo().version;
 
-    if (existsSync(cachedPath)) {
-      console.log("[Supermaven] Binary exists");
-      return;
+    if (existsSync(cachedPath) && savedVer > 0) {
+      console.log("[Supermaven] Binary exists (version", savedVer + ")");
     }
 
-    console.log("[Supermaven] Downloading from marketplace...");
     try {
-      const { execSync } = await import("node:child_process");
-      const vsixPath = join(this.cacheDir, "supermaven.vsix");
-      const zipPath = join(this.cacheDir, "supermaven.zip");
+      const pf = platform();
+      const ar = arch();
+      const apiUrl = `https://supermaven.com/api/download-path-v2?platform=${pf}&arch=${ar}&editor=vscode`;
+      console.log("[Supermaven] Querying download API...");
 
-      execSync(`powershell -command "Invoke-WebRequest -Uri 'https://marketplace.visualstudio.com/_apis/public/gallery/publishers/supermaven/vsextensions/supermaven/1.1.12/vspackage' -OutFile '${vsixPath}'"`, { encoding: "utf-8", timeout: 60000 });
+      const apiData = await new Promise<any>((resolve, reject) => {
+        https.get(apiUrl, { timeout: 10000 }, (res) => {
+          let body = "";
+          res.on("data", (c: string) => body += c);
+          res.on("end", () => {
+            try { resolve(JSON.parse(body)); } catch (e) { reject(e); }
+          });
+        }).on("error", reject);
+      });
 
-      if (existsSync(zipPath)) unlinkSync(zipPath);
-      renameSync(vsixPath, zipPath);
+      if (apiData.error) { console.log("[Supermaven] API error:", apiData.error); return; }
+      const downloadUrl: string = apiData.downloadUrl;
+      const remoteVersion: number = apiData.version;
+      if (!downloadUrl) { console.log("[Supermaven] No download URL in API response"); return; }
 
-      const tmpDir = join(this.cacheDir, "tmp-extract");
-      mkdirSync(tmpDir, { recursive: true });
-      execSync(`powershell -command "Expand-Archive -Path '${zipPath}' -DestinationPath '${tmpDir}' -Force"`, { encoding: "utf-8", timeout: 30000 });
-
-      const findAgent = (dir: string): string | null => {
-        const entries = readdirSync(dir, { withFileTypes: true });
-        for (const entry of entries) {
-          const fullPath = join(dir, entry.name);
-          if (entry.isDirectory()) {
-            const result = findAgent(fullPath);
-            if (result) return result;
-          } else if (entry.name.includes("sm-agent")) {
-            return fullPath;
-          }
-        }
-        return null;
-      };
-
-      const agentPath = findAgent(tmpDir);
-      if (agentPath) {
-        mkdirSync(dirname(cachedPath), { recursive: true });
-        copyFileSync(agentPath, cachedPath);
-        console.log("[Supermaven] Binary downloaded and extracted");
+      if (existsSync(cachedPath) && remoteVersion <= savedVer) {
+        console.log("[Supermaven] Binary up-to-date (remote v" + remoteVersion + ", local v" + savedVer + ")");
+        return;
       }
 
-      try { unlinkSync(zipPath); } catch {}
-      try { execSync(`powershell -command "Remove-Item -Path '${tmpDir}' -Recurse -Force"`, { encoding: "utf-8" }); } catch {}
+      console.log("[Supermaven] Downloading binary v" + remoteVersion + "...");
+      const pendingPath = cachedPath + ".pending";
+      const file = createWriteStream(pendingPath);
+      await new Promise<void>((resolve, reject) => {
+        const doDownload = (url: string) => {
+          https.get(url, { timeout: 60000 }, (res) => {
+            if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+              doDownload(res.headers.location);
+              return;
+            }
+            res.pipe(file);
+            file.on("finish", () => { file.close(); resolve(); });
+          }).on("error", reject);
+        };
+        doDownload(downloadUrl);
+      });
 
+      if (existsSync(cachedPath)) unlinkSync(cachedPath);
+      renameSync(pendingPath, cachedPath);
+      this.saveVersionInfo({ version: remoteVersion });
+      console.log("[Supermaven] Binary downloaded v" + remoteVersion);
     } catch (e: any) {
       console.log("[Supermaven] Download failed:", e.message);
       const vscodeExtDir = join(homedir(), ".vscode", "extensions");
@@ -132,12 +140,15 @@ export class SupermavenClient {
           const dirs = readdirSync(vscodeExtDir).filter(d => d.startsWith("supermaven.supermaven"));
           for (const dir of dirs) {
             const extPath = join(vscodeExtDir, dir);
-            const agentPath = join(extPath, "bin", "win32-x64", "sm-agent.exe");
-            if (existsSync(agentPath)) {
-              mkdirSync(dirname(cachedPath), { recursive: true });
-              copyFileSync(agentPath, cachedPath);
-              console.log("[Supermaven] Binary copied from VSCode extension");
-              return;
+            for (const binDir of ["bin/win32-x64", "bin/linux-x64", "bin/darwin-arm64", "bin/darwin-x64"]) {
+              const ext = this.getPlatform() === "windows" ? ".exe" : "";
+              const agentPath = join(extPath, binDir, `sm-agent${ext}`);
+              if (existsSync(agentPath)) {
+                mkdirSync(dirname(cachedPath), { recursive: true });
+                copyFileSync(agentPath, cachedPath);
+                console.log("[Supermaven] Binary copied from VSCode extension");
+                return;
+              }
             }
           }
         } catch {}

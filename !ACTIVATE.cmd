@@ -2,6 +2,7 @@
 title gc2xy
 cd /d "%~dp0"
 
+if not exist ".config" mkdir ".config"
 if exist ".config\.env" for /f "usebackq delims=" %%x in (".config\.env") do set "%%x" 2>nul
 
 net session >nul 2>&1
@@ -36,30 +37,47 @@ echo   IIS detected - using IIS reverse proxy mode on port 3080
 set IIS_PROXY=1
 set gc2xy_HTTP_PORT=3080
 
-echo   Cleaning up stale SSL bindings...
-netsh http delete sslcert "ipport=[::]:443" >nul 2>&1
-netsh http delete sslcert "ipport=0.0.0.0:443" >nul 2>&1
+echo   Cleaning up stale SSL bindings (gc2xy appid only)...
+rem Remove leftover global ipport binding from old runs (poisons other IIS sites)
+netsh http delete sslcert ipport=0.0.0.0:443 >nul 2>&1
+netsh http delete sslcert ipport=[::]:443 >nul 2>&1
+rem Remove SNI bindings for our hostnames
 for %%h in (github.com www.github.com api.github.com api.githubcopilot.com copilot-proxy.githubusercontent.com api.individual.githubcopilot.com origin-tracker.individual.githubcopilot.com proxy.individual.githubcopilot.com telemetry.individual.githubcopilot.com) do (
     netsh http delete sslcert "hostnameport=%%h:443" >nul 2>&1
 )
 
 :iis_site_setup
 echo   Setting up IIS site...
-set "IIS_DIR=%~dp0iis-site"
+set "IIS_DIR=%~dp0.iis-site"
 set "SITE_NAME=gc2xy"
 set "APP_CMD=%SystemRoot%\System32\inetsrv\appcmd"
-%APP_CMD% list site "%SITE_NAME%" >nul 2>&1
+rem Ensure app pool exists (may be missing if site was created by another project)
+%APP_CMD% list apppool "%SITE_NAME%" >nul 2>&1
 if %ERRORLEVEL% NEQ 0 (
     %APP_CMD% add apppool /name:"%SITE_NAME%" /managedRuntimeVersion:"" >nul 2>&1
+    echo   App pool created.
+)
+rem Create site if missing
+%APP_CMD% list site "%SITE_NAME%" >nul 2>&1
+if %ERRORLEVEL% NEQ 0 (
     %APP_CMD% add site /name:"%SITE_NAME%" /physicalPath:"%IIS_DIR%" /applicationPool:"%SITE_NAME%" /serverAutoStart:true >nul 2>&1
-    %APP_CMD% set site "%SITE_NAME%" "/-bindings.[protocol='http',bindingInformation='*:80:']" >nul 2>&1
-    for %%h in (github.com www.github.com api.github.com api.githubcopilot.com copilot-proxy.githubusercontent.com api.individual.githubcopilot.com origin-tracker.individual.githubcopilot.com proxy.individual.githubcopilot.com telemetry.individual.githubcopilot.com) do (
-        %APP_CMD% set site "%SITE_NAME%" "/+bindings.[protocol='http',bindingInformation='*:80:%%h']" >nul 2>&1
-        %APP_CMD% set site "%SITE_NAME%" "/+bindings.[protocol='https',bindingInformation='*:443:%%h',sslFlags='1']" >nul 2>&1
-    )
-    echo   IIS site created with reverse proxy bindings.
+    echo   IIS site created.
 ) else (
-    echo   IIS site already exists.
+    echo   IIS site already exists - updating config...
+)
+rem Always update physical path, app pool, and bindings (stale config from other projects)
+%APP_CMD% set vdir "%SITE_NAME%/" -physicalPath:"%IIS_DIR%" >nul 2>&1
+%APP_CMD% set app "%SITE_NAME%/" -applicationPool:"%SITE_NAME%" >nul 2>&1
+%APP_CMD% set site "%SITE_NAME%" "/-bindings" >nul 2>&1
+for %%h in (github.com www.github.com api.github.com api.githubcopilot.com copilot-proxy.githubusercontent.com api.individual.githubcopilot.com origin-tracker.individual.githubcopilot.com proxy.individual.githubcopilot.com telemetry.individual.githubcopilot.com) do (
+    %APP_CMD% set site "%SITE_NAME%" "/+bindings.[protocol='http',bindingInformation='*:80:%%h']" >nul 2>&1
+    %APP_CMD% set site "%SITE_NAME%" "/+bindings.[protocol='https',bindingInformation='*:443:%%h',sslFlags='1']" >nul 2>&1
+)
+rem Ensure .iis-site folder and web.config exist
+if not exist "%IIS_DIR%" mkdir "%IIS_DIR%"
+if not exist "%IIS_DIR%\web.config" (
+    echo ^<?xml version="1.0" encoding="UTF-8"?^>^<configuration^>^<system.webServer^>^<rewrite^>^<rules^>^<rule name="ReverseProxyTo_gc2xy" stopProcessing="true"^>^<match url="(.*)" /^>^<action type="Rewrite" url="http://127.0.0.1:3080/{R:1}" /^>^</rule^>^</rules^>^</rewrite^>^</system.webServer^>^</configuration^> > "%IIS_DIR%\web.config"
+    echo   web.config written with reverse proxy rule.
 )
 
 echo   Assigning SSL certificate...
@@ -67,8 +85,23 @@ call :iis_ssl_bind
 
 echo   Enabling reverse proxy...
 %APP_CMD% set config -section:system.webServer/proxy /enabled:"True" /reverseRewriteHostInResponseHeaders:"False" /preserveHostHeader:"True" >nul 2>&1
-iisreset >nul 2>&1
-timeout /t 2 /nobreak >nul
+iisreset
+timeout /t 3 /nobreak >nul
+rem Start app pool and site AFTER iisreset with retry (WAS may not be ready immediately)
+set IIS_RETRY=0
+:iis_start_retry
+%APP_CMD% start apppool "%SITE_NAME%" >nul 2>&1
+%APP_CMD% start site "%SITE_NAME%" >nul 2>&1
+timeout /t 1 /nobreak >nul
+%APP_CMD% list site "%SITE_NAME%" | findstr "state:Started" >nul 2>&1
+if %ERRORLEVEL% equ 0 goto :iis_started
+set /a IIS_RETRY+=1
+if %IIS_RETRY% lss 5 goto :iis_start_retry
+echo   WARNING: IIS site did not reach Started state after 5 retries.
+goto :iis_done
+:iis_started
+echo   IIS site started successfully.
+:iis_done
 
 goto :detect_runtime
 
@@ -95,6 +128,15 @@ goto :check_runtime
 :try_node
 where node >nul 2>&1
 if %ERRORLEVEL% NEQ 0 goto :check_runtime
+if exist "node_modules" goto :npm_skip
+echo [INFO] Installing Node.js dependencies...
+npm install --no-audit --no-fund
+if errorlevel 1 (
+    echo ERROR: npm install failed.
+    pause
+    exit /b 1
+)
+:npm_skip
 set "RUNTIME=node"
 set "NODE_RUNNER=node node_modules\tsx\dist\cli.cjs"
 set RUNTIME_FOUND=1
@@ -127,11 +169,19 @@ echo   No CA certificate found - will be generated on first run.
 
 :cert_done
 echo.
-if "%IIS_PROXY%"=="1" goto :hosts_skip
-echo [2.5/4] Checking hosts file...
-findstr /C:"# BEGIN gc2xy PROXY" "C:\Windows\System32\drivers\etc\hosts" >nul 2>&1
-if %ERRORLEVEL% equ 0 (echo   Hosts file already patched.) else (echo   Hosts file NOT patched - proxy will apply on startup.)
-:hosts_skip
+echo [2.5/4] Ensuring hosts file redirect...
+findstr /C:"127.0.0.1 github.com" "C:\Windows\System32\drivers\etc\hosts" >nul 2>&1
+if %ERRORLEVEL% equ 0 (
+    echo   Hosts file already patched.
+) else (
+    echo 127.0.0.1 github.com www.github.com api.github.com api.githubcopilot.com copilot-proxy.githubusercontent.com api.individual.githubcopilot.com origin-tracker.individual.githubcopilot.com proxy.individual.githubcopilot.com telemetry.individual.githubcopilot.com >> "C:\Windows\System32\drivers\etc\hosts"
+    echo   Hosts file patched.
+)
+ipconfig /flushdns >nul 2>&1
+rem Disable Chrome DNS-over-HTTPS (bypasses hosts file)
+reg add "HKLM\SOFTWARE\Policies\Google\Chrome" /v DnsOverHttpsMode /t REG_SZ /d "off" /f >nul 2>&1
+reg add "HKLM\SOFTWARE\Policies\Google\Chrome" /v DnsOverHttpsTemplates /t REG_SZ /d "" /f >nul 2>&1
+echo   Chrome DoH disabled. YOU MUST close and reopen Chrome for this to take effect.
 echo.
 set "gc2xy_SETUP_DONE=1"
 
@@ -208,24 +258,45 @@ exit /b 0
 :iis_ssl_bind
 setlocal enabledelayedexpansion
 set "CERT_HASH="
+rem Remove any old CNG/KSP-backed MITM Proxy certs (PrivateKey=null = CNG key, incompatible with netsh)
+powershell -NoProfile -Command "Get-ChildItem Cert:\LocalMachine\My | Where-Object {$_.Subject -eq 'CN=MITM Proxy' -and $_.PrivateKey -eq $null} | Remove-Item -Force" >nul 2>&1
+rem Re-import PFX via certutil (uses legacy CSP, compatible with netsh/http.sys)
+if exist ".certs\intercept.pfx" (
+    certutil -f -p "" -importpfx MY ".certs\intercept.pfx" >nul 2>&1
+    echo     Re-imported PFX via certutil - CSP-backed
+) else if exist ".certs\intercept-cert.pfx" (
+    certutil -f -p "" -importpfx MY ".certs\intercept-cert.pfx" >nul 2>&1
+    echo     Re-imported PFX via certutil - CSP-backed
+)
+rem Read the ACTUAL thumbprint from Windows cert store after import
 for /f "tokens=*" %%t in ('powershell -NoProfile -Command "Get-ChildItem Cert:\LocalMachine\My | Where-Object { $_.Subject -eq 'CN=MITM Proxy' -and $_.HasPrivateKey } | Select-Object -First 1 -ExpandProperty Thumbprint" 2^>nul') do set "CERT_HASH=%%t"
 if "!CERT_HASH!"=="" (
-    for /f "tokens=*" %%t in ('node -e "const c=require('crypto'),f=require('fs');const d=f.readFileSync('.certs/intercept-cert.pem','utf8');const b=Buffer.from(d.split('-----BEGIN CERTIFICATE-----')[1].split('-----END CERTIFICATE-----')[0].replace(/\s/g,''),'base64');console.log(c.createHash('sha1').update(b).digest('hex').toUpperCase())" 2^>nul') do set "CERT_HASH=%%t"
-)
-if "!CERT_HASH!"=="" (
-    echo     WARNING: No cert hash found. Run proxy once to generate certs.
+    echo     WARNING: No MITM cert found in store after import.
     exit /b 1
 )
 echo     Cert hash: !CERT_HASH!
+rem SNI-based bindings per intercepted host only (no ipport= — that poisons other IIS sites)
 for %%h in (github.com www.github.com api.github.com api.githubcopilot.com copilot-proxy.githubusercontent.com api.individual.githubcopilot.com origin-tracker.individual.githubcopilot.com proxy.individual.githubcopilot.com telemetry.individual.githubcopilot.com) do (
+    netsh http delete sslcert hostnameport=%%h:443 >nul 2>&1
     netsh http add sslcert hostnameport=%%h:443 certhash=!CERT_HASH! appid={4dc3e181-e14b-4a21-b022-59fc669b0914} certstorename=MY >nul 2>&1
-    if !ERRORLEVEL! equ 0 (
-        echo     + %%h
-    ) else (
-        netsh http delete sslcert hostnameport=%%h:443 >nul 2>&1
-        netsh http add sslcert hostnameport=%%h:443 certhash=!CERT_HASH! appid={4dc3e181-e14b-4a21-b022-59fc669b0914} certstorename=MY >nul 2>&1
-        if !ERRORLEVEL! equ 0 (echo     + %%h) else (echo     FAIL: %%h)
-    )
+    if !ERRORLEVEL! equ 0 (echo     + %%h) else (echo     FAIL: %%h)
+)
+rem Preserve other IIS sites on port 443 by registering their certs as SNI bindings
+rem The secure site has a non-SNI binding on *:443 which breaks without an http.sys entry
+call :iis_preserve_other_sites
+exit /b 0
+
+:iis_preserve_other_sites
+setlocal enabledelayedexpansion
+rem Preserve other IIS sites on port 443 by registering their SSL certs as SNI in http.sys
+rem Uses iis-preserve-sites.ps1 to extract hostnames and cert hashes from IIS config
+set "PS_SCRIPT=%~dp0iis-preserve-sites.ps1"
+if not exist "%PS_SCRIPT%" exit /b 0
+for /f "tokens=1,2 delims=|" %%a in ('powershell -NoProfile -ExecutionPolicy Bypass -File "%PS_SCRIPT%" 2^>nul') do (
+    set "OTH_HASH=%%a"
+    set "OTH_HOST=%%b"
+    netsh http add sslcert hostnameport=!OTH_HOST!:443 certhash=!OTH_HASH! appid={4dc3e181-e14b-4a21-b022-59fc669b0914} certstorename=MY >nul 2>&1
+    if !ERRORLEVEL! equ 0 (echo     + !OTH_HOST! [preserved]) else (echo     SKIP: !OTH_HOST! [already bound])
 )
 exit /b 0
 
