@@ -6,6 +6,7 @@ import { getModelCtx, getModelDisplayName, getModelProviderTag } from "../openai
 
 import { addModels } from "../../models.ts";
 import { isDebug } from "../../split-console.ts";
+import { getUmansThinkingModes } from "../umans-client.ts";
 
 const VS_MODELS: any[] = [];
 let _lastModelIds: string[] = [];
@@ -133,6 +134,12 @@ export function detectVendor(id: string): string {
 export function getThinkingModes(id: string): string[] {
   const l = id.toLowerCase();
   if (l.startsWith("freebuff/")) return [];
+  // Consult the UMANS API catalog for models that advertise reasoning levels
+  // (e.g. qwen, glm-5.2, deepseek-v4, mimo). This drives the clone variants.
+  if (l.startsWith("umans-")) {
+    const umansModes = getUmansThinkingModes(id);
+    if (umansModes.length > 0) return umansModes;
+  }
   if (l.includes("deepseek-v4")) return THINKING_TAGS;
   if (l.includes("mimo")) return ["LOW", "MEDIUM", "HIGH"];
   return [];

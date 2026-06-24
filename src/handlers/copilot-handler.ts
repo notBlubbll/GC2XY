@@ -8,7 +8,7 @@ import { chatCompletion as agnesChat } from "./agnes-client.ts";
 import { getCompletionsModel } from "./dashboard-handler.ts";
 import { completions as codestralFim } from "./codestral-client.ts";
 import { chatCompletion as bitnetChat } from "./bitnet-client.ts";
-import { chatCompletion as umansChat } from "./umans-client.ts";
+import { chatCompletion as umansChat, anthropicChatCompletion as umansAnthropicChat } from "./umans-client.ts";
 import { isSupermavenEnabled, isSupermavenReady, supermavenCodeComplete } from "./supermaven-client.ts";
 import { reqLog, agentTag } from "../split-console.ts";
 import { trackRequest } from "../usage-tracker.ts";
@@ -371,6 +371,26 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
     };
 
     try {
+      // ── Native UMANS Anthropic pass-through ───────────────────────────
+      // UMANS upstream natively supports /messages, so skip the anthropic-bridge
+      // and forward the Anthropic payload directly when the routed model is UMANS.
+      if (model.startsWith("umans-") || getModelProviderTag(model) === "umans") {
+        const resp = await umansAnthropicChat(parsed);
+        const respCt = resp.headers.get("content-type") || (isStream ? "text/event-stream" : "application/json");
+        console.log(`[COPILOT /v1/messages] native-umans req=${model} status=${resp.status} ct=${respCt}`);
+        if (resp.status >= 400) {
+          const errText = await resp.text().catch(() => "");
+          const errMsg = errText.length > 500 ? errText.slice(0, 500) + "..." : errText;
+          const errId = `msg_${forge.util.bytesToHex(forge.random.getBytesSync(8))}`;
+          const errSse = `event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: { id: errId, type: "message", role: "assistant", content: [], model, stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } } })}\n\nevent: message_delta\ndata: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 0 } })}\n\nevent: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}\n\n`;
+          if (completeLog) completeLog(Date.now() - startTime);
+          return { handled: true, response: { statusCode: 200, headers: { "content-type": "text/event-stream", "cache-control": "no-store", "access-control-allow-origin": "*", "connection": "close" }, body: Buffer.from(errSse) } };
+        }
+        if (completeLog) completeLog(Date.now() - startTime);
+        const buf = Buffer.from(await resp.arrayBuffer());
+        return { handled: true, response: { statusCode: resp.status, headers: { "content-type": respCt, "cache-control": "no-store", "access-control-allow-origin": "*", "connection": "close" }, body: buf } };
+      }
+
       const bridge = anthropicToOpenAIRequest(parsed);
       injectIdentity(bridge.messages, getModelDisplayName(parsed.model || model), parsed.model || model);
       const scrubbed1 = scrubTaskComplete(bridge.messages, bridge.tools);

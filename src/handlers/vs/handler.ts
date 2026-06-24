@@ -45,7 +45,7 @@ import { chatCompletion as freebuffChat } from "../freebuff-client.ts";
 import { chatCompletion as agnesChat } from "../agnes-client.ts";
 import { chatCompletion as codestralChat } from "../codestral-client.ts";
 import { chatCompletion as bitnetChat } from "../bitnet-client.ts";
-import { chatCompletion as umansChat } from "../umans-client.ts";
+import { chatCompletion as umansChat, anthropicChatCompletion as umansAnthropicChat } from "../umans-client.ts";
 import { addModels } from "../../models.ts";
 import { handleVSModels, VS_MODELS } from "./models.ts";
 import { recordTps, reqLog, agentTag } from "../../split-console.ts";
@@ -577,6 +577,32 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
     let messagesComplete: any;
     try {
       parsed.model = model;
+
+      // ── Native UMANS Anthropic pass-through ───────────────────────────
+      // UMANS upstream natively supports /messages, so when the routed model is
+      // a UMANS model we skip the anthropic-bridge translation entirely and
+      // forward the Anthropic payload directly. The response is already in
+      // Anthropic SSE/JSON format — no OpenAI→Anthropic conversion needed.
+      if (model.startsWith("umans-") || getModelProviderTag(model) === "umans") {
+        const vsTag = agentTag(headers);
+        const _lastUser = [...(parsed.messages || [])].reverse().find((m: any) => m.role === "user");
+        const _preview = _lastUser ? safePreviewFromContent(_lastUser.content) : "";
+        const _mc = reqLog({ tag: vsTag, provider: "umans", model, preview: _preview, body: parsed });
+        v1Log({ type: "native-anthropic", resolved: model, stream: parsed.stream });
+        const resp = await umansAnthropicChat(parsed);
+        const respCt = resp.headers.get("content-type") || (parsed.stream ? "text/event-stream" : "application/json");
+        console.log(`[VS MESSAGES] native-umans req=${model} status=${resp.status} ct=${respCt}`);
+        if (resp.status >= 400) {
+          const errText = await resp.text().catch(() => "");
+          v1Log({ type: "native-anthropic-error", status: resp.status, body: errText.slice(0, 500) });
+          const errSse = buildAnthropicErrorSSE(model, resp.status, errText.length > 500 ? errText.slice(0, 500) + "..." : errText);
+          return { handled: true, response: { statusCode: 200, headers: { "content-type": "text/event-stream", "cache-control": "no-store", "access-control-allow-origin": "*", "connection": "close" }, body: Buffer.from(errSse) } };
+        }
+        if (_mc) _mc(Date.now() - startTime);
+        const buf = Buffer.from(await resp.arrayBuffer());
+        return { handled: true, response: { statusCode: resp.status, headers: { "content-type": respCt, "cache-control": "no-store", "access-control-allow-origin": "*", "connection": "close" }, body: buf } };
+      }
+
       const bridge = anthropicToOpenAIRequest(parsed);
 
       injectIdentity(bridge.messages, getModelDisplayName(model), model, parsedTag.thinking || undefined);

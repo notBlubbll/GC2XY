@@ -16,6 +16,194 @@ const UPSTREAM_AGENT = new https.Agent({
   scheduling: "lifo",
 });
 
+// ── Response cache (LRU) ──────────────────────────────────────────────────
+class ResponseCache {
+  private _map = new Map<string, { value: string; time: number }>();
+  hits = 0; misses = 0; evictions = 0;
+  constructor(public maxSize: number, public ttlMs: number) {}
+  get(key: string): string | null {
+    const entry = this._map.get(key);
+    if (!entry) { this.misses++; return null; }
+    if (Date.now() - entry.time > this.ttlMs) { this._map.delete(key); this.misses++; return null; }
+    this._map.delete(key); this._map.set(key, entry); this.hits++;
+    return entry.value;
+  }
+  set(key: string, value: string) {
+    if (this._map.has(key)) this._map.delete(key);
+    else if (this._map.size >= this.maxSize) {
+      const oldest = this._map.keys().next().value;
+      if (oldest !== undefined) { this._map.delete(oldest); this.evictions++; }
+    }
+    this._map.set(key, { value, time: Date.now() });
+  }
+  clear() { this._map.clear(); this.hits = 0; this.misses = 0; this.evictions = 0; }
+  get stats() { return { size: this._map.size, maxSize: this.maxSize, ttlMs: this.ttlMs, hits: this.hits, misses: this.misses, evictions: this.evictions }; }
+  get enabled() { return this.maxSize > 0 && this.ttlMs > 0; }
+}
+let responseCache = new ResponseCache(100, 60000);
+
+function cacheKey(payload: any, requestedModel: string): string {
+  const parts = [requestedModel, payload.stream ? "stream:1" : "stream:0"];
+  if (payload.system) parts.push(typeof payload.system === "string" ? payload.system : JSON.stringify(payload.system));
+  if (payload.messages) parts.push(JSON.stringify(payload.messages));
+  if (payload.tools) parts.push(JSON.stringify(payload.tools));
+  return crypto.createHash("md5").update(parts.join("||")).digest("hex");
+}
+
+export function getUmansCacheStats() { return { ...responseCache.stats, enabled: _config.cacheEnabled }; }
+export function clearUmansCache() { responseCache.clear(); }
+
+// ── Shell-tool guard (block git commands in tool_calls) ───────────────────
+const SHELL_TOOL_NAMES = /^(bash|shell|run_command_in_terminal|execute_command|run_in_terminal|send_to_terminal|run_vscode_command|create_and_run_task|terminal)$/i;
+const GIT_EXECUTABLE_RE = /^(?:[\s]*["'])?(?:[a-zA-Z]:)?(?:[\\\/][^"']+)*[\\\/]?git(?:\.exe)?\b/i;
+const SHELL_WRAPPER_RE = /^(?:bash|sh|zsh|cmd|command|powershell|pwsh|fish|csh|ksh)(?:\.exe)?(?:\s+(?:\-[a-zA-Z]+|\/[a-zA-Z])+)*\s+(?:['"]|\-c\s+|\/c\s+)/i;
+const GIT_SUBCOMMAND_RE = /\b(git)\s+(?:add|commit|push|pull|clone|fetch|merge|rebase|reset|checkout|clean|rm|mv|status|log|diff|branch|tag|cherry|revert|stash|bisect|blame|init|remote|config|submodule|sparse|worktree|reflog|show|describe|rev|ls|cat)\b/i;
+
+function isGitCommand(cmd: string): boolean {
+  if (typeof cmd !== "string" || !cmd.trim()) return false;
+  const trimmed = cmd.trim();
+  if (GIT_EXECUTABLE_RE.test(trimmed)) return true;
+  if (SHELL_WRAPPER_RE.test(trimmed) && GIT_SUBCOMMAND_RE.test(trimmed)) return true;
+  return false;
+}
+
+function sanitizeShellToolCall(tc: any): any {
+  if (!tc || !tc.function) return tc;
+  if (!SHELL_TOOL_NAMES.test(tc.function.name || "")) return tc;
+  let args: any;
+  try { args = JSON.parse(tc.function.arguments || "{}"); } catch { return tc; }
+  if (!isGitCommand(args.command)) return tc;
+  const blockedMsg = 'echo "BLOCKED: git commands are disabled by proxy policy"';
+  if (isDebug()) console.log(`[UMANS-ShellGuard] blocked ${tc.function.name}: ${(args.command || "").substring(0, 200)}`);
+  return { ...tc, function: { ...tc.function, arguments: JSON.stringify({ ...args, command: blockedMsg }) } };
+}
+
+function sanitizeChatCompletionResponse(body: any): any {
+  if (!body || typeof body !== "object") return body;
+  if (!Array.isArray(body.choices)) return body;
+  for (const choice of body.choices) {
+    const msg = choice.message;
+    if (!msg || !Array.isArray(msg.tool_calls)) continue;
+    msg.tool_calls = msg.tool_calls.map(sanitizeShellToolCall);
+  }
+  return body;
+}
+
+function parseSseEvents(text: string): any[] {
+  const events: any[] = [];
+  let current: any = null;
+  for (const line of text.split(/\r?\n/)) {
+    if (line === "") { if (current) { events.push(current); current = null; } }
+    else if (line.startsWith("event:")) { if (!current) current = { data: "" }; current.event = line.slice(6).trim(); }
+    else if (line.startsWith("data:")) { if (!current) current = { data: "" }; current.data += (line === "data:" ? "\n" : line.slice(5).trimStart() + "\n"); }
+    else if (line.startsWith("id:")) { if (!current) current = { data: "" }; current.id = line.slice(3).trim(); }
+    else if (line.startsWith("retry:")) { if (!current) current = { data: "" }; current.retry = line.slice(6).trim(); }
+  }
+  if (current) events.push(current);
+  for (const e of events) e.data = e.data.replace(/\n$/, "");
+  return events;
+}
+
+function serializeSseEvents(events: any[]): string {
+  return events.map((e) => {
+    const out: string[] = [];
+    if (e.event) out.push(`event: ${e.event}`);
+    if (e.id) out.push(`id: ${e.id}`);
+    if (e.retry) out.push(`retry: ${e.retry}`);
+    if (e.data !== undefined && e.data !== null) for (const line of String(e.data).split(/\r?\n/)) out.push(`data: ${line}`);
+    out.push("");
+    return out.join("\n");
+  }).join("\n") + "\n";
+}
+
+function sanitizeSseResponse(text: string): string {
+  const events = parseSseEvents(text);
+  const accum: Record<number, any> = {};
+  for (const e of events) {
+    if (e.event === "ping" || !e.data) continue;
+    let obj: any;
+    try { obj = JSON.parse(e.data); } catch { continue; }
+    const delta = obj.choices?.[0]?.delta;
+    if (!delta?.tool_calls) continue;
+    for (const tc of delta.tool_calls) {
+      const idx = tc.index ?? 0;
+      if (!accum[idx]) accum[idx] = { index: idx, id: "", type: "function", function: { name: "", arguments: "" } };
+      const a = accum[idx];
+      if (tc.id) a.id = tc.id;
+      if (tc.type) a.type = tc.type;
+      if (tc.function?.name) a.function.name += tc.function.name;
+      if (tc.function?.arguments != null) a.function.arguments += tc.function.arguments;
+    }
+  }
+  const indices = Object.keys(accum).map(Number).sort((a, b) => a - b);
+  const originalTools = indices.map(i => accum[i]);
+  const sanitizedTools = originalTools.map(sanitizeShellToolCall);
+  let anyBlocked = false;
+  for (let i = 0; i < sanitizedTools.length; i++) if (sanitizedTools[i] !== originalTools[i]) { anyBlocked = true; break; }
+  if (!anyBlocked) return text;
+  const firstEmitted = new Set<number>();
+  const outEvents: any[] = [];
+  for (const e of events) {
+    if (e.event === "ping" || !e.data) { outEvents.push(e); continue; }
+    let obj: any;
+    try { obj = JSON.parse(e.data); } catch { outEvents.push(e); continue; }
+    const delta = obj.choices?.[0]?.delta;
+    const toolCalls = delta?.tool_calls;
+    if (!Array.isArray(toolCalls)) { outEvents.push(e); continue; }
+    let modified = false;
+    for (const tc of toolCalls) {
+      const idx = tc.index ?? 0;
+      const sanitized = sanitizedTools[indices.indexOf(idx)];
+      if (!sanitized || sanitized === originalTools[indices.indexOf(idx)] || !tc.function) continue;
+      if (!firstEmitted.has(idx)) { tc.function.name = sanitized.function.name; tc.function.arguments = sanitized.function.arguments; firstEmitted.add(idx); }
+      else { tc.function.arguments = ""; }
+      modified = true;
+    }
+    if (modified) { delta.tool_calls = toolCalls.filter((tc: any) => tc.id || tc.function?.name || tc.function?.arguments); outEvents.push({ ...e, data: JSON.stringify(obj) }); }
+    else outEvents.push(e);
+  }
+  return serializeSseEvents(outEvents);
+}
+
+// ── Reasoning level detection (clone/thinking variants) ────────────────────
+// UMANS advertises capabilities.reasoning.levels (e.g. ["low","medium","high","max"]).
+// We mirror the vs/models.ts clone approach: append -lo/-md/-hi/-mx to the model
+// id and map the selected variant back to a thinking budget on the upstream call.
+const REASONING_LEVEL_BUDGETS: Record<string, number> = { low: 8000, medium: 16000, high: 16000, max: 32000 };
+const TAG_TO_LEVEL: Record<string, string> = { lo: "low", md: "medium", hi: "high", mx: "max", low: "low", medium: "medium", high: "high", maximum: "max", med: "medium", max: "max" };
+
+function umansLevelToTag(level: string): string | null {
+  const l = (level || "").toLowerCase();
+  if (l === "low") return "LOW";
+  if (l === "medium" || l === "med") return "MEDIUM";
+  if (l === "high") return "HIGH";
+  if (l === "max" || l === "maximum" || l === "xhigh") return "MAXIMUM";
+  return null;
+}
+
+export function getUmansThinkingModes(id: string): string[] {
+  const info = (modelInfoMap as any)[id];
+  if (!info?.capabilities?.reasoning) return [];
+  const r = info.capabilities.reasoning;
+  if (r.supported !== true) return [];
+  if (r.can_disable === false) return [];
+  const levels: string[] = Array.isArray(r.levels) ? r.levels : [];
+  const tags = levels.map(umansLevelToTag).filter((t): t is string => !!t);
+  return [...new Set(tags)];
+}
+
+export function parseUmansThinkingTag(modelId: string): { base: string; level: string | null } {
+  const clean = (modelId || "").trim();
+  if (!clean) return { base: modelId, level: null };
+  // suffix format: umans-glm-5.2-mx
+  const m = clean.match(/^(.+?)-(lo|md|hi|mx)$/i);
+  if (m) return { base: m[1].trim(), level: TAG_TO_LEVEL[m[2].toLowerCase()] || null };
+  // bracket format: "umans-glm-5.2 [MX]"
+  const b = clean.match(/^(.+?)\s+\[(LO|MD|HI|MX|LOW|MEDIUM|HIGH|MAXIMUM|MED|MAX)\]\s*$/i);
+  if (b) return { base: b[1].trim(), level: TAG_TO_LEVEL[b[2].toLowerCase()] || null };
+  return { base: clean, level: null };
+}
+
 // --- Config interface (populated by dashboard-handler.ts) ---
 export interface UmansConfig {
   upstreamBaseURL: string;
@@ -27,6 +215,12 @@ export interface UmansConfig {
   password: string;
   appSession: string;
   overrideConcurrency?: number;
+  visionHandoffEnabled: boolean;
+  visionHandoffModel: string;
+  visionHandoffPrompt: string;
+  cacheEnabled: boolean;
+  cacheTtl: number;
+  cacheMaxSize: number;
 }
 
 let _config: UmansConfig = {
@@ -38,6 +232,12 @@ let _config: UmansConfig = {
   email: "",
   password: "",
   appSession: "",
+  visionHandoffEnabled: true,
+  visionHandoffModel: "umans-kimi-k2.7",
+  visionHandoffPrompt: "",
+  cacheEnabled: true,
+  cacheTtl: 60 * 1000,
+  cacheMaxSize: 100,
 };
 
 export function setUmansConfig(cfg: Partial<UmansConfig>) {
@@ -46,6 +246,21 @@ export function setUmansConfig(cfg: Partial<UmansConfig>) {
     const filtered = (_config.keys || []).filter(k => k.key && k.key.length > 5);
     _keyPool = new KeyPool(filtered);
   }
+  responseCache = new ResponseCache(_config.cacheMaxSize, _config.cacheTtl);
+}
+
+export function setUmansVisionHandoff(enabled: boolean, model?: string, prompt?: string) {
+  _config.visionHandoffEnabled = enabled;
+  if (model !== undefined) _config.visionHandoffModel = model.trim() || "umans-kimi-k2.7";
+  if (prompt !== undefined) _config.visionHandoffPrompt = prompt;
+}
+
+export function getUmansVisionHandoff() {
+  return {
+    enabled: _config.visionHandoffEnabled,
+    model: _config.visionHandoffModel,
+    prompt: _config.visionHandoffPrompt,
+  };
 }
 
 export function getUmansConfig(): UmansConfig {
@@ -312,6 +527,24 @@ export async function chatCompletions(payload: any, key: string): Promise<ChatCo
   return { status: resp.status, headers: responseHeaders, body: resp.body as any };
 }
 
+// Native Anthropic Messages API pass-through. UMANS upstream natively supports
+// /messages, so Anthropic-format requests are forwarded directly without bridge
+// translation. Returns the raw upstream Response (already Anthropic format).
+export async function anthropicMessages(payload: any, key: string): Promise<ChatCompletionResult> {
+  const isStream = payload?.stream === true;
+  const url = `${_config.upstreamBaseURL}/messages`;
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: headers(key, isStream),
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(_config.requestTimeout),
+    agent: UPSTREAM_AGENT as any,
+  });
+  const responseHeaders: Record<string, string> = {};
+  resp.headers.forEach((v, k) => { responseHeaders[k] = v; });
+  return { status: resp.status, headers: responseHeaders, body: resp.body as any };
+}
+
 // --- Session affinity ---
 let globalSessionCounter = 0;
 const conversationMap = new Map<string, { tokenIndex: number; requestCount: number; sessNum: number }>();
@@ -561,6 +794,117 @@ export async function initModels(): Promise<string[]> {
 export function getModelIds(): string[] {
   if (!_modelsInitialized) initModels().catch(() => {});
   return _cachedModelIds;
+}
+
+// ── Vision handoff ──────────────────────────────────────────────────────────
+// Models whose capabilities.supports_vision === "via-handoff" (e.g. umans-glm-5.2)
+// cannot process images natively. We intercept images in requests to such models,
+// send each image to a vision-capable handoff model (default umans-kimi-k2.7), and
+// replace the image part with the text description before forwarding to the model.
+const DEFAULT_VISION_HANDOFF_PROMPT = `The user has pasted an image into their chat. Describe what you see as if you are directly observing the image. Be thorough but concise. Include:
+- All visible elements (objects, text, UI elements, people, etc.)
+- Exact transcription of any text
+- The context and purpose of the image
+- Any relevant technical details
+
+Describe it naturally, as if explaining to someone what you're looking at right now.`;
+
+function needsVisionHandoff(resolvedModel: string): boolean {
+  if (!_config.visionHandoffEnabled) return false;
+  const info = modelInfoMap[resolvedModel];
+  if (!info || !info.capabilities) return false;
+  return info.capabilities.supports_vision === "via-handoff";
+}
+
+// Resolve a requested model ID to its umans- catalog ID (stripping thinking tags).
+function resolveUmansModelId(requestedModel: string): string {
+  if (!requestedModel) return requestedModel;
+  const { base } = parseUmansThinkingTag(requestedModel);
+  if (base.startsWith("umans-")) return base;
+  const prefixed = "umans-" + base;
+  if (modelInfoMap[prefixed]) return prefixed;
+  if (_config.enabledModels.includes(prefixed)) return prefixed;
+  if (_config.enabledModels.includes(base)) return base;
+  return base;
+}
+
+// Walk a content array (OpenAI or Anthropic format) and collect image parts.
+function collectImageParts(payload: any): { container: any[]; index: number; dataUri: string }[] {
+  const parts: { container: any[]; index: number; dataUri: string }[] = [];
+  function walkContentArray(content: any[]) {
+    if (!Array.isArray(content)) return;
+    for (let i = 0; i < content.length; i++) {
+      const part = content[i];
+      if (!part || typeof part !== "object") continue;
+      if (part.type === "image_url" && part.image_url && part.image_url.url) {
+        parts.push({ container: content, index: i, dataUri: part.image_url.url });
+      } else if (part.type === "image" && part.source) {
+        if (part.source.type === "base64" && part.source.media_type && part.source.data) {
+          parts.push({ container: content, index: i, dataUri: `data:${part.source.media_type};base64,${part.source.data}` });
+        } else if (part.source.type === "url" && part.source.url) {
+          parts.push({ container: content, index: i, dataUri: part.source.url });
+        }
+      }
+      if (Array.isArray(part.content)) walkContentArray(part.content);
+    }
+  }
+  if (payload && Array.isArray(payload.system)) walkContentArray(payload.system);
+  if (payload && Array.isArray(payload.messages)) {
+    for (const m of payload.messages) {
+      if (m && Array.isArray(m.content)) walkContentArray(m.content);
+    }
+  }
+  return parts;
+}
+
+async function analyzeImageViaHandoff(dataUri: string, key: string, keyName: string, sessNum: number, imageIndex: number): Promise<string> {
+  const handoffModel = _config.visionHandoffModel || "umans-kimi-k2.7";
+  const prompt = _config.visionHandoffPrompt || DEFAULT_VISION_HANDOFF_PROMPT;
+  const handoffPayload = {
+    model: handoffModel,
+    stream: false,
+    messages: [
+      { role: "system", content: prompt },
+      { role: "user", content: [
+        { type: "text", text: "What do you see in this image?" },
+        { type: "image_url", image_url: { url: dataUri } },
+      ] },
+    ],
+  };
+  try {
+    if (isDebug()) console.log(`[UMANS] [Session#${sessNum}>${keyName}]-[handoff→${handoffModel}]-analyzing image #${imageIndex + 1}`);
+    const result = await chatCompletions(handoffPayload, key);
+    if (result.status >= 400) {
+      const errText = await readBodyText(result.body).catch(() => "");
+      console.log(`[UMANS] [Session#${sessNum}>${keyName}]-[handoff→${handoffModel}]-ERROR:${result.status} ${(errText || "").substring(0, 200)}`);
+      return `[Image analysis failed: upstream returned HTTP ${result.status}]`;
+    }
+    const bodyText = await readBodyText(result.body);
+    const parsed = JSON.parse(bodyText);
+    const description = parsed?.choices?.[0]?.message?.content || "";
+    if (!description) return "[Image analysis failed: no text in handoff response]";
+    if (isDebug()) console.log(`[UMANS] [Session#${sessNum}>${keyName}]-[handoff→${handoffModel}]-image #${imageIndex + 1} described (${description.length} chars)`);
+    return description;
+  } catch (e: any) {
+    console.log(`[UMANS] [Session#${sessNum}>${keyName}]-[handoff→${handoffModel}]-ERROR: ${e.message}`);
+    return `[Image analysis failed: ${e.message}]`;
+  }
+}
+
+// Replace all image parts in the payload with text descriptions from the handoff model.
+async function performVisionHandoff(payload: any, resolvedModel: string, key: string, keyName: string, sessNum: number): Promise<number> {
+  if (!needsVisionHandoff(resolvedModel)) return 0;
+  const imageParts = collectImageParts(payload);
+  if (imageParts.length === 0) return 0;
+  const handoffModel = _config.visionHandoffModel || "umans-kimi-k2.7";
+  console.log(`[UMANS] [Session#${sessNum}>${keyName}]-[${resolvedModel}]-vision-handoff: ${imageParts.length} image(s) → ${handoffModel}`);
+  const descriptions = await Promise.all(imageParts.map((ip, i) => analyzeImageViaHandoff(ip.dataUri, key, keyName, sessNum, i)));
+  for (let i = 0; i < imageParts.length; i++) {
+    const { container, index } = imageParts[i];
+    const label = imageParts.length > 1 ? `[User pasted image ${i + 1}]\n` : "[User pasted image]\n";
+    container[index] = { type: "text", text: label + descriptions[i] };
+  }
+  return imageParts.length;
 }
 
 // --- app.umans.ai account functions ---
@@ -887,6 +1231,50 @@ export async function chatCompletion(modelId: string, messages: any[], tools?: a
   return queueChatRequest(payload, modelId, true);
 }
 
+// Native Anthropic Messages API pass-through for UMANS. UMANS upstream natively
+// supports /messages, so Anthropic-format requests are forwarded directly without
+// bridge translation. Vision handoff + image limit are applied first. The response
+// is returned as-is (already Anthropic SSE/JSON). Used by vs/handler + copilot-handler
+// /v1/messages when the routed model is UMANS — no anthropic-bridge involved.
+export async function anthropicChatCompletion(payload: any): Promise<Response> {
+  const pool = ensureKeyPool();
+  const requestedModel = (payload?.model || "").trim();
+  const { level: thinkingLevel } = parseUmansThinkingTag(requestedModel);
+  const resolvedModel = resolveUmansModelId(requestedModel);
+  payload.model = resolvedModel;
+
+  // Apply thinking budget from the variant tag if the model supports reasoning.
+  const modelInfo = modelInfoMap[resolvedModel] || {};
+  const reasoningCaps = modelInfo.capabilities?.reasoning;
+  if (reasoningCaps?.supported === true) {
+    const effLevel = thinkingLevel || (payload.reasoningEffort ? String(payload.reasoningEffort).toLowerCase() : null);
+    if (effLevel && REASONING_LEVEL_BUDGETS[effLevel]) {
+      payload.thinking = { type: "enabled", budgetTokens: REASONING_LEVEL_BUDGETS[effLevel] };
+    } else if (reasoningCaps.can_disable === false && !payload.thinking) {
+      payload.thinking = { type: "enabled" };
+    }
+  }
+  delete payload.reasoningEffort;
+
+  limitImagesInMessages(payload, _config.maxImages);
+  let slot = await pool.acquire();
+  if (!slot) {
+    return new Response(JSON.stringify({ type: "error", error: { type: "api_error", message: "no healthy API keys available" } }), { status: 503, headers: { "content-type": "application/json" } });
+  }
+  await performVisionHandoff(payload, resolvedModel, slot.key, slot.name, ++globalSessionCounter);
+  try {
+    const result = await anthropicMessages(payload, slot.key);
+    const contentType = result.headers["content-type"] || (payload.stream ? "text/event-stream" : "application/json");
+    return new Response(result.body as any, {
+      status: result.status,
+      headers: { "content-type": contentType, "cache-control": "no-cache", "connection": "close" },
+    });
+  } catch (e: any) {
+    pool.markUnhealthy(slot.index, 502);
+    return new Response(JSON.stringify({ type: "error", error: { type: "api_error", message: e?.message || "upstream fetch failed" } }), { status: 502, headers: { "content-type": "application/json" } });
+  }
+}
+
 async function proxyChatRequest(payload: any, requestedModel: string, skipSessionLabel: boolean): Promise<Response> {
   const pool = ensureKeyPool();
   const fingerprint = fingerprintPayload(payload);
@@ -916,12 +1304,10 @@ async function proxyChatRequest(payload: any, requestedModel: string, skipSessio
   stripReasoningContent(payload);
   limitImagesInMessages(payload, _config.maxImages);
 
-  const resolvedModel = requestedModel.startsWith("umans-") ? requestedModel : (() => {
-    const prefixed = "umans-" + requestedModel;
-    if (_config.enabledModels.includes(prefixed)) return prefixed;
-    if (_config.enabledModels.includes(requestedModel)) return requestedModel;
-    return requestedModel;
-  })();
+  // Parse a thinking-variant suffix (-lo/-md/-hi/-mx or [MX]) off the model id
+  // and resolve the base umans- catalog id. The level maps to a thinking budget.
+  const { level: thinkingLevel } = parseUmansThinkingTag(requestedModel);
+  const resolvedModel = resolveUmansModelId(requestedModel);
   payload.model = resolvedModel;
 
   if (payload.tools && payload.tools.some((t: any) => t.function?.parameters?.$defs || t.function?.parameters?.$definitions || t.function?.parameters?.$ref)) {
@@ -930,10 +1316,37 @@ async function proxyChatRequest(payload: any, requestedModel: string, skipSessio
 
   const modelInfo = modelInfoMap[resolvedModel] || {};
   const reasoningCaps = modelInfo.capabilities?.reasoning;
-  if (reasoningCaps?.supported === true && reasoningCaps.can_disable === false) {
-    (payload as any).thinking = { type: "enabled" };
+  if (reasoningCaps?.supported === true) {
+    // reasoningEffort may be set by vs/copilot handlers from the thinking tag.
+    const effLevel = thinkingLevel || (payload.reasoningEffort ? String(payload.reasoningEffort).toLowerCase() : null);
+    if (effLevel && REASONING_LEVEL_BUDGETS[effLevel]) {
+      (payload as any).thinking = { type: "enabled", budgetTokens: REASONING_LEVEL_BUDGETS[effLevel] };
+    } else if (reasoningCaps.can_disable === false) {
+      (payload as any).thinking = { type: "enabled" };
+    }
+  }
+  // UMANS upstream uses `thinking`, not OpenAI's `reasoningEffort`.
+  delete (payload as any).reasoningEffort;
+
+  // Vision handoff: if the resolved model can't see images natively, delegate
+  // image analysis to the handoff model and replace images with descriptions.
+  await performVisionHandoff(payload, resolvedModel, slot.key, slot.name, session.sessNum);
+
+  // Response cache (non-streaming only). Checked after handoff so cache hits
+  // skip the handoff entirely (matches umans-dash ordering).
+  const cacheEnabled = _config.cacheEnabled && !payload.stream;
+  let ck: string | null = null;
+  if (cacheEnabled) {
+    ck = cacheKey(payload, requestedModel);
+    const cached = responseCache.get(ck);
+    if (cached) {
+      let parsed: any = null;
+      try { parsed = sanitizeChatCompletionResponse(JSON.parse(cached)); } catch {}
+      return new Response(parsed ? JSON.stringify(parsed) : cached, { status: 200, headers: { "content-type": "application/json", "cache-control": "no-cache", "connection": "close" } });
+    }
   }
 
+  const hasTools = Array.isArray(payload.tools) && payload.tools.length > 0;
   let _toolsCompressedTried = false;
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     const isLast = attempt === MAX_RETRIES;
@@ -941,6 +1354,29 @@ async function proxyChatRequest(payload: any, requestedModel: string, skipSessio
       const result = await chatCompletions(payload, slot.key);
       const contentType = result.headers["content-type"] || "";
       if (result.status >= 200 && result.status < 300) {
+        const isSse = contentType.includes("text/event-stream");
+        // Shell-tool guard: buffer the body so we can sanitize tool_calls before
+        // the client sees them. Tool-call streams are short, so buffering is OK.
+        if (isSse && hasTools) {
+          const rawSse = await readBodyText(result.body);
+          const sanitized = sanitizeSseResponse(rawSse);
+          return new Response(sanitized, {
+            status: result.status,
+            headers: { "content-type": "text/event-stream", "cache-control": "no-cache", "connection": "close" },
+          });
+        }
+        if (!isSse) {
+          let bodyText = await readBodyText(result.body);
+          let parsed: any = null;
+          try { parsed = JSON.parse(bodyText); } catch {}
+          if (parsed) {
+            parsed = sanitizeChatCompletionResponse(parsed);
+            if (ck) responseCache.set(ck, JSON.stringify(parsed));
+            return new Response(JSON.stringify(parsed), { status: result.status, headers: { "content-type": "application/json", "cache-control": "no-cache", "connection": "close" } });
+          }
+          if (ck) responseCache.set(ck, bodyText);
+          return new Response(bodyText, { status: result.status, headers: { "content-type": contentType || "application/json", "cache-control": "no-cache", "connection": "close" } });
+        }
         return new Response(result.body as any, {
           status: result.status,
           headers: {

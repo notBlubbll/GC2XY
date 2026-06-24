@@ -129,7 +129,7 @@ where node >nul 2>&1
 if %ERRORLEVEL% NEQ 0 goto :check_runtime
 if exist "node_modules" goto :npm_skip
 echo [INFO] Installing Node.js dependencies...
-npm install --no-audit --no-fund
+call npm install --no-audit --no-fund
 if errorlevel 1 (
     echo ERROR: npm install failed.
     pause
@@ -242,8 +242,11 @@ exit /b 0
 :iis_ssl_bind
 setlocal enabledelayedexpansion
 set "CERT_HASH="
-rem Remove any old CNG/KSP-backed MITM Proxy certs (PrivateKey=null = CNG key, incompatible with netsh)
-powershell -NoProfile -Command "Get-ChildItem Cert:\LocalMachine\My | Where-Object {$_.Subject -eq 'CN=MITM Proxy' -and $_.PrivateKey -eq $null} | Remove-Item -Force" >nul 2>&1
+rem Remove ALL old MITM Proxy certs (both CNG/KSP-backed and CSP-backed) before importing fresh PFX.
+rem Without this, multiple runs accumulate stale certs signed by previous (now-removed) CAs,
+rem and Select-Object -First 1 below picks an arbitrary one -> SSL binding points to a cert
+rem whose CA is no longer in Root -> ERR_CERT_AUTHORITY_INVALID in Chrome.
+powershell -NoProfile -Command "Get-ChildItem Cert:\LocalMachine\My | Where-Object {$_.Subject -eq 'CN=MITM Proxy'} | Remove-Item -Force" >nul 2>&1
 rem Re-import PFX via certutil (uses legacy CSP, compatible with netsh/http.sys)
 if exist ".certs\intercept.pfx" (
     certutil -f -p "" -importpfx MY ".certs\intercept.pfx" >nul 2>&1
@@ -252,8 +255,9 @@ if exist ".certs\intercept.pfx" (
     certutil -f -p "" -importpfx MY ".certs\intercept-cert.pfx" >nul 2>&1
     echo     Re-imported PFX via certutil - CSP-backed
 )
-rem Read the ACTUAL thumbprint from Windows cert store after import
-for /f "tokens=*" %%t in ('powershell -NoProfile -Command "Get-ChildItem Cert:\LocalMachine\My | Where-Object { $_.Subject -eq 'CN=MITM Proxy' -and $_.HasPrivateKey } | Select-Object -First 1 -ExpandProperty Thumbprint" 2^>nul') do set "CERT_HASH=%%t"
+rem Read the ACTUAL thumbprint from Windows cert store after import.
+rem Sort by NotBefore descending so the just-imported cert wins even if a stale entry somehow remains.
+for /f "tokens=*" %%t in ('powershell -NoProfile -Command "Get-ChildItem Cert:\LocalMachine\My | Where-Object { $_.Subject -eq 'CN=MITM Proxy' -and $_.HasPrivateKey } | Sort-Object NotBefore -Descending | Select-Object -First 1 -ExpandProperty Thumbprint" 2^>nul') do set "CERT_HASH=%%t"
 if "!CERT_HASH!"=="" (
     echo     WARNING: No MITM cert found in store after import.
     exit /b 1

@@ -34,6 +34,7 @@ import {
   onUmansLoginStateChange, maybeRefreshAccountUserId,
   extractUsageBuckets as extractUmansUsageBuckets,
   chatCompletion as umansChat,
+  setUmansVisionHandoff, getUmansVisionHandoff, getUmansCacheStats, clearUmansCache,
 } from "./umans-client.ts";
 import { getModelIds } from "../models.ts";
 import { getTps, restoreTerminal, setEnabledModelIds } from "../split-console.ts";
@@ -680,6 +681,26 @@ async function handleWsMessage(ws: WebSocket, msg: any) {
       } catch {}
       break;
     }
+    case "umansSetVisionHandoff": {
+      try {
+        const enabled = typeof payload?.enabled === "boolean" ? payload.enabled : getUmansVisionHandoff().enabled;
+        const model = typeof payload?.model === "string" ? payload.model : undefined;
+        const prompt = typeof payload?.prompt === "string" ? payload.prompt : undefined;
+        setUmansVisionHandoff(enabled, model, prompt);
+        _umansState.visionHandoff = { ...getUmansVisionHandoff() };
+        saveConfig();
+        broadcastUmansState();
+        ws.send(JSON.stringify({ _id: payload?._id, ok: true }));
+      } catch (e: any) {
+        ws.send(JSON.stringify({ _id: payload?._id, error: e?.message || "failed" }));
+      }
+      break;
+    }
+    case "umansClearCache": {
+      clearUmansCache();
+      ws.send(JSON.stringify({ _id: payload?._id, ok: true, stats: getUmansCacheStats() }));
+      break;
+    }
   }
 }
 
@@ -788,7 +809,7 @@ let _completionsModel: string = "mistral-latest";
 export function getCompletionsModel(): string { return _completionsModel; }
 let _supermavenEnabled = false;
 
-let _umansState: any = { loggedIn: false, email: "", keys: [], currentKeyIndex: 0, enabledModels: [], userId: null };
+let _umansState: any = { loggedIn: false, email: "", keys: [], currentKeyIndex: 0, enabledModels: [], userId: null, visionHandoff: { enabled: true, model: "umans-kimi-k2.7", prompt: "" } };
 
 let _dashboardConfig: Record<string, any> = {
   mode: "mock",
@@ -1091,6 +1112,14 @@ function loadConfig() {
         if (Array.isArray(c.umans.keys)) setUmansKeys(c.umans.keys);
         if (Array.isArray(c.umans.enabledModels)) setUmansEnabledModels(c.umans.enabledModels);
         if (typeof c.umans.currentKeyIndex === "number") setUmansCurrentKeyIndex(c.umans.currentKeyIndex);
+        if (typeof c.umans.visionHandoffEnabled === "boolean" || typeof c.umans.visionHandoffModel === "string" || typeof c.umans.visionHandoffPrompt === "string") {
+          setUmansVisionHandoff(
+            typeof c.umans.visionHandoffEnabled === "boolean" ? c.umans.visionHandoffEnabled : true,
+            typeof c.umans.visionHandoffModel === "string" ? c.umans.visionHandoffModel : undefined,
+            typeof c.umans.visionHandoffPrompt === "string" ? c.umans.visionHandoffPrompt : undefined,
+          );
+        }
+        _umansState.visionHandoff = { ...getUmansVisionHandoff() };
         if (!c.umans.userId && _umansState.loggedIn) {
           maybeRefreshAccountUserId().then(uid => { if (uid) { _umansState.userId = uid; saveConfig(); pushStatusToWs(); } }).catch(() => {});
         } else if (c.umans.userId) {
@@ -1137,6 +1166,9 @@ function saveConfig() {
       enabledModels: getUmansConfig().enabledModels,
       currentKeyIndex: getUmansCurrentKeyIndex(),
       userId: _umansState.userId || null,
+      visionHandoffEnabled: getUmansVisionHandoff().enabled,
+      visionHandoffModel: getUmansVisionHandoff().model,
+      visionHandoffPrompt: getUmansVisionHandoff().prompt,
     };
     try {
       const allIds = getModelIds();

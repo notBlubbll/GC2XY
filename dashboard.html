@@ -595,6 +595,20 @@
 
                 </div>
               </div>
+              <div class="mb-3" id="umansVisionHandoffRow">
+                <label class="form-label"><i class="bi bi-eye me-1"></i><span data-i18n="label_vision_handoff">Vision Handoff (fallback model for image-blind models)</span></label>
+                <div class="form-check mb-2">
+                  <input class="form-check-input" type="checkbox" id="umansVisionHandoffEnabled" onchange="saveUmansVisionHandoff()" style="accent-color:#00FFFF;cursor:pointer">
+                  <label class="form-check-label" for="umansVisionHandoffEnabled" style="color:rgba(255,255,255,0.9);cursor:pointer;font-size:12px" data-i18n="vision_handoff_enable">Enable — delegate image analysis to a vision-capable model</label>
+                </div>
+                <div class="test-chat-model-wrap mb-2" style="width:100%;max-width:none">
+                  <label class="test-chat-model-label" id="umansVisionHandoffModelLabel" tabindex="0">umans-kimi-k2.7</label>
+                  <select class="test-chat-model-select" id="umansVisionHandoffModelSelect" onchange="saveUmansVisionHandoff()">
+                    <option value="umans-kimi-k2.7">umans-kimi-k2.7</option>
+                  </select>
+                </div>
+                <div style="font-size:10px;color:rgba(255,255,255,0.4)">Models with <code>supports_vision: "via-handoff"</code> (e.g. GLM 5.2) send images here for description, then receive text. Native Anthropic pass-through applies the handoff too.</div>
+              </div>
               <div class="mb-3" id="agnesConfigRow" style="display:none">
                 <label class="form-label" data-i18n="label_agnes_key">Agnes API Key</label>
                 <div class="d-flex gap-2">
@@ -1186,6 +1200,7 @@
       if (data.models) renderModels();
       if (data.groupedModels) {
         window._groupedModels = data.groupedModels;
+        applyUmansVisionHandoff();
       }
       if (data.wallpaperPrompt !== undefined) {
         const inp = document.getElementById('wallpaperPromptInput');
@@ -1240,6 +1255,7 @@
       if (data.models) renderModels();
       if (data.groupedModels) {
         window._groupedModels = data.groupedModels;
+        applyUmansVisionHandoff();
       }
       if (data.wallpaperPrompt !== undefined) {
         const inp = document.getElementById('wallpaperPromptInput');
@@ -1917,6 +1933,32 @@
       renderUmansUsageHistory();
       updateUmansTopBar();
       updateSsModeStatus();
+      applyUmansVisionHandoff();
+    }
+
+    function applyUmansVisionHandoff() {
+      const vh = _umansState && _umansState.visionHandoff;
+      const cb = document.getElementById('umansVisionHandoffEnabled');
+      const sel = document.getElementById('umansVisionHandoffModelSelect');
+      const label = document.getElementById('umansVisionHandoffModelLabel');
+      if (!cb || !sel) return;
+      // Populate the dropdown with UMANS models (prefer vision-capable ones first)
+      const umansIds = ((window._groupedModels && window._groupedModels.umans) ? window._groupedModels.umans : []).map(m => m.id);
+      const existing = new Set(Array.from(sel.options).map(o => o.value));
+      for (const id of umansIds) { if (!existing.has(id)) { const opt = document.createElement('option'); opt.value = id; opt.textContent = id; sel.appendChild(opt); existing.add(id); } }
+      const cur = (vh && vh.model) || 'umans-kimi-k2.7';
+      cb.checked = vh ? !!vh.enabled : true;
+      if (![...sel.options].some(o => o.value === cur)) { const opt = document.createElement('option'); opt.value = cur; opt.textContent = cur; sel.appendChild(opt); }
+      sel.value = cur;
+      if (label) label.textContent = cur;
+    }
+
+    function saveUmansVisionHandoff() {
+      const enabled = document.getElementById('umansVisionHandoffEnabled')?.checked;
+      const model = document.getElementById('umansVisionHandoffModelSelect')?.value || 'umans-kimi-k2.7';
+      const label = document.getElementById('umansVisionHandoffModelLabel');
+      if (label) label.textContent = model;
+      wsSend('umansSetVisionHandoff', { enabled, model });
     }
 
     function updateUmansWindowTopBar() {
