@@ -935,11 +935,20 @@ function createInterceptServers() {
   // HTTP server (always created — IIS reverse proxy uses this)
   const httpServer = createServer();
   httpServer.on("connection", (clientSocket: Socket) => {
-    clientSocket.once("data", (data) => {
-      const full = data.toString("utf-8").toLowerCase();
+    let buffer = Buffer.alloc(0);
+    let requestHandled = false;
+
+    clientSocket.on("data", (data: Buffer) => {
+      if (requestHandled) return;
+      buffer = Buffer.concat([buffer, data]);
+
+      const headerEnd = buffer.indexOf("\r\n\r\n");
+      if (headerEnd === -1) return;
+      const headerStr = buffer.slice(0, headerEnd).toString("utf-8");
+      const full = headerStr.toLowerCase();
       if (full.includes("upgrade: websocket")) {
-        // Check if this is a Visual Studio sync WS connection
-        const raw = data.toString("utf-8");
+        requestHandled = true;
+        const raw = buffer.toString("utf-8");
         const editorVersionMatch = raw.match(/editor-version:\s*([^\r\n]+)/i);
         const editorVersion = editorVersionMatch ? editorVersionMatch[1].toLowerCase() : "";
         const isVS = editorVersion.startsWith("vs/visualstudio") || editorVersion.startsWith("vs/ssms") || /^vs\/\d/.test(editorVersion);
@@ -958,7 +967,7 @@ function createInterceptServers() {
         } else {
           const wsPort = parseInt(process.env.gc2xy_WS_PORT || "3441");
           const upstream = createConnection(wsPort, "127.0.0.1", () => {
-            upstream.write(data);
+            upstream.write(buffer);
             clientSocket.pipe(upstream);
             upstream.pipe(clientSocket);
           });
@@ -967,7 +976,24 @@ function createInterceptServers() {
         }
         return;
       }
-      handlePlainHttpRequest(clientSocket, data, IIS_PROXY ? HTTP_PORT : 80).catch((e) => log("ERROR", `HTTP handler error: ${e.message}`));
+
+      const parsed = parseHttpRequest(buffer);
+      if (!parsed) return;
+
+      // Wait for the full body (Content-Length) before processing — prevents
+      // truncated POST bodies when the body is split across TCP packets,
+      // which caused 503s on /login/oauth/access_token and chat completions.
+      const contentLen = parseInt(parsed.headers["content-length"] || "0", 10);
+      const bodyBytes = buffer.length - parsed.bodyOffset;
+      if (contentLen > 0 && bodyBytes < contentLen) {
+        if (parsed.headers["expect"]?.toLowerCase() === "100-continue") {
+          clientSocket.write("HTTP/1.1 100 Continue\r\n\r\n");
+        }
+        return;
+      }
+
+      requestHandled = true;
+      handlePlainHttpRequest(clientSocket, buffer, IIS_PROXY ? HTTP_PORT : 80).catch((e) => log("ERROR", `HTTP handler error: ${e.message}`));
     });
   });
 
@@ -1176,7 +1202,7 @@ async function handlePlainHttpRequest(clientSocket: Socket, data: Buffer, port: 
     res.on("data", (chunk: Buffer) => chunks.push(chunk));
     res.on("end", () => {
       const body = Buffer.concat(chunks);
-      logPlainEnglish(++requestCounter, "REQUEST", method, url, host, null, headers, null);
+      logPlainEnglish(++requestCounter, "REQUEST", method, url, host, null, headers, body?.toString() ?? null);
       logPlainEnglish(requestCounter, "RESPONSE", method, url, host, res.statusCode || 0, res.headers, body.toString());
       let respHeader = `HTTP/1.1 ${res.statusCode} ${res.statusMessage}\r\n`;
       respHeader += serializeHeaders(res.headers as Record<string, any>, [

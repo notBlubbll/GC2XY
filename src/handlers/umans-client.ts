@@ -576,6 +576,7 @@ function trackConversationSession(fingerprint: string, session: { tokenIndex: nu
 }
 
 function msgText(m: any): string {
+  if (!m) return "";
   if (typeof m.content === "string") return m.content;
   if (Array.isArray(m.content)) return m.content.find((p: any) => p?.type === "text")?.text || "";
   return "";
@@ -591,9 +592,11 @@ function extractUserPrompt(payload: any): string {
 
 function fingerprintPayload(payload: any): string | null {
   const msgs = payload?.messages;
-  if (!Array.isArray(msgs)) return null;
+  if (!Array.isArray(msgs) || msgs.length === 0) return null;
   const idx = msgs.findIndex((m: any) => m.role === "user" && !TITLE_PROMPT_RE.test(msgText(m)));
-  const raw = msgText(msgs[idx >= 0 ? idx : msgs.findIndex((m: any) => m.role === "user")]);
+  const fallbackIdx = msgs.findIndex((m: any) => m.role === "user");
+  const target = idx >= 0 ? msgs[idx] : (fallbackIdx >= 0 ? msgs[fallbackIdx] : undefined);
+  const raw = msgText(target);
   if (!raw) return null;
   const stripped = raw.replace(/^\[[^\]]+\]\s*/, "");
   return crypto.createHash("md5").update(stripped).digest("hex").slice(0, 12);

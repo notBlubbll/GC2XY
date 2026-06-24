@@ -1033,7 +1033,19 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
 
     let startTime = Date.now();
     let responsesComplete: any;
-    vsRespLog(`[BEGIN] url=${url} model=${parsed.model || ""} stream=${isStream} x-initiator=${headers["x-initiator"] || ""} keys=${Object.keys(parsed).join(",")} prev=${parsed.previous_response_id || ""} instructions=${parsed.instructions ? "yes" : "no"}`);
+    vsRespLog(`[BEGIN] url=${url} model=${parsed.model || ""} stream=${isStream} x-initiator=${headers["x-initiator"] || ""}`);
+
+    // VS sends empty-body probes ({}) to /responses — no model, no input, no
+    // instructions. Short-circuit these before they crash the upstream client.
+    if (!parsed.input && !parsed.instructions && !parsed.model && !parsed.previous_response_id) {
+      console.log(`[VS RESPONSES] empty probe — returning minimal response`);
+      const rr = buildResponsesFromChatCompletion(
+        { choices: [{ message: { role: "assistant", content: "" } }] },
+        { model: "unknown" }
+      );
+      return { handled: true, response: jsonResponse(rr) };
+    }
+
     try {
       const identityText = compactIdentity(getModelDisplayName(model), model, parsedTag.thinking || undefined);
       const { messages: flatMessages, system } = flattenResponsesInput(parsed.input);
