@@ -567,9 +567,14 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
       console.log(`[MODEL VS/MESSAGES] Aliased → ${model}`);
     }
     if (!FAKE_MODELS.find((m: any) => m.id === model) && !isProviderRouted(model)) {
-      const real = FAKE_MODELS.find((m: any) => !m.id.includes("-embedding"));
-      model = real?.id || (FAKE_MODELS.length > 0 ? FAKE_MODELS[0].id : "big-pickle");
-      console.log(`[MODEL VS/MESSAGES] ${model} not found, picked ${model}`);
+      const origModel = model;
+      if (!model && _lastRealModel) {
+        model = _lastRealModel;
+      } else {
+        const real = FAKE_MODELS.find((m: any) => !m.id.includes("-embedding"));
+        model = real?.id || (FAKE_MODELS.length > 0 ? FAKE_MODELS[0].id : "big-pickle");
+      }
+      console.log(`[MODEL VS/MESSAGES] ${origModel || "(empty)"} not found, picked ${model}`);
     }
     _lastRealModel = model;
 
@@ -1015,15 +1020,20 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
       console.log(`[MODEL VS/RESPONSES] Aliased → ${model}`);
     }
     if (!FAKE_MODELS.find((m: any) => m.id === model) && !isProviderRouted(model)) {
-      const real = FAKE_MODELS.find((m: any) => !m.id.includes("-embedding"));
-      model = real?.id || (FAKE_MODELS.length > 0 ? FAKE_MODELS[0].id : "big-pickle");
-      console.log(`[MODEL VS/RESPONSES] ${model} not found, picked ${model}`);
+      const origModel = model;
+      if (!model && _lastRealModel) {
+        model = _lastRealModel;
+      } else {
+        const real = FAKE_MODELS.find((m: any) => !m.id.includes("-embedding"));
+        model = real?.id || (FAKE_MODELS.length > 0 ? FAKE_MODELS[0].id : "big-pickle");
+      }
+      console.log(`[MODEL VS/RESPONSES] ${origModel || "(empty)"} not found, picked ${model}`);
     }
     _lastRealModel = model;
 
     let startTime = Date.now();
     let responsesComplete: any;
-    vsRespLog(`[BEGIN] url=${url} model=${parsed.model || ""} stream=${isStream} x-initiator=${headers["x-initiator"] || ""}`);
+    vsRespLog(`[BEGIN] url=${url} model=${parsed.model || ""} stream=${isStream} x-initiator=${headers["x-initiator"] || ""} keys=${Object.keys(parsed).join(",")} prev=${parsed.previous_response_id || ""} instructions=${parsed.instructions ? "yes" : "no"}`);
     try {
       const identityText = compactIdentity(getModelDisplayName(model), model, parsedTag.thinking || undefined);
       const { messages: flatMessages, system } = flattenResponsesInput(parsed.input);
@@ -1281,9 +1291,14 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
       console.log(`[MODEL VS/CHAT] Aliased → ${model}`);
     }
     if (!FAKE_MODELS.find((m: any) => m.id === model) && !isProviderRouted(model)) {
-      const real = FAKE_MODELS.find((m: any) => !m.id.includes("-embedding"));
-      model = real?.id || (FAKE_MODELS.length > 0 ? FAKE_MODELS[0].id : "big-pickle");
-      console.log(`[MODEL VS/CHAT] ${model} not found, picked ${model}`);
+      const origModel = model;
+      if (!model && _lastRealModel) {
+        model = _lastRealModel;
+      } else {
+        const real = FAKE_MODELS.find((m: any) => !m.id.includes("-embedding"));
+        model = real?.id || (FAKE_MODELS.length > 0 ? FAKE_MODELS[0].id : "big-pickle");
+      }
+      console.log(`[MODEL VS/CHAT] ${origModel || "(empty)"} not found, picked ${model}`);
     }
     _lastRealModel = model;
 

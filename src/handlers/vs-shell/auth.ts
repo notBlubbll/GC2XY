@@ -1,12 +1,12 @@
 // Unified VS-family auth handler — covers Visual Studio AND VS Team Explorer
-// (aka "SQL Studio"). Both clients share the exact same OAuth flow, copilot
+// (aka "SSMS"). Both clients share the exact same OAuth flow, copilot
 // user/token responses and content-exclusion endpoint — the only differences
 // are the detection heuristic (editor-version vs user-agent) and whether
 // chat requests are delegated to handleVisualStudio.
 //
 // This module replaces the duplicated auth code that previously lived in:
 //   - handlers/vs/auth.ts          (VS Copilot Client, editor-version based)
-//   - handlers/sql-studio/auth.ts  (VS Team Explorer, user-agent based)
+//   - handlers/ssms/auth.ts         (VS Team Explorer, user-agent based)
 //
 // Routing entry point: handleVSShell() — called first in the interceptor
 // chain (before handleAuth), so VS-family requests get enterprise plan

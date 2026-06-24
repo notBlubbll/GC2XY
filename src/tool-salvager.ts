@@ -1,7 +1,7 @@
 // ── Tool Salvager ──
 //
 // Per-tool schema coercion + JSON salvage + apology detection + loop breaking
-// for upstream LLM tool calls destined for VS / VS Code / Copilot / SQL Studio.
+// for upstream LLM tool calls destined for VS / VS Code / Copilot / SSMS.
 //
 // Problem we solve: small/upstream LLMs (Agnes, Pollinations, Freebuff, etc.)
 // frequently emit tool calls that are:

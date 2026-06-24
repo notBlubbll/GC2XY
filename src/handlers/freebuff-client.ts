@@ -57,6 +57,16 @@ async function checkAndUpdateVersions(): Promise<void> {
   } catch {}
 }
 
+// ── Models excluded from dynamic fetch ──
+// Codebuff's FREEBUFF_ROOT_AGENT_ID_BY_MODEL includes models that are NOT
+// freely pickable (referral-gated, deployment-hours-only, etc.). Per
+// Codebuff's own source: "GLM 5.2 is intentionally NOT in FREEBUFF_MODELS:
+// it isn't a freely-pickable grid model, it's a referral reward." We exclude
+// these so they don't show up in our model picker.
+const EXCLUDED_DYNAMIC_MODELS: Set<string> = new Set([
+  "z-ai/glm-5.2",
+]);
+
 // ── Hardcoded fallback models (when GitHub fetch fails) ──
 const HARDCODED_MODELS: { model: string; agent: string; displayName: string; premium: boolean; multimodal: boolean }[] = [
   { model: "deepseek/deepseek-v4-pro", agent: "base2-free-deepseek", displayName: "DeepSeek V4 Pro", premium: true, multimodal: false },
@@ -236,7 +246,9 @@ async function refreshModels(): Promise<void> {
       const allModels: string[] = [];
       const modelMetadata = new Map<string, ModelMeta>();
 
+      let skipped = 0;
       for (const [model, agent] of rootMapping) {
+        if (EXCLUDED_DYNAMIC_MODELS.has(model)) { skipped++; continue; }
         modelToAgent.set(model, agent);
         allModels.push("freebuff/" + model);
         const meta = metadata.get(model);
@@ -256,7 +268,7 @@ async function refreshModels(): Promise<void> {
       _fetchedModelToAgent = modelToAgent;
       _fetchedAllModels = allModels;
       _fetchedModelMetadata = modelMetadata;
-      console.log(`[FREEBUFF] dynamic models: fetched ${rootMapping.size} from GitHub + ${HARDCODED_MODELS.length - rootMapping.size} fallback = ${allModels.length} total`);
+      console.log(`[FREEBUFF] dynamic models: fetched ${rootMapping.size - skipped} from GitHub (+${skipped} excluded) + ${HARDCODED_MODELS.length - (rootMapping.size - skipped)} fallback = ${allModels.length} total`);
       return;
     }
   } catch (e: any) {

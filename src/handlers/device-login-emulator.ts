@@ -7,7 +7,7 @@ import { handleRepo } from "./repo-handler.ts";
 import { handleVisualStudio } from "./vs/handler.ts";
 import { handleVSShell } from "./vs-shell/index.ts";
 import { handleGHCPApp } from "./ghcp-app/index.ts";
-import { handleSQLStudioChat, handleSSMSUsage } from "./sql-studio/index.ts";
+import { handleSSMSChat, handleSSMSUsage } from "./ssms/index.ts";
 import { isDebug } from "../split-console.ts";
 
 export async function handleDeviceLogin(req: HandlerInput): Promise<HandlerResult> {
@@ -40,7 +40,7 @@ export async function handleDeviceLogin(req: HandlerInput): Promise<HandlerResul
 
     // VS Team Explorer chat requests spoof editor-version then delegate to
     // the VS chat handler. Auth routes already handled above by handleVSShell.
-    result = await handleSQLStudioChat(req);
+    result = await handleSSMSChat(req);
     if (result.handled) return result;
 
     result = await handleVisualStudio(req);

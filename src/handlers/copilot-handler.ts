@@ -40,6 +40,7 @@ function routeChat(model: string, messages: any[], tools: any[] | undefined, str
 
 const FAKE_MODELS = VS_MODELS;
 let _lastUserContent = "";
+let _lastRealModel = "deepseek-v4-pro";
 
 async function ensureModels() {
   await ensureVSModels();
@@ -687,19 +688,25 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
 
     // If still not in model list, pick any non-MiniMax model
     if (!FAKE_MODELS.find((m: any) => m.id === model) && !isProviderRouted(model)) {
-      const real = FAKE_MODELS.find((m: any) => m.id.startsWith("deepseek") && !m.id.includes("-embedding"))
-        || FAKE_MODELS.find((m: any) => {
-          const v = detectVendor(m.id);
-          return !m.id?.includes("-embedding") && v !== "MiniMax" && v !== "Moonshot AI" && v !== "Zhipu AI" && v !== "Alibaba Cloud";
-        });
-      model = real?.id || (FAKE_MODELS.length > 0 ? FAKE_MODELS[0].id : "big-pickle");
-      console.log(`\n[MODEL] ${rawModel2} not found, picked ${model}`);
+      const origModel = model;
+      if (!model && _lastRealModel) {
+        model = _lastRealModel;
+      } else {
+        const real = FAKE_MODELS.find((m: any) => m.id.startsWith("deepseek") && !m.id.includes("-embedding"))
+          || FAKE_MODELS.find((m: any) => {
+            const v = detectVendor(m.id);
+            return !m.id?.includes("-embedding") && v !== "MiniMax" && v !== "Moonshot AI" && v !== "Zhipu AI" && v !== "Alibaba Cloud";
+          });
+        model = real?.id || (FAKE_MODELS.length > 0 ? FAKE_MODELS[0].id : "big-pickle");
+      }
+      console.log(`\n[MODEL] ${origModel || "(empty)"} not found, picked ${model}`);
     }
     if (!messages.length) {
       messages.push({ role: "user", content: "Hello" });
     }
 
     injectIdentity(messages, getModelDisplayName(rawModel2), rawModel2);
+    _lastRealModel = model;
 
     // ── Nag: any nag or retry within 20s → task_complete (agentic mode only) ──
     const _chatCopInitiator = headers["x-initiator"] || "";
@@ -1061,13 +1068,20 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
       model = real?.id || model;
     }
     if (!FAKE_MODELS.find((m: any) => m.id === model) && !isProviderRouted(model)) {
-      const real = FAKE_MODELS.find((m: any) => m.id.startsWith("deepseek") && !m.id.includes("-embedding"))
-        || FAKE_MODELS.find((m: any) => {
-          const v = detectVendor(m.id);
-          return !m.id?.includes("-embedding") && v !== "MiniMax" && v !== "Moonshot AI" && v !== "Zhipu AI" && v !== "Alibaba Cloud";
-        });
-      model = real?.id || (FAKE_MODELS.length > 0 ? FAKE_MODELS[0].id : "big-pickle");
+      const origModel = model;
+      if (!model && _lastRealModel) {
+        model = _lastRealModel;
+      } else {
+        const real = FAKE_MODELS.find((m: any) => m.id.startsWith("deepseek") && !m.id.includes("-embedding"))
+          || FAKE_MODELS.find((m: any) => {
+            const v = detectVendor(m.id);
+            return !m.id?.includes("-embedding") && v !== "MiniMax" && v !== "Moonshot AI" && v !== "Zhipu AI" && v !== "Alibaba Cloud";
+          });
+        model = real?.id || (FAKE_MODELS.length > 0 ? FAKE_MODELS[0].id : "big-pickle");
+      }
+      console.log(`[MODEL] ${origModel || "(empty)"} not found, picked ${model}`);
     }
+    _lastRealModel = model;
 
     const messages = [
       ...(instructions ? [{ role: "system", content: instructions }] : []),
