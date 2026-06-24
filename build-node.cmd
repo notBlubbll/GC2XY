@@ -263,6 +263,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Reflection;
 using System.ServiceProcess;
+using System.Text.RegularExpressions;
 using System.Threading;
 
 class ServiceWrapper
@@ -271,6 +272,7 @@ class ServiceWrapper
     static Process currentProc;
     static string appId;
     static string mode;
+    static bool isRestart = false;
 
     static int Main(string[] args)
     {
@@ -331,6 +333,22 @@ class ServiceWrapper
         return "mock";
     }
 
+    static string ReadModeFromConfig(string baseDir)
+    {
+        try
+        {
+            string cfgPath = Path.Combine(baseDir, ".config", "config.json");
+            if (File.Exists(cfgPath))
+            {
+                string json = File.ReadAllText(cfgPath);
+                Match m = Regex.Match(json, "\"mode\"\\s*:\\s*\"(mock|hybrid|proxy)\"");
+                if (m.Success) return m.Groups[1].Value;
+            }
+        }
+        catch { }
+        return null;
+    }
+
     static void StopExistingInstances()
     {
         string[] procNames = { "gc2xy", "node", "bun" };
@@ -380,10 +398,7 @@ class ServiceWrapper
 
             if (stopping) break;
 
-            if (exitCode == 45) { mode = "proxy"; SafeSetTitle("gc2xy - PROXY"); continue; }
-            if (exitCode == 44) { mode = "hybrid"; SafeSetTitle("gc2xy - HYBRID"); continue; }
-            if (exitCode == 43) { mode = "mock"; SafeSetTitle("gc2xy - MOCK"); continue; }
-            if (exitCode == 42) continue;
+            if (exitCode == 42) { isRestart = true; continue; }
 
             if (exitCode == 0 || exitCode == -1) return exitCode;
             return exitCode;
@@ -393,7 +408,13 @@ class ServiceWrapper
 
     static int TryLaunchServer(string baseDir, bool interactive)
     {
-        string modeFlag = mode == "proxy" ? " --mode-3" : mode == "hybrid" ? " --mode-2" : "";
+        string modeFlag = isRestart ? " --restart" : " --mode " + mode;
+        // On restart, read persisted mode from config.json so env vars match
+        if (isRestart)
+        {
+            string persisted = ReadModeFromConfig(baseDir);
+            if (!string.IsNullOrEmpty(persisted)) mode = persisted;
+        }
         // 1. Bun standalone (gc2xy binary next to service.exe)
         string gc2xyPath = Path.Combine(baseDir, "gc2xy");
         if (File.Exists(gc2xyPath))

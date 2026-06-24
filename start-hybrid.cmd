@@ -123,15 +123,13 @@ echo.
 :restart_hybrid
 call :read_config_mode
 call :force_runtime
-if /i "%INIT_MODE%"=="proxy" set "MCLI_FLAGS=--mode-3" && set "FAKE_DEVICE_LOGIN=" && set "SKIP_CACHE=" && set "gc2xy_MODE=proxy"
-if /i "%INIT_MODE%"=="hybrid" set "MCLI_FLAGS=--mode-2" && set "FAKE_DEVICE_LOGIN=1" && set "SKIP_CACHE=1" && set "gc2xy_MODE=hybrid"
-if /i "%INIT_MODE%"=="mock" set "MCLI_FLAGS=" && set "FAKE_DEVICE_LOGIN=1" && set "SKIP_CACHE=1" && set "gc2xy_MODE=mock"
+if /i "%INIT_MODE%"=="proxy" set "MCLI_FLAGS=--mode proxy" && set "FAKE_DEVICE_LOGIN=" && set "SKIP_CACHE=" && set "gc2xy_MODE=proxy"
+if /i "%INIT_MODE%"=="hybrid" set "MCLI_FLAGS=--mode hybrid" && set "FAKE_DEVICE_LOGIN=1" && set "SKIP_CACHE=1" && set "gc2xy_MODE=hybrid"
+if /i "%INIT_MODE%"=="mock" set "MCLI_FLAGS=--mode mock" && set "FAKE_DEVICE_LOGIN=1" && set "SKIP_CACHE=1" && set "gc2xy_MODE=mock"
+if "%gc2xy_RESTART%"=="1" set "MCLI_FLAGS=--restart" && set "gc2xy_RESTART="
 if "%RUNTIME%"=="bun" bun run src\mitm-proxy.ts %MCLI_FLAGS%
 if "%RUNTIME%"=="node" %NODE_RUNNER% src\mitm-proxy.ts %MCLI_FLAGS%
-if errorlevel 45 set "INIT_MODE=proxy" && goto :restart_hybrid
-if errorlevel 44 set "INIT_MODE=hybrid" && goto :restart_hybrid
-if errorlevel 43 set "INIT_MODE=mock" && goto :restart_hybrid
-if errorlevel 42 goto :restart_hybrid
+if errorlevel 42 set "gc2xy_RESTART=1" && goto :restart_hybrid
 
 echo.
 echo Proxy stopped.
@@ -140,9 +138,8 @@ timeout /t 2 /nobreak >nul
 exit /b 0
 
 :read_config_mode
-if exist ".cache\restart-mode" (
-    set /p INIT_MODE=<".cache\restart-mode"
-) else if exist ".config\config.json" (
+rem Read persisted mode from .config/config.json (authoritative source for restart)
+if exist ".config\config.json" (
     for /f "usebackq delims=" %%m in (`powershell -NoProfile -Command "try{$c=Get-Content '.config\config.json' -Raw|ConvertFrom-Json;if($c.mode){Write-Output $c.mode}}catch{}" 2^>nul`) do set "INIT_MODE=%%m"
 )
 if not defined INIT_MODE set "INIT_MODE=hybrid"

@@ -263,7 +263,7 @@ async function ensureModels() {
       if (tag === "bitnet") {
         others.unshift(VS_MODELS.splice(i, 1)[0]);
       }
-      if (tag === "go") {
+      if (tag === "unknown") {
         VS_MODELS.splice(i, 1);
       }
     }

@@ -885,6 +885,7 @@ See `skills.md` → **Interceptor Development** for detailed handler chain prior
 | `VS_ENABLE_TIME` | `true` | Set to `"0"` to disable prepending `[HH:MM:SS]` to VS agent responses |
 | `ENFORCE_NODE` | `0` | Set to `"1"` to force Node.js runtime even if Bun is available. Affects all launchers and the C# service wrapper. |
 | `ENFORCE_CMD` | `0` | Set to `"1"` to force plain cmd.exe and skip Windows Terminal auto-detect. Affects all batch launchers, `.dist/start-*.cmd`, the C# service wrapper, and proxy status bar detection. |
+| `MCP_WRITE` | `true` | Set to `"0"` (or `false`/`no`/`off`) to disable auto-patching of SSMS Copilot MCP configs (`SQLtools__ExecutionMode: READ_ONLY → READ_WRITE`). Set `"1"` (or `true`/`yes`/`on`) to force-enable. Default `true` if unset. Also configurable via `.config/config.json` `MCP_WRITE` boolean. |
 
 ### `ENFORCE_CMD` Details
 
@@ -977,6 +978,35 @@ See `skills.md` → **Using the Console Dashboard** for keyboard shortcuts, log 
   - **Agent tag routing** in `logPlainEnglish`: traffic from `APP` (GitHub App), `VS` (Visual Studio), `TEAM` (VS Team Explorer), and `GO-HT` (Go HTTP client, e.g. Ollama updater) agents is always debug-only (`mitm-proxy.ts:87-89`).
   - **URL path routing** in `logPlainEnglish`: `/telemetry` and `/agents/sessions/*` URLs are always debug-only (`mitm-proxy.ts:89`).
 - **TLS error demotion**: `ECONNRESET`, `EPIPE` and `ECONNABORTED` on the client TLS socket are demoted from `ERROR` to `DEBUG` (`mitm-proxy.ts:880-887, 1032-1038`). These fire routinely when a browser cancels navigation, an idle keep-alive socket is GC'd, or a scanner probes port 443 — they are not real errors. The first TLS handler also checks `requestHandled` so post-response resets stay quiet while pre-handshake aborts still surface as `ERROR`.
+
+## SSMS Copilot MCP Auto-Patcher
+
+On startup, the proxy discovers every SSMS Copilot MCP config on disk — scanning `C:\Program Files*` and `C:\Program Files (x86)*` for `Microsoft SQL Server Management Studio*\*\Common7\IDE\Extensions\Microsoft\SSMS.CopilotUiTools\McpServer\mcp.json` — and flips `SQLtools__ExecutionMode` from `READ_ONLY` to `READ_WRITE`. This exposes the `mssql_execute_write_query` tool (and the rest of the 27-tool set) so the Copilot agent inside SSMS can execute CREATE/ALTER/INSERT/UPDATE/DELETE, not just read.
+
+| Aspect | Detail |
+|--------|--------|
+| Module | `src/mcp-writer.ts` — `discoverSsmsMcpConfigs()` scans fixed drives C..Z, `patchSsmsMcpConfig(path)` flips the env var in-place with `.bak` backup |
+| Wire-in | `mitm-proxy.ts:1317` — runs after `createWsServer()` on every startup/restart |
+| Config flag | `.config/config.json` `MCP_WRITE` (boolean, default `true`). Set `MCP_WRITE: false` to disable. |
+| Env override | `process.env.MCP_WRITE` — `0|false|no|off` disables, `1|true|yes|on` forces enable regardless of config.json |
+| Idempotent | Yes — if the file is already `READ_WRITE`, logs `[MCP-WRITE] already READ_WRITE` and does not rewrite. If `READ_ONLY`, patches and writes `mcp.json.bak` (only if no `.bak` exists yet). |
+| Log prefix | `[MCP-WRITE]` (shown without debug mode) |
+
+### Discovery algorithm
+
+1. Enumerate fixed drives C: through Z: via `existsSync("${letter}:\\")`.
+2. For each drive, list `Program Files` and `Program Files (x86)` for entries matching `/^Microsoft SQL Server Management Studio/i`.
+3. For each SSMS install dir, list subdirectories (e.g. `22\Release`, `22\Preview`) and check each for `Common7\IDE\Extensions\Microsoft\SSMS.CopilotUiTools\McpServer\mcp.json`.
+4. Deduplicate results, patch each file.
+
+### Per-file patch logic
+
+- Read JSON, walk `servers.*.env.SQLtools__ExecutionMode`.
+- If value is `READ_ONLY` → set to `READ_WRITE`, mark touched.
+- If value is already `READ_WRITE` → skip (no rewrite).
+- If value is anything else → skip that server (don't override unknown modes).
+- If touched and no `.bak` exists → copy original to `mcp.json.bak`.
+- Write JSON back with 2-space indent.
 
 ## Critical Context
 

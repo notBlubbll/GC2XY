@@ -33,6 +33,7 @@ import {
   getUmansConfig, getModelDisplayName as getUmansModelDisplayName,
   onUmansLoginStateChange, maybeRefreshAccountUserId,
   extractUsageBuckets as extractUmansUsageBuckets,
+  chatCompletion as umansChat,
 } from "./umans-client.ts";
 import { getModelIds } from "../models.ts";
 import { getTps, restoreTerminal, setEnabledModelIds } from "../split-console.ts";
@@ -115,7 +116,7 @@ function takeSnapshot(): Record<string, any> {
   // Group models by provider tag
   const grouped: Record<string, any[]> = {};
   for (const m of models) {
-    const pt = (m as any).providerTag || "go";
+    const pt = (m as any).providerTag || "unknown";
     if (!grouped[pt]) grouped[pt] = [];
     grouped[pt].push({ id: m.id, name: m.name, family: m.family, providerTag: pt, enabled: m.enabled !== false, free: !!m.free, locked: !!m.locked });
   }
@@ -344,6 +345,7 @@ async function handleWsMessage(ws: WebSocket, msg: any) {
     case "restart": {
       ws.send(JSON.stringify({ type: "restarting", data: { success: true } }));
       setTimeout(() => {
+        try { setMode(getMode()); } catch {}
         try { restoreTerminal(); } catch {}
         try { unlinkSync(join(getProjectRoot(), ".cache", "proxy-host-pid")); } catch {}
         process.exit(42);
@@ -444,7 +446,7 @@ async function handleWsMessage(ws: WebSocket, msg: any) {
       break;
     }
     case "setProviders": {
-      const valid = ["umans", "freebuff", "agnes", "bitnet", "codestral", "go"];
+      const valid = ["umans", "freebuff", "agnes", "bitnet", "codestral"];
       if (Array.isArray(payload?.providers)) {
         _activeProviders = payload.providers.filter((p: string) => valid.includes(p));
         console.log(`[CONFIG] setProviders: ${_activeProviders.join(", ")}`);
@@ -477,10 +479,11 @@ async function handleWsMessage(ws: WebSocket, msg: any) {
           ws.send(JSON.stringify({ type: "testChatResult", data: { error: "Invalid request" }, _id: reqId }));
           break;
         }
-        const provider = model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral/") ? "codestral" : (model.startsWith("bitnet/") || model === "bitnet-demo") ? "bitnet" : "go";
+        const provider = model.startsWith("umans-") ? "umans" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral/") ? "codestral" : (model.startsWith("bitnet/") || model === "bitnet-demo") ? "bitnet" : "unknown";
         const requestStart = Date.now();
         let resp: Response;
-        if (provider === "freebuff") resp = await freebuffChat(model, messages, undefined, stream, { max_tokens: 2048 });
+        if (provider === "umans") resp = await umansChat(model, messages, undefined, stream, { max_tokens: 2048 });
+        else if (provider === "freebuff") resp = await freebuffChat(model, messages, undefined, stream, { max_tokens: 2048 });
         else if (provider === "agnes") resp = await agnesChat(model, messages, undefined, stream, { max_tokens: 2048 });
         else if (provider === "codestral") resp = await codestralChat(model, messages, undefined, stream, { max_tokens: 2048 });
         else if (provider === "bitnet") resp = await bitnetChat(model, messages, undefined, stream);
@@ -1060,13 +1063,13 @@ function loadConfig() {
       if (c.wallpaper) _wallpaperSource = c.wallpaper;
       if (c.wallpaperPrompt || c.freegenPrompt) _wallpaperPrompt = c.freegenPrompt || c.wallpaperPrompt;
       if (c.providers && Array.isArray(c.providers)) {
-        _activeProviders = c.providers.filter((p: string) => p !== "opencode");
+        _activeProviders = c.providers.filter((p: string) => p !== "opencode" && p !== "go");
       } else if (c.provider) _activeProviders = [c.provider]; // migrate old single-value
       if (c.agnesKey) { _agnesApiKey = c.agnesKey; if (_activeProviders.indexOf("agnes") === -1) _activeProviders.push("agnes"); }
       if (c.codestralKey) { _codestralApiKey = c.codestralKey; if (_activeProviders.indexOf("codestral") === -1) _activeProviders.push("codestral"); }
       // migrate legacy providers out of active list
-      if (_activeProviders.some((p: string) => ["opencode", "poll", "featherless", "openrouter", "zen"].includes(p))) {
-        _activeProviders = _activeProviders.filter((p: string) => !["opencode", "poll", "featherless", "openrouter", "zen"].includes(p));
+      if (_activeProviders.some((p: string) => ["opencode", "go", "poll", "featherless", "openrouter", "zen"].includes(p))) {
+        _activeProviders = _activeProviders.filter((p: string) => !["opencode", "go", "poll", "featherless", "openrouter", "zen"].includes(p));
         if (_activeProviders.length === 0) _activeProviders = ["umans"];
       }
       if (c.githubSettings) {

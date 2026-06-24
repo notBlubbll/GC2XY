@@ -72,6 +72,7 @@ function routeChat(model: string, messages: any[], tools: any[] | undefined, str
   if (model.startsWith("codestral/") || model.startsWith("mistral-")) return codestralChat(model, messages, tools, stream, { max_tokens: extra.max_tokens, temperature: extra.temperature, top_p: extra.top_p });
   if (model === "bitnet-demo" || model.startsWith("bitnet/")) return bitnetChat(model, messages, tools, stream, { max_tokens: extra.max_tokens, ...extra });
   if (model.startsWith("umans-") || getModelProviderTag(model) === "umans") return umansChat(model, messages, tools, stream, { ...extra });
+  // OC-GO upstream removed — unknown/unprefixed models are rejected.
   return openAIChat(model, messages, tools, stream, extra, session?.keyIdx, session?.sessionLabel);
 }
 
@@ -611,7 +612,7 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
 
       const lastUserMsg = [...bridge.messages].reverse().find((m: any) => m.role === "user");
       const vsTag = agentTag(headers);
-      const vsProvider = model.startsWith("umans-") ? "umans" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "go";
+      const vsProvider = model.startsWith("umans-") ? "umans" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "unknown";
       const messagesPreview = lastUserMsg ? safePreviewFromContent(lastUserMsg.content) : "";
       const messagesComplete = reqLog({ tag: vsTag, provider: vsProvider, model, preview: messagesPreview, body: parsed });
 
@@ -1018,7 +1019,7 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
       }
 
       const vsTag = agentTag(headers);
-      const vsProvider = model.startsWith("umans-") ? "umans" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "go";
+      const vsProvider = model.startsWith("umans-") ? "umans" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "unknown";
 
       const lastPreview = [...cleanMessages].reverse().find((m: any) => m.role === "user");
       const messagesPreview = lastPreview ? safePreviewFromContent(lastPreview.content) : "";
@@ -1309,7 +1310,7 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
     try {
       const vsTag = agentTag(headers);
       const lastUserMsg = [...chatMessages].reverse().find((m: any) => m.role === "user");
-      const vsProvider = model.startsWith("umans-") ? "umans" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "go";
+      const vsProvider = model.startsWith("umans-") ? "umans" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "unknown";
 
       const chatExtras: Record<string, any> = { max_tokens: maxTokens };
       if (parsed.reasoning) chatExtras.reasoning = parsed.reasoning;

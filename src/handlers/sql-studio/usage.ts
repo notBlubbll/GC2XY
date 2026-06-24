@@ -19,8 +19,10 @@ function generateTrackingId(): string {
 }
 
 function getSkuFromGh(): { copilot_plan: string; access_type_sku: string; sku: string } {
-  // SSMS gets enterprise plan (matches user's config) but with limited
-  // quota_snapshots (not unlimited) so usage displays as 42%.
+  // SSMS gets enterprise plan with limited quota_snapshots so usage
+  // displays as 42%. MCP works because the proxy intercepts the
+  // /mcp/registry API call and returns a valid response (the real API
+  // returns 404 for enterprise users, which disables all MCP servers).
   return { copilot_plan: "enterprise", access_type_sku: "copilot_enterprise_seat", sku: "enterprise" };
 }
 
@@ -157,7 +159,7 @@ export function handleSSMSToken(req: HandlerInput): HandlerResult | null {
       },
       expires_at: exp,
       iat,
-      individual: false,
+      individual: true,
       public_suggestions: "disabled",
       refresh_in: 1500,
       sku,

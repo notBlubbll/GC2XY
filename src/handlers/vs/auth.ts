@@ -146,6 +146,7 @@ export function handleVSToken(req: HandlerInput): HandlerResult | null {
     },
     expires_at: exp,
     iat,
+    individual: true,
     limited_user_quotas: { chat: q.chat, completions: q.completions },
     limited_user_reset_date: resetTs,
     quota_reset_date: resetTs,

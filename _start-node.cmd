@@ -72,30 +72,30 @@ certutil -addstore ROOT ".certs\ca-cert.pem" >nul 2>&1
 echo   CA certificate installed.
 :skip_cert
 
+rem Initial mode: --mode <m> param > gc2xy_MODE env > config.json > default mock
 if defined gc2xy_MODE set "CUR_MODE=%gc2xy_MODE%"
-if not defined CUR_MODE if exist ".cache\restart-mode" set /p CUR_MODE=<".cache\restart-mode"
-if not defined CUR_MODE for /f "usebackq delims=" %%m in (`powershell -NoProfile -Command "try{$c=Get-Content '.config\config.json' -Raw|ConvertFrom-Json;if($c.mode){Write-Output $c.mode}}catch{}" 2^>nul`) do set "CUR_MODE=%%m"
+if not defined CUR_MODE if exist ".config\config.json" for /f "usebackq delims=" %%m in (`powershell -NoProfile -Command "try{$c=Get-Content '.config\config.json' -Raw|ConvertFrom-Json;if($c.mode){Write-Output $c.mode}}catch{}" 2^>nul`) do set "CUR_MODE=%%m"
 if not defined CUR_MODE set "CUR_MODE=mock"
 
 :restart
 set FAKE_DEVICE_LOGIN=1
 set SKIP_CACHE=1
-set MCLI_FLAGS=
+set MCLI_FLAGS=--mode %CUR_MODE%
 
 if "%CUR_MODE%"=="proxy" goto :set_proxy_mode
-if "%CUR_MODE%"=="hybrid" set MCLI_FLAGS=--mode-2 && goto :run_detected
+if "%CUR_MODE%"=="hybrid" goto :run_detected
 goto :run_detected
 
 :restart_persisted
-if exist ".cache\restart-mode" (
-    set /p CUR_MODE=<".cache\restart-mode"
-) else for /f "usebackq delims=" %%m in (`powershell -NoProfile -Command "try{$c=Get-Content '.config\config.json' -Raw|ConvertFrom-Json;if($c.mode){Write-Output $c.mode}}catch{}" 2^>nul`) do set "CUR_MODE=%%m"
+rem Read persisted mode from .config/config.json for restart (exit 42)
+if exist ".config\config.json" for /f "usebackq delims=" %%m in (`powershell -NoProfile -Command "try{$c=Get-Content '.config\config.json' -Raw|ConvertFrom-Json;if($c.mode){Write-Output $c.mode}}catch{}" 2^>nul`) do set "CUR_MODE=%%m"
+if not defined CUR_MODE set "CUR_MODE=mock"
+set MCLI_FLAGS=--restart
 goto :restart
 
 :set_proxy_mode
 set FAKE_DEVICE_LOGIN=
 set SKIP_CACHE=
-set MCLI_FLAGS=--mode-3
 goto :run_detected
 
 :run_detected
@@ -124,11 +124,7 @@ echo ==================================================
 echo.
 node node_modules\tsx\dist\cli.cjs src\mitm-proxy.ts %MCLI_FLAGS%
 set EXIT_CODE=%ERRORLEVEL%
-if %EXIT_CODE% equ 45 set "CUR_MODE=proxy" && goto :restart
-if %EXIT_CODE% equ 44 set "CUR_MODE=hybrid" && goto :restart
-if %EXIT_CODE% equ 43 set "CUR_MODE=mock" && goto :restart
 if %EXIT_CODE% equ 42 goto :restart_persisted
-goto :done
 goto :done
 
 :try_bun
@@ -150,11 +146,7 @@ echo ==================================================
 echo.
 bun run src\mitm-proxy.ts %MCLI_FLAGS%
 set EXIT_CODE=%ERRORLEVEL%
-if %EXIT_CODE% equ 45 set "CUR_MODE=proxy" && goto :restart
-if %EXIT_CODE% equ 44 set "CUR_MODE=hybrid" && goto :restart
-if %EXIT_CODE% equ 43 set "CUR_MODE=mock" && goto :restart
 if %EXIT_CODE% equ 42 goto :restart_persisted
-goto :done
 goto :done
 
 :no_runtime

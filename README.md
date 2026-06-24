@@ -136,6 +136,7 @@ Removes gc2xy site bindings, stops site/pool, deletes all SSL bindings (global +
 | `VS_ENABLE_TIME` | `true` | Set to `"0"` to disable timestamps in VS agent responses |
 | `ENFORCE_NODE` | `0` | Set to `"1"` to force Node.js runtime even if Bun is available |
 | `ENFORCE_CMD` | `0` | Set to `"1"` to force plain cmd.exe and skip Windows Terminal auto-detect |
+| `MCP_WRITE` | `true` | Set to `"0"` to disable auto-patching of SSMS Copilot MCP configs (`SQLtools__ExecutionMode: READ_ONLY → READ_WRITE`). Also configurable via `.config/config.json` `MCP_WRITE` boolean. |
 
 ### `ENFORCE_CMD` and `ENFORCE_NODE`
 
@@ -151,7 +152,22 @@ Removes gc2xy site bindings, stops site/pool, deletes all SSL bindings (global +
 - The C# wrapper skips Bun standalone/portable and uses Node.js from PATH or the bundled binary.
 - Set via `set ENFORCE_NODE=1` or add to `.config/.env`.
 
+## SSMS Copilot MCP Auto-Patcher
+
+On startup, the proxy discovers every `SSMS.CopilotUiTools\McpServer\mcp.json` on disk (under `C:\Program Files*\Microsoft SQL Server Management Studio*\*\Common7\IDE\Extensions\Microsoft\SSMS.CopilotUiTools\McpServer\mcp.json`) and flips `SQLtools__ExecutionMode` from `READ_ONLY` to `READ_WRITE`. This enables the agent inside SSMS Copilot to execute CREATE/ALTER/INSERT/UPDATE/DELETE statements (the read-only default only exposes SELECT tools). A `.bak` backup of the original file is written next to it on first patch; idempotent on subsequent runs.
+
+Controlled by `.config/config.json`:
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `MCP_WRITE` | `true` | Set to `false` to disable auto-patching of SSMS Copilot MCP configs. |
+
+Also honors `process.env.MCP_WRITE=0|false|no|off` (same effect). `1|true|yes|on` forces enable regardless of config.json. When disabled, the patcher logs `[MCP-WRITE] disabled` and exits without touching any files.
+
+Implementation: `src/mcp-writer.ts`. Called from `mitm-proxy.ts` right after `createWsServer()` on every startup (including restarts).
+
 ## Client Detection
+
 
 | Client | Detection | Plan |
 |--------|-----------|------|

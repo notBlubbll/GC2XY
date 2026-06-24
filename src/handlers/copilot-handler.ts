@@ -34,6 +34,7 @@ function routeChat(model: string, messages: any[], tools: any[] | undefined, str
   if (model.startsWith("codestral/") || model.startsWith("mistral-")) return codestralChat(model, messages, tools, stream, { max_tokens: extra.max_tokens, temperature: extra.temperature, top_p: extra.top_p });
   if (model === "bitnet-demo" || model.startsWith("bitnet/")) return bitnetChat(model, messages, tools, stream, { max_tokens: extra.max_tokens, temperature: extra.temperature, top_p: extra.top_p });
   if (model.startsWith("umans-") || getModelProviderTag(model) === "umans") return umansChat(model, messages, tools, stream, { ...extra });
+  // OC-GO upstream removed — unknown/unprefixed models are rejected.
   return openAIChat(model, messages, tools, stream, extra, session?.keyIdx, session?.sessionLabel);
 }
 
@@ -208,6 +209,10 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
     return { handled: true, response: jsonResponse({ itemsReceived: 1, itemsAccepted: 1, appId: null, errors: [] }) };
   }
 
+  if (method === "GET" && url.includes("/mcp/")) {
+    return { handled: true, response: jsonResponse({ servers: [], allow_all: true }) };
+  }
+
   // GET /models - list all models
   if (method === "GET" && (url === "/models" || url.startsWith("/models?") || url === "/v1/models" || url.startsWith("/v1/models?"))) {
     await ensureModels();
@@ -299,7 +304,7 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
     const lastUserMsg = [...messages].reverse().find((m: any) => m.role === "user");
     const queryPreview = lastUserMsg ? safePreviewFromContent(lastUserMsg.content) : "";
     const tag = agentTag(headers);
-    const provider = model.startsWith("umans-") ? "umans" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "go";
+    const provider = model.startsWith("umans-") ? "umans" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "unknown";
     const completeLog = reqLog({ tag, provider, model, preview: queryPreview, body: parsed });
     const startTime = Date.now();
 
@@ -704,7 +709,7 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
     const lastUserMsg = [...messages].reverse().find((m: any) => m.role === "user");
     const chatPreview = lastUserMsg ? safePreviewFromContent(lastUserMsg.content) : "";
     const tag = agentTag(headers);
-    const provider = model.startsWith("umans-") ? "umans" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "go";
+    const provider = model.startsWith("umans-") ? "umans" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "unknown";
     const completeLog = reqLog({ tag, provider, model, preview: chatPreview, body: parsed });
     const startTime = Date.now();
 
@@ -1050,7 +1055,7 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
     ];
 
     const tag = agentTag(headers);
-    const provider = model.startsWith("umans-") ? "umans" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "go";
+    const provider = model.startsWith("umans-") ? "umans" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "unknown";
     const completeLog = reqLog({ tag, provider, model, preview: userContent, body: parsed });
     const startTime = Date.now();
 

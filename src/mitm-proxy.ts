@@ -18,6 +18,7 @@ import { ts, agentTag, agentName, colorMethod, colorStatus, httpLogLine, general
 import { getProjectRoot, getMode, setMode, isProxy, isHybrid, isMock, killPortProcess } from "./shared.ts";
 import { addModels } from "./models.ts";
 import { handleDashboard, incrementRequests as dashIncReq, createWsServer, startWsPushLoop } from "./handlers/dashboard-handler.ts";
+import { patchSsmsMcpConfigs } from "./mcp-writer.ts";
 
 // Real IP cache to bypass hosts file for non-intercepted requests
 const INTERCEPTED_HOSTS = ["github.com", "www.github.com", "api.github.com", "api.githubcopilot.com", "copilot-proxy.githubusercontent.com", "api.individual.githubcopilot.com", "origin-tracker.individual.githubcopilot.com", "proxy.individual.githubcopilot.com", "telemetry.individual.githubcopilot.com"];
@@ -1271,6 +1272,9 @@ splitConsole.drawStatusBar({
 splitConsole.onCommand((cmd: string) => {
   if (cmd === "stop") shutdown();
   else if (cmd === "restart") {
+    // Persist current mode to config.json + restart-mode before exiting,
+    // so the relaunched process reads the correct mode via --restart.
+    setMode(getMode());
     splitConsole.restoreTerminal();
     for (const s of servers) s.close();
     logStream.end();
@@ -1311,6 +1315,9 @@ splitConsole.onCommand((cmd: string) => {
 
 let servers: any[] = [];
 createWsServer(); // Initialize WebSocket server for dashboard
+// Patch SSMS Copilot MCP configs to READ_WRITE so the agent can execute CREATE/ALTER/etc.
+// Controlled by .config/config.json `MCP_WRITE` field (default: true). Set MCP_WRITE=false to disable.
+try { patchSsmsMcpConfigs((m: string) => log("INFO", m)); } catch (e: any) { log("ERROR", `MCP-WRITE failed: ${e?.message || e}`); }
 if (INTERCEPT_MODE === "hosts") {
   setupHostsRedirect();
   servers = createInterceptServers();

@@ -17,7 +17,6 @@ if "%INIT_MODE%"=="" set "INIT_MODE=mock"
 if /i "%INIT_MODE%"=="1" set "INIT_MODE=mock"
 if /i "%INIT_MODE%"=="2" set "INIT_MODE=hybrid"
 if /i "%INIT_MODE%"=="3" set "INIT_MODE=proxy"
-
 echo ==================================================
 echo  gc2xy - Activate MITM Proxy
 echo ==================================================
@@ -186,63 +185,48 @@ echo.
 set "gc2xy_SETUP_DONE=1"
 
 :skip_setup
-if "%gc2xy_RESTART%"=="1" call :read_config_mode && set "gc2xy_RESTART=" && if exist ".config\.env" for /f "usebackq delims=" %%x in (".config\.env") do set "%%x" 2>nul
+if "%gc2xy_RESTART%"=="1" (
+    set "gc2xy_RESTART="
+    call :read_config_mode
+    set "LAUNCH_FLAGS=--restart"
+) else (
+    set "LAUNCH_FLAGS=--mode %INIT_MODE%"
+)
+if exist ".config\.env" for /f "usebackq delims=" %%x in (".config\.env") do set "%%x" 2>nul
 if "%INIT_MODE%"=="" set "INIT_MODE=mock"
-if /i "%INIT_MODE%"=="hybrid" goto :hybrid
-if /i "%INIT_MODE%"=="proxy" goto :proxy
+goto :run_proxy
 
-:mock
+:run_proxy
 call :force_runtime
-set FAKE_DEVICE_LOGIN=1
-set SKIP_CACHE=1
 set INTERCEPT_MODE=hosts
-set gc2xy_MODE=mock
+if /i "%INIT_MODE%"=="proxy" (
+    set FAKE_DEVICE_LOGIN=
+    set SKIP_CACHE=
+    set gc2xy_MODE=proxy
+) else if /i "%INIT_MODE%"=="hybrid" (
+    set FAKE_DEVICE_LOGIN=1
+    set SKIP_CACHE=1
+    set gc2xy_MODE=hybrid
+) else (
+    set FAKE_DEVICE_LOGIN=1
+    set SKIP_CACHE=1
+    set gc2xy_MODE=mock
+    set "INIT_MODE=mock"
+)
 title gc2xy
-if "%RUNTIME%"=="bun" bun run src\mitm-proxy.ts
-if "%RUNTIME%"=="node" %NODE_RUNNER% src\mitm-proxy.ts
-if errorlevel 45 set "INIT_MODE=proxy" && goto :proxy
-if errorlevel 44 set "INIT_MODE=hybrid" && goto :hybrid
-if errorlevel 43 set "INIT_MODE=mock" && goto :mock
-if errorlevel 42 set "gc2xy_RESTART=1" && goto :skip_setup
-goto :done
-
-:hybrid
-call :force_runtime
-set FAKE_DEVICE_LOGIN=1
-set SKIP_CACHE=1
-set INTERCEPT_MODE=hosts
-set gc2xy_MODE=hybrid
-title gc2xy
-if "%RUNTIME%"=="bun" bun run src\mitm-proxy.ts --mode-2
-if "%RUNTIME%"=="node" %NODE_RUNNER% src\mitm-proxy.ts --mode-2
-if errorlevel 45 set "INIT_MODE=proxy" && goto :proxy
-if errorlevel 44 set "INIT_MODE=hybrid" && goto :hybrid
-if errorlevel 43 set "INIT_MODE=mock" && goto :mock
-if errorlevel 42 set "gc2xy_RESTART=1" && goto :skip_setup
-goto :done
-
-:proxy
-call :force_runtime
-set FAKE_DEVICE_LOGIN=
-set SKIP_CACHE=
-set INTERCEPT_MODE=hosts
-set gc2xy_MODE=proxy
-title gc2xy
-if "%RUNTIME%"=="bun" bun run src\mitm-proxy.ts --mode-3
-if "%RUNTIME%"=="node" %NODE_RUNNER% src\mitm-proxy.ts --mode-3
-if errorlevel 45 set "INIT_MODE=proxy" && goto :proxy
-if errorlevel 44 set "INIT_MODE=hybrid" && goto :hybrid
-if errorlevel 43 set "INIT_MODE=mock" && goto :mock
+if "%RUNTIME%"=="bun" bun run src\mitm-proxy.ts %LAUNCH_FLAGS%
+if "%RUNTIME%"=="node" %NODE_RUNNER% src\mitm-proxy.ts %LAUNCH_FLAGS%
 if errorlevel 42 set "gc2xy_RESTART=1" && goto :skip_setup
 goto :done
 
 :read_config_mode
-if exist ".cache\restart-mode" (
-    set /p INIT_MODE=<".cache\restart-mode"
-) else if exist ".config\config.json" (
+rem Read persisted mode from .config/config.json (authoritative source for restart)
+if exist ".config\config.json" (
     for /f "usebackq delims=" %%m in (`powershell -NoProfile -Command "try{$c=Get-Content '.config\config.json' -Raw|ConvertFrom-Json;if($c.mode){Write-Output $c.mode}}catch{}" 2^>nul`) do set "INIT_MODE=%%m"
 )
 if not defined INIT_MODE set "INIT_MODE=mock"
+exit /b 0
+
 exit /b 0
 
 :force_runtime

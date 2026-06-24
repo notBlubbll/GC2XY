@@ -178,16 +178,62 @@ export function normalizeToolChoice(tc: any): any {
   return tc;
 }
 
-const _ARGS = new Set(typeof process !== "undefined" ? process.argv.slice(1) : []);
-if (_ARGS.has("--mode-3") || process.env.gc2xy_MODE === "proxy") _currentMode = "proxy";
-else if (_ARGS.has("--mode-2") || process.env.gc2xy_MODE === "hybrid") _currentMode = "hybrid";
-_writeRestartMode(_currentMode);
+// Mode resolution (priority: --mode <m> > gc2xy_MODE env > --restart [config.json] > default mock)
+// Backward compat: --mode-3 / --mode-2 still honored.
+// On restart (exit 42), launchers pass --restart so we read the persisted mode from config.json.
+const _ARGS = typeof process !== "undefined" ? process.argv.slice(1) : [];
+const _ARGS_SET = new Set(_ARGS);
+
+function _readModeFromConfig(): ProxyMode | null {
+  try {
+    const configPath = join(getProjectRoot(), ".config", "config.json");
+    if (existsSync(configPath)) {
+      const cfg = readJsonSync(configPath);
+      if (cfg.mode === "mock" || cfg.mode === "hybrid" || cfg.mode === "proxy") return cfg.mode;
+    }
+  } catch {}
+  return null;
+}
+
+function _resolveInitialMode(): ProxyMode {
+  // 1. Explicit --mode <mode> param (highest priority)
+  const modeIdx = _ARGS.indexOf("--mode");
+  if (modeIdx !== -1 && _ARGS[modeIdx + 1]) {
+    const m = String(_ARGS[modeIdx + 1]).toLowerCase();
+    if (m === "mock" || m === "hybrid" || m === "proxy") return m;
+  }
+  // 2. Legacy --mode-3 / --mode-2 flags
+  if (_ARGS_SET.has("--mode-3")) return "proxy";
+  if (_ARGS_SET.has("--mode-2")) return "hybrid";
+  // 3. gc2xy_MODE env var
+  if (process.env.gc2xy_MODE === "proxy") return "proxy";
+  if (process.env.gc2xy_MODE === "hybrid") return "hybrid";
+  if (process.env.gc2xy_MODE === "mock") return "mock";
+  // 4. --restart flag: read persisted mode from config.json
+  if (_ARGS_SET.has("--restart")) {
+    const persisted = _readModeFromConfig();
+    if (persisted) return persisted;
+  }
+  // 5. Default
+  return "mock";
+}
+
+_currentMode = _resolveInitialMode();
+process.env.gc2xy_MODE = _currentMode;
+// Always persist the resolved mode so config.json + restart-mode stay in sync
+// (covers initial start, restart, and explicit switches)
+_persistMode(_currentMode);
 
 export function getMode(): ProxyMode { return _currentMode; }
 export function setMode(m: ProxyMode) {
   _currentMode = m;
   process.env.gc2xy_MODE = m;
-  _writeRestartMode(m);
+  _persistMode(m);
+}
+
+// Persist mode to BOTH .config/config.json (authoritative) AND .cache/restart-mode (legacy cache file).
+function _persistMode(m: ProxyMode): void {
+  // config.json
   try {
     const configDir = join(getProjectRoot(), ".config");
     const configPath = join(configDir, "config.json");
@@ -196,9 +242,7 @@ export function setMode(m: ProxyMode) {
     if (!existsSync(configDir)) try { mkdirSync(configDir, { recursive: true }); } catch {}
     writeFileSync(configPath, JSON.stringify(cfg, null, 2));
   } catch {}
-}
-
-function _writeRestartMode(m: ProxyMode): void {
+  // .cache/restart-mode (legacy, kept for backward compat with old launcher scripts)
   try {
     const cacheDir = join(getProjectRoot(), ".cache");
     if (!existsSync(cacheDir)) try { mkdirSync(cacheDir, { recursive: true }); } catch {}
@@ -456,7 +500,7 @@ export function getModelProviderTag(modelId: string): string {
   if (modelId.startsWith("codestral")) return "codestral";
   if (modelId.startsWith("bitnet/") || modelId === "bitnet-demo") return "bitnet";
   if (modelId.endsWith("-free") || modelId === "big-pickle" || modelId === "nemotron-3-super-free" || modelId === "ring-2.6-1t-free") return "zen";
-  return "go";
+  return "unknown";
 }
 
 export function filterModelsByConfig(modelIds: string[]): string[] {
