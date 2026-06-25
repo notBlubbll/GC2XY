@@ -92,6 +92,8 @@ function loadAgnesProxyModels(): string[] {
     }
 
     if (ids.length > 0) {
+      // Transform "agnes-X" → "agnes:X"
+      ids = ids.map((id: string) => id.startsWith("agnes-") ? "agnes:" + id.slice(6) : id);
       if (isDebug()) console.log(`\n[AGNES] loaded ${ids.length} models from AGNES-PROXY`);
       saveCachedModels(ids);
     }
@@ -120,7 +122,9 @@ async function fetchModels(): Promise<string[]> {
       const data: any = await resp.json();
       const ids: string[] = (data?.data || []).map((m: any) =>
         typeof m === "string" ? m : m.id || ""
-      ).filter((id: string) => id.length > 0);
+      ).filter((id: string) => id.length > 0)
+        // Transform "agnes-X" → "agnes:X"
+        .map((id: string) => id.startsWith("agnes-") ? "agnes:" + id.slice(6) : id);
       if (ids.length > 0) {
         saveCachedModels(ids);
         return ids;
@@ -195,12 +199,14 @@ export async function chatCompletion(
   const key = getAgnesKey();
   if (!key) throw new Error("No AGNES API key configured.");
 
-  const strippedModel = modelId.replace(/^agnes\//, "");
+  // Strip external "agnes:" prefix and restore upstream "agnes-" prefix
+  const strippedModel = modelId.replace(/^agnes:/, "");
+  const upstreamModel = strippedModel.startsWith("agnes-") ? strippedModel : "agnes-" + strippedModel;
   const url = `${BASE}/chat/completions`;
 
   const body: any = { ...extra };
   delete body.tool_choice;
-  body.model = strippedModel;
+  body.model = upstreamModel;
   body.messages = messages.map((msg: any) => {
     const out: any = { role: msg.role, content: msg.content };
     if (msg.tool_calls?.length) out.tool_calls = msg.tool_calls;
@@ -229,7 +235,7 @@ export async function chatCompletion(
     msgs: body.messages?.length || 0,
     tools: body.tools?.length || 0,
   });
-  console.log(`[AGNES] POST ${url} | model=${strippedModel} | msgs=${body.messages?.length || 0} tools=${body.tools?.length || 0}`);
+  console.log(`[AGNES] POST ${url} | model=${upstreamModel} | msgs=${body.messages?.length || 0} tools=${body.tools?.length || 0}`);
 
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), 120000);

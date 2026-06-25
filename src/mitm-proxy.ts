@@ -59,7 +59,7 @@ const INTERCEPT_MODE = process.env.INTERCEPT_MODE || "hosts";
 mkdirSync(LOG_DIR, { recursive: true });
 mkdirSync(CERT_DIR, { recursive: true });
 
-try { unlinkSync("package-lock.json"); } catch {}
+
 
 // Logging with datetime + mode suffix
 const modeLogStr = isProxy() ? "PROXY" : isHybrid() ? "hybrid" : "mock";

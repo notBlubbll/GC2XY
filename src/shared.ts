@@ -493,18 +493,22 @@ export function killPortProcess(port: number): void {
 }
 
 export function getModelProviderTag(modelId: string): string {
-  if (modelId.startsWith("umans-")) return "umans";
-  if (modelId.startsWith("freebuff/")) return "freebuff";
-  if (modelId.startsWith("openrouter/")) return "openrouter";
-  if (modelId.startsWith("agnes")) return "agnes";
-  if (modelId.startsWith("codestral")) return "codestral";
-  if (modelId.startsWith("bitnet/") || modelId === "bitnet-demo") return "bitnet";
-  if (modelId.endsWith("-free") || modelId === "big-pickle" || modelId === "nemotron-3-super-free" || modelId === "ring-2.6-1t-free") return "zen";
+  if (modelId.startsWith("umans:")) return "umans";
+  if (modelId.startsWith("freebuff:")) return "freebuff";
+  if (modelId.startsWith("agnes:")) return "agnes";
+  if (modelId.startsWith("codestral:")) return "codestral";
+  if (modelId.startsWith("other:")) return "other";
   return "unknown";
 }
 
+export function stripProviderPrefix(modelId: string): string {
+  const idx = modelId.indexOf(":");
+  if (idx < 0) return modelId;
+  return modelId.slice(idx + 1);
+}
+
 export function filterModelsByConfig(modelIds: string[]): string[] {
-  const PROVIDER_MAP: Record<string, string> = { freebuff: "freebuff", agnes: "agnes", codestral: "codestral", bitnet: "bitnet", umans: "umans", openrouter: "openrouter", zen: "zen" };
+  const PROVIDER_MAP: Record<string, string> = { freebuff: "freebuff", agnes: "agnes", codestral: "codestral", other: "other", umans: "umans" };
   try {
     const cp = join(getProjectRoot(), ".config", "config.json");
     if (existsSync(cp)) {

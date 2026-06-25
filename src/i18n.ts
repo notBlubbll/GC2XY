@@ -50,7 +50,7 @@ export const I18N_STRINGS: Record<string, string> = {
   label_providers: "Providers",
   provider_freebuff: "FREEBUFF",
   provider_agnes: "AGNES",
-  provider_bitnet: "BITNET",
+  provider_other: "OTHER",
   provider_codestral: "CODESTRAL",
   provider_umans: "UMANS",
 

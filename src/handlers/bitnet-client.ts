@@ -11,7 +11,7 @@ export interface BitNetModelInfo {
 }
 
 const MODELS: Record<string, BitNetModelInfo> = {
-  "bitnet-demo": { family: "qwen2.5", paramCount: 1500000000, contextLength: 8192, capabilities: ["completion"] },
+  "other:bitnet-demo": { family: "qwen2.5", paramCount: 1500000000, contextLength: 8192, capabilities: ["completion"] },
 };
 
 export function getModelIds(): string[] {

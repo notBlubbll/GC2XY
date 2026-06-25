@@ -80,7 +80,7 @@ function modelLimits(id: string): any {
 }
 
 function isFreeModel(id: string): boolean {
-  return id.startsWith("agnes");
+  return id.startsWith("agnes:");
 }
 
 async function ensureModels() {
@@ -100,9 +100,9 @@ async function ensureModels() {
   const addModel = (id: string) => {
     if (seen.has(id)) return;
     seen.add(id);
-    const baseEmoji = id.startsWith("freebuff/") ? "[🇫🇷ᴇᴇ]" : supportsThinkingVariants(id) ? "💡" : "✨";
+    const baseEmoji = id.startsWith("freebuff:") ? "[🇫🇷ᴇᴇ]" : supportsThinkingVariants(id) ? "💡" : "✨";
     const mediaEmoji = modelHasVision(id) ? "🎞️" : "";
-    const limTag = id.startsWith("freebuff/") && getFreebuffModelPremium(id) ? " [LIM]" : "";
+    const limTag = id.startsWith("freebuff:") && getFreebuffModelPremium(id) ? " [LIM]" : "";
     const name = `${baseEmoji}${mediaEmoji}${limTag} ${getModelDisplayName(id)}`;
     const isLightweight = id.includes("mini") || id.includes("nano") || (id.includes("flash") && !id.includes("deepseek")) || id.includes("haiku") || id.includes("free");
     const isPowerful = id.includes("pro") || id.includes("opus") || id.includes("codex") || id.includes("omni") || (id.includes("flash") && id.includes("deepseek"));

@@ -589,8 +589,8 @@
                     <label class="form-check-label" for="prov-codestral"><i class="bi bi-code-slash me-1"></i><span data-i18n="provider_codestral">CODESTRAL</span></label>
                   </div>
                   <div class="form-check">
-                    <input class="form-check-input provider-cb" type="checkbox" id="prov-bitnet" value="bitnet">
-                    <label class="form-check-label" for="prov-bitnet"><i class="bi bi-cpu me-1"></i><span data-i18n="provider_bitnet">BITNET</span></label>
+                    <input class="form-check-input provider-cb" type="checkbox" id="prov-other" value="other">
+                    <label class="form-check-label" for="prov-other"><i class="bi bi-cpu me-1"></i><span data-i18n="provider_other">OTHER</span></label>
                   </div>
 
                 </div>
@@ -602,9 +602,9 @@
                   <label class="form-check-label" for="umansVisionHandoffEnabled" style="color:rgba(255,255,255,0.9);cursor:pointer;font-size:12px" data-i18n="vision_handoff_enable">Enable — delegate image analysis to a vision-capable model</label>
                 </div>
                 <div class="test-chat-model-wrap mb-2" style="width:100%;max-width:none">
-                  <label class="test-chat-model-label" id="umansVisionHandoffModelLabel" tabindex="0">umans-kimi-k2.7</label>
+                  <label class="test-chat-model-label" id="umansVisionHandoffModelLabel" tabindex="0">umans:kimi-k2.7</label>
                   <select class="test-chat-model-select" id="umansVisionHandoffModelSelect" onchange="saveUmansVisionHandoff()">
-                    <option value="umans-kimi-k2.7">umans-kimi-k2.7</option>
+                    <option value="umans:kimi-k2.7">umans:kimi-k2.7</option>
                   </select>
                 </div>
                 <div style="font-size:10px;color:rgba(255,255,255,0.4)">Models with <code>supports_vision: "via-handoff"</code> (e.g. GLM 5.2) send images here for description, then receive text. Native Anthropic pass-through applies the handoff too.</div>
@@ -1552,7 +1552,7 @@
       }
       const enaModels = models.filter(m => m.enabled !== false && m.locked !== true).length;
       document.getElementById('modelCountBadge').textContent = enaModels + ' / ' + models.length;
-      const _provToTag = { umans: 'umans', freebuff: 'freebuff', agnes: 'agnes', bitnet: 'bitnet', codestral: 'codestral' };
+      const _provToTag = { umans: 'umans', freebuff: 'freebuff', agnes: 'agnes', other: 'other', codestral: 'codestral' };
       const activeTags = new Set(_activeProviders.map(p => _provToTag[p] || p));
       const groups = {};
       models.forEach((m, idx) => {
@@ -1565,7 +1565,7 @@
         { name: '[🇫🇷ᴇᴇ] FreeBuff:', tags: ['freebuff'] },
         { name: '💜 AgnesAI:', tags: ['agnes'], controlTag: 'agnes', checkKey: true },
         { name: 'Codestral:', tags: ['codestral'], prefix: '🔷' },
-        { name: 'Others:', tags: ['bitnet', 'go'], prefix: '⚙️', defaultHidden: true },
+        { name: 'Others:', tags: ['other'], prefix: '⚙️', defaultHidden: true },
       ];
       container.innerHTML = providerGroups.map(group => {
         const allItems = group.tags.reduce((acc, tag) => {
@@ -1785,7 +1785,7 @@
         const checked = enabled.has(id) ? ' checked' : '';
         return '<div class="form-check" style="display:inline-block;margin-right:12px;margin-bottom:4px">' +
           '<input class="form-check-input provider-cb" type="checkbox" id="umans-mod-' + escapeHtml(id) + '"' + checked + ' onchange="toggleUmansModel(\'' + escapeHtml(id) + '\', this.checked)" style="transform:scale(0.8);margin-top:3px">' +
-          '<label class="form-check-label" for="umans-mod-' + escapeHtml(id) + '" style="font-size:11px;cursor:pointer" title="' + escapeHtml(id) + '">' + escapeHtml(m.name || id.replace(/^umans-/i, '')) + '</label>' +
+          '<label class="form-check-label" for="umans-mod-' + escapeHtml(id) + '" style="font-size:11px;cursor:pointer" title="' + escapeHtml(id) + '">' + escapeHtml(m.name || id.replace(/^umans:/i, '')) + '</label>' +
           '</div>';
       }).join('');
     }
@@ -1946,7 +1946,7 @@
       const umansIds = ((window._groupedModels && window._groupedModels.umans) ? window._groupedModels.umans : []).map(m => m.id);
       const existing = new Set(Array.from(sel.options).map(o => o.value));
       for (const id of umansIds) { if (!existing.has(id)) { const opt = document.createElement('option'); opt.value = id; opt.textContent = id; sel.appendChild(opt); existing.add(id); } }
-      const cur = (vh && vh.model) || 'umans-kimi-k2.7';
+      const cur = (vh && vh.model) || 'umans:kimi-k2.7';
       cb.checked = vh ? !!vh.enabled : true;
       if (![...sel.options].some(o => o.value === cur)) { const opt = document.createElement('option'); opt.value = cur; opt.textContent = cur; sel.appendChild(opt); }
       sel.value = cur;
@@ -1955,7 +1955,7 @@
 
     function saveUmansVisionHandoff() {
       const enabled = document.getElementById('umansVisionHandoffEnabled')?.checked;
-      const model = document.getElementById('umansVisionHandoffModelSelect')?.value || 'umans-kimi-k2.7';
+      const model = document.getElementById('umansVisionHandoffModelSelect')?.value || 'umans:kimi-k2.7';
       const label = document.getElementById('umansVisionHandoffModelLabel');
       if (label) label.textContent = model;
       wsSend('umansSetVisionHandoff', { enabled, model });
@@ -2514,7 +2514,7 @@
       const sel = document.getElementById('testChatModelSelect');
       if (!sel) return;
       const currentVal = sel.value;
-      const _provToTag = { umans: 'umans', freebuff: 'freebuff', agnes: 'agnes', bitnet: 'bitnet', codestral: 'codestral' };
+      const _provToTag = { umans: 'umans', freebuff: 'freebuff', agnes: 'agnes', other: 'other', codestral: 'codestral' };
        const activeTags = new Set(_activeProviders.map(p => _provToTag[p] || p));
       const visibleModels = models.filter(m => activeTags.has(m.providerTag || 'umans') && m.enabled !== false);
       if (visibleModels.length === 0) {
@@ -2528,7 +2528,7 @@
         if (!groups[pt]) groups[pt] = [];
         groups[pt].push(m);
       });
-      const providerOrder = ['umans', 'agnes', 'freebuff', 'bitnet', 'codestral'];
+      const providerOrder = ['umans', 'agnes', 'freebuff', 'other', 'codestral'];
       let html = '';
       for (const pt of providerOrder) {
         if (!groups[pt]) continue;

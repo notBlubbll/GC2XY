@@ -56,22 +56,17 @@ import { anthropicToOpenAIRequest } from "../anthropic-bridge.ts";
 import { filterModelsByConfig } from "../../shared.ts";
 
 function isProviderRouted(model: string): boolean {
-  if (model.startsWith("freebuff/")) return true;
-  if (model.startsWith("agnes")) return true;
-  if (model.startsWith("codestral/") || model.startsWith("mistral-")) return true;
-  if (model === "bitnet-demo" || model.startsWith("bitnet/")) return true;
-  if (model.startsWith("umans-") || getModelProviderTag(model) === "umans") return true;
-  if (model.startsWith("pol/")) return true;
-  if (model.startsWith("openrouter/")) return true;
-  return false;
+  const tag = getModelProviderTag(model);
+  return tag !== "unknown";
 }
 
 function routeChat(model: string, messages: any[], tools: any[] | undefined, stream: boolean, extra: Record<string, any>, session?: { keyIdx?: number; sessionLabel?: string }): Promise<Response> {
-  if (model.startsWith("freebuff/")) return freebuffChat(model, messages, tools, stream, { max_tokens: extra.max_tokens, temperature: extra.temperature, top_p: extra.top_p, ...extra });
-  if (model.startsWith("agnes")) return agnesChat(model, messages, tools, stream, { ...extra });
-  if (model.startsWith("codestral/") || model.startsWith("mistral-")) return codestralChat(model, messages, tools, stream, { max_tokens: extra.max_tokens, temperature: extra.temperature, top_p: extra.top_p });
-  if (model === "bitnet-demo" || model.startsWith("bitnet/")) return bitnetChat(model, messages, tools, stream, { max_tokens: extra.max_tokens, ...extra });
-  if (model.startsWith("umans-") || getModelProviderTag(model) === "umans") return umansChat(model, messages, tools, stream, { ...extra });
+  const tag = getModelProviderTag(model);
+  if (tag === "freebuff") return freebuffChat(model, messages, tools, stream, { max_tokens: extra.max_tokens, temperature: extra.temperature, top_p: extra.top_p, ...extra });
+  if (tag === "agnes") return agnesChat(model, messages, tools, stream, { ...extra });
+  if (tag === "codestral") return codestralChat(model, messages, tools, stream, { max_tokens: extra.max_tokens, temperature: extra.temperature, top_p: extra.top_p });
+  if (tag === "other") return bitnetChat(model, messages, tools, stream, { max_tokens: extra.max_tokens, ...extra });
+  if (tag === "umans") return umansChat(model, messages, tools, stream, { ...extra });
   // OC-GO upstream removed — unknown/unprefixed models are rejected.
   return openAIChat(model, messages, tools, stream, extra, session?.keyIdx, session?.sessionLabel);
 }
@@ -370,7 +365,7 @@ function modelSupports(id: string): any {
   if (isChat) base.structured_outputs = true;
   if (isChat) base.vision = true;
   const supportsDeepThink = l.includes("deepseek") || l.includes("claude") || l.includes("mimo") ||
-    l.includes("codex") || (l.match(/gpt-?5/) && !l.includes("mini")) || l.includes("big-pickle") || l.startsWith("umans-");
+    l.includes("codex") || (l.match(/gpt-?5/) && !l.includes("mini")) || l.includes("big-pickle") || l.startsWith("umans:");
   if (supportsDeepThink) {
     base.adaptive_thinking = true;
     base.min_thinking_budget = 1024;
@@ -379,7 +374,7 @@ function modelSupports(id: string): any {
   if (l.includes("deepseek-v4")) {
     base.reasoning_effort = ["low", "medium", "high", "xhigh"];
   }
-  if ((l.includes("mimo") && !supportsDeepThink) || l.startsWith("umans-")) {
+  if ((l.includes("mimo") && !supportsDeepThink) || l.startsWith("umans:")) {
     base.reasoning_effort = ["low", "medium", "high"];
   }
   return base;
@@ -397,7 +392,7 @@ function modelLimits(id: string): any {
     limits.max_context_window_tokens = 400000; limits.max_output_tokens = 128000; limits.max_prompt_tokens = 272000; limits.max_non_streaming_output_tokens = 32000;
   } else if (l.includes("gpt-5-mini") || l.includes("gpt-5.4-mini") || l.includes("gpt-5.4-nano") || l.includes("gpt-5-nano")) {
     limits.max_context_window_tokens = 264000; limits.max_output_tokens = 64000; limits.max_prompt_tokens = 128000; limits.max_non_streaming_output_tokens = 16000;
-  } else if (l.startsWith("umans-")) {
+  } else if (l.startsWith("umans:")) {
     limits.max_context_window_tokens = 256000; limits.max_output_tokens = 64000; limits.max_prompt_tokens = 200000; limits.max_non_streaming_output_tokens = 16000;
   } else {
     limits.max_context_window_tokens = 128000; limits.max_output_tokens = 16384; limits.max_prompt_tokens = 64000; limits.max_non_streaming_output_tokens = 4096;
@@ -588,7 +583,7 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
       // a UMANS model we skip the anthropic-bridge translation entirely and
       // forward the Anthropic payload directly. The response is already in
       // Anthropic SSE/JSON format — no OpenAI→Anthropic conversion needed.
-      if (model.startsWith("umans-") || getModelProviderTag(model) === "umans") {
+      if (getModelProviderTag(model) === "umans") {
         const vsTag = agentTag(headers);
         const _lastUser = [...(parsed.messages || [])].reverse().find((m: any) => m.role === "user");
         const _preview = _lastUser ? safePreviewFromContent(_lastUser.content) : "";
@@ -643,7 +638,7 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
 
       const lastUserMsg = [...bridge.messages].reverse().find((m: any) => m.role === "user");
       const vsTag = agentTag(headers);
-      const vsProvider = model.startsWith("umans-") ? "umans" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "unknown";
+      const vsProvider = getModelProviderTag(model);
       const messagesPreview = lastUserMsg ? safePreviewFromContent(lastUserMsg.content) : "";
       const messagesComplete = reqLog({ tag: vsTag, provider: vsProvider, model, preview: messagesPreview, body: parsed });
 
@@ -1067,7 +1062,7 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
       }
 
       const vsTag = agentTag(headers);
-      const vsProvider = model.startsWith("umans-") ? "umans" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "unknown";
+      const vsProvider = getModelProviderTag(model);
 
       const lastPreview = [...cleanMessages].reverse().find((m: any) => m.role === "user");
       const messagesPreview = lastPreview ? safePreviewFromContent(lastPreview.content) : "";
@@ -1363,7 +1358,7 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
     try {
       const vsTag = agentTag(headers);
       const lastUserMsg = [...chatMessages].reverse().find((m: any) => m.role === "user");
-      const vsProvider = model.startsWith("umans-") ? "umans" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "unknown";
+      const vsProvider = getModelProviderTag(model);
 
       const chatExtras: Record<string, any> = { max_tokens: maxTokens };
       if (parsed.reasoning) chatExtras.reasoning = parsed.reasoning;

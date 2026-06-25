@@ -32,7 +32,7 @@ function isThinkingModel(id: string): boolean {
 }
 
 function isFreeModel(id: string): boolean {
-  return id.startsWith("agnes");
+  return id.startsWith("agnes:");
 }
 
 // ── Free model lightweight tuning ──
@@ -114,7 +114,7 @@ function getSupports(id: string): any {
 
 export function detectVendor(id: string): string {
   const l = id.toLowerCase();
-  if (l.startsWith("umans-")) return "UMANS";
+  if (l.startsWith("umans:")) return "UMANS";
   if (l.includes("deepseek") || l.includes("mimo")) return "OpenAI";
   if (l.includes("claude")) return "Anthropic";
   if (l.includes("gpt") || l.includes("codex") || l.includes("o1") || l.includes("o3")) return "OpenAI";
@@ -133,10 +133,10 @@ export function detectVendor(id: string): string {
 
 export function getThinkingModes(id: string): string[] {
   const l = id.toLowerCase();
-  if (l.startsWith("freebuff/")) return [];
+  if (l.startsWith("freebuff:")) return [];
   // Consult the UMANS API catalog for models that advertise reasoning levels
   // (e.g. qwen, glm-5.2, deepseek-v4, mimo). This drives the clone variants.
-  if (l.startsWith("umans-")) {
+  if (l.startsWith("umans:")) {
     const umansModes = getUmansThinkingModes(id);
     if (umansModes.length > 0) return umansModes;
   }
@@ -163,11 +163,11 @@ async function ensureModels() {
     if (seen.has(id)) return;
     seen.add(id);
     const free = isFreeModel(id);
-    const prefix = id.startsWith("umans-") ? "✨" :
-                   id.startsWith("bitnet/") || id === "bitnet-demo" ? "⚙️" :
-                   id.startsWith("freebuff/") ? "🇫🇷ᴇᴇ" :
-                   id.startsWith("agnes") ? "💜" :
-                   id.startsWith("codestral/") ? "🌀" : "✨";
+    const prefix = id.startsWith("umans:") ? "✨" :
+                   id.startsWith("other:") ? "⚙️" :
+                   id.startsWith("freebuff:") ? "🇫🇷ᴇᴇ" :
+                   id.startsWith("agnes:") ? "💜" :
+                   id.startsWith("codestral:") ? "🌀" : "✨";
     let name = getModelDisplayName(id);
     if (name.length > 17) name = name.replace(/\s/g, "");
     const fullName = `${prefix}￤${name}`;
@@ -179,7 +179,7 @@ async function ensureModels() {
     const supports = getSupports(id);
     const providerTag = getModelProviderTag(id);
     const pickerCategory = free ? "lightweight" :
-                           providerTag === "bitnet" ? "others" :
+                           providerTag === "other" ? "others" :
                            picker.category;
 
     const model: any = {
@@ -227,7 +227,7 @@ async function ensureModels() {
         ...model,
         id: taggedId,
         name: taggedName,
-        model_picker_category: free ? "lightweight" : (providerTag === "bitnet" ? "others" : "versatile"),
+        model_picker_category: free ? "lightweight" : (providerTag === "other" ? "others" : "versatile"),
         model_picker_enabled: true,
         is_chat_default: false,
         is_chat_fallback: false,
@@ -244,8 +244,7 @@ async function ensureModels() {
   // Build separators by cloning a real model to avoid field mismatch
   const template = VS_MODELS.find((m: any) => !m.id.startsWith("_cat_") && !m.id.includes("["));
   if (template && VS_MODELS.length > 0) {
-    const SEP_ORDER = ["codestral", "freebuff", "agnes", "umans"];
-    const PROVIDER_NAMES: Record<string, string> = {
+    const SEP_ORDER = ["codestral", "freebuff", "agnes", "umans"];    const PROVIDER_NAMES: Record<string, string> = {
       freebuff: "\u200D🇫🇷ᴇᴇ ⸻ FreeBuff:",
       agnes: "\u200D\u200D💜 ⸻ AgnesAI:",
       codestral: "\u200D\u200D\u200D🌀 ⸻ Codestral:",
@@ -267,7 +266,7 @@ async function ensureModels() {
       const mid = VS_MODELS[i].id || "";
       if (mid.startsWith("cat_") || mid.startsWith("_cat_")) continue;
       const tag = getModelProviderTag(mid);
-      if (tag === "bitnet") {
+      if (tag === "other") {
         others.unshift(VS_MODELS.splice(i, 1)[0]);
       }
       if (tag === "unknown") {
@@ -278,7 +277,7 @@ async function ensureModels() {
       const mid = VS_MODELS[i].id || "";
       if (mid.startsWith("cat_") || mid.startsWith("_cat_")) continue;
       const tag = getModelProviderTag(mid);
-      if (!tag || tag === "bitnet" || seenTags.includes(tag)) continue;
+      if (!tag || tag === "other" || seenTags.includes(tag)) continue;
       seenTags.push(tag);
       const displayName = PROVIDER_NAMES[tag] || tag.toUpperCase();
       VS_MODELS.splice(i, 0, {

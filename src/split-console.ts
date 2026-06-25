@@ -3,6 +3,7 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { execSync } from "node:child_process";
+import { getModelProviderTag, stripProviderPrefix } from "./shared.ts";
 
 const R = "\x1b[0;97;40m";
 const B = "\x1b[1m";
@@ -350,12 +351,12 @@ function buildStatusLines(width: number): string[] {
   let modelRows: string[] = [];
   if (_modelIds.length > 0) {
     const colorModel = (s: string) => _enabledModelIds.has(s) ? `${LIME}${s}${R}` : `${LG}${s}${R}`;
-    const isOther = (m: string) => m.startsWith("bitnet/") || m === "bitnet-demo";
-    const freebuff = _modelIds.filter(m => m.startsWith("freebuff/")).map(colorModel);
-    const codestral = _modelIds.filter(m => m.startsWith("codestral/")).map(colorModel);
-    const agnes = _modelIds.filter(m => m.startsWith("agnes")).map(colorModel);
-    const umans = _modelIds.filter(m => m.startsWith("umans")).map(colorModel);
-    const other = _modelIds.filter(m => isOther(m)).map(colorModel);
+    const display = (m: string) => stripProviderPrefix(m);
+    const freebuff = _modelIds.filter(m => getModelProviderTag(m) === "freebuff").map(m => colorModel(display(m)));
+    const codestral = _modelIds.filter(m => getModelProviderTag(m) === "codestral").map(m => colorModel(display(m)));
+    const agnes = _modelIds.filter(m => getModelProviderTag(m) === "agnes").map(m => colorModel(display(m)));
+    const umans = _modelIds.filter(m => getModelProviderTag(m) === "umans").map(m => colorModel(display(m)));
+    const other = _modelIds.filter(m => getModelProviderTag(m) === "other").map(m => colorModel(display(m)));
     const fbRows = _wrapList(freebuff, rightWidth, ", ");
     const cdRows = _wrapList(codestral, rightWidth, ", ");
     const agRows = _wrapList(agnes, rightWidth, ", ");

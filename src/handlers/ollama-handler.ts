@@ -28,9 +28,9 @@ function normalizeToOpenCodeModel(raw: string): string {
   const { model } = parseThinkingTag(raw);
   const l = model.toLowerCase();
   const aliases: Record<string, string> = {
-    "gpt-4o": "umans-deepseek-v4-pro", "gpt-4": "umans-deepseek-v4-flash", "gpt-3.5-turbo": "umans-qwen3.5-plus",
-    "gpt-4-turbo": "umans-deepseek-v4-pro", "claude-haiku-4.5": "umans-qwen3.5-plus",
-    "gpt-5-mini": "umans-minimax-m2.5", "gpt-4.1": "umans-deepseek-v4-flash",
+    "gpt-4o": "umans:deepseek-v4-pro", "gpt-4": "umans:deepseek-v4-flash", "gpt-3.5-turbo": "umans:qwen3.5-plus",
+    "gpt-4-turbo": "umans:deepseek-v4-pro", "claude-haiku-4.5": "umans:qwen3.5-plus",
+    "gpt-5-mini": "umans:minimax-m2.5", "gpt-4.1": "umans:deepseek-v4-flash",
   };
   return aliases[l] || model;
 }
