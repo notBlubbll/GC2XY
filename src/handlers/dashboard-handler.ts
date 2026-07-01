@@ -142,6 +142,7 @@ function takeSnapshot(): Record<string, any> {
     agnesKey: _agnesApiKey ? `${_agnesApiKey.slice(0, 5)}...${_agnesApiKey.slice(-4)}` : "",
     hasAgnesKey: !!_agnesApiKey,
     completionsModel: _completionsModel,
+    vsLegacyModel: _vsLegacyModel,
     supermaven: (() => {
       const st = getSupermavenStatus();
       return { enabled: _supermavenEnabled, initialized: st.initialized, binaryPath: st.binaryPath };
@@ -367,7 +368,7 @@ async function handleWsMessage(ws: WebSocket, msg: any) {
         _dashboardConfig = { ..._dashboardConfig, ...safeBody };
         if (payload.mode) setMode(payload.mode.toLowerCase());
         if (Array.isArray(payload.providers)) {
-          const valid = ["umans", "freebuff", "agnes", "other", "codestral"];
+          const valid = ["umans", "freebuff", "agnes", "bitnet", "codestral"];
           _activeProviders = payload.providers.filter((p: string) => valid.includes(p));
         }
         if (payload.agnesKey !== undefined) {
@@ -381,6 +382,7 @@ async function handleWsMessage(ws: WebSocket, msg: any) {
           else if (!_codestralApiKey) { const idx = _activeProviders.indexOf("codestral"); if (idx !== -1) _activeProviders.splice(idx, 1); }
         }
         if (payload.completionsModel) _completionsModel = payload.completionsModel;
+        if (payload.vsLegacyModel !== undefined) _vsLegacyModel = payload.vsLegacyModel || "";
         if (typeof payload.supermavenEnabled === "boolean") { _supermavenEnabled = payload.supermavenEnabled; setSupermavenEnabled(_supermavenEnabled); }
         saveConfig();
       }
@@ -447,7 +449,7 @@ async function handleWsMessage(ws: WebSocket, msg: any) {
       break;
     }
     case "setProviders": {
-      const valid = ["umans", "freebuff", "agnes", "other", "codestral"];
+      const valid = ["umans", "freebuff", "agnes", "bitnet", "codestral"];
       if (Array.isArray(payload?.providers)) {
         _activeProviders = payload.providers.filter((p: string) => valid.includes(p));
         console.log(`[CONFIG] setProviders: ${_activeProviders.join(", ")}`);
@@ -470,6 +472,12 @@ async function handleWsMessage(ws: WebSocket, msg: any) {
       pushStatusToWs();
       break;
     }
+    case "setVsLegacyModel": {
+      _vsLegacyModel = payload?.modelId || "";
+      saveConfig();
+      pushStatusToWs();
+      break;
+    }
     case "testChat": {
       try {
         const model: string = payload?.model;
@@ -480,14 +488,14 @@ async function handleWsMessage(ws: WebSocket, msg: any) {
           ws.send(JSON.stringify({ type: "testChatResult", data: { error: "Invalid request" }, _id: reqId }));
           break;
         }
-        const provider = getModelProviderTag(model);
+        const provider = model.startsWith("umans-") ? "umans" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral/") ? "codestral" : (model.startsWith("bitnet/") || model === "bitnet-demo") ? "bitnet" : "unknown";
         const requestStart = Date.now();
         let resp: Response;
         if (provider === "umans") resp = await umansChat(model, messages, undefined, stream, { max_tokens: 2048 });
         else if (provider === "freebuff") resp = await freebuffChat(model, messages, undefined, stream, { max_tokens: 2048 });
         else if (provider === "agnes") resp = await agnesChat(model, messages, undefined, stream, { max_tokens: 2048 });
         else if (provider === "codestral") resp = await codestralChat(model, messages, undefined, stream, { max_tokens: 2048 });
-        else if (provider === "other") resp = await bitnetChat(model, messages, undefined, stream);
+        else if (provider === "bitnet") resp = await bitnetChat(model, messages, undefined, stream);
         else resp = await openAIChat(model, messages, undefined, stream, { max_tokens: 2048 });
 
         const responseCt = resp.headers.get("content-type") || "";
@@ -719,17 +727,7 @@ try {
   }
 } catch (e) {}
 
-// Migrate old-format model IDs to new colon-separated format
-function migrateModelId(id: string): string {
-  if (id.startsWith("umans-")) return "umans:" + id.slice(6);
-  if (id.startsWith("freebuff/")) return "freebuff:" + id.slice(9);
-  if (id.startsWith("agnes-")) return "agnes:" + id.slice(6);
-  if (id.startsWith("codestral/")) return "codestral:" + id.slice(10);
-  if (id === "bitnet-demo" || id.startsWith("bitnet/")) return "other:" + (id === "bitnet-demo" ? "bitnet-demo" : id.slice(7));
-  return id;
-}
-
-const PROVIDER_TAG_MAP: Record<string, string> = { freebuff: "freebuff", agnes: "agnes", codestral: "codestral", other: "other", umans: "umans" };
+const PROVIDER_TAG_MAP: Record<string, string> = { freebuff: "freebuff", agnes: "agnes", codestral: "codestral", bitnet: "bitnet", umans: "umans", zen: "zen", openrouter: "openrouter" };
 function activeModelTags(): Set<string> {
   const tags = new Set<string>();
   for (const p of _activeProviders) {
@@ -815,11 +813,13 @@ function setGenProgress(kind: string, progress: number) {
 
 // ── Provider / Model Config ──
 let _activeProviders: string[] = ["umans"];
-let _completionsModel: string = "codestral:codestral-latest";
+let _completionsModel: string = "mistral-latest";
 export function getCompletionsModel(): string { return _completionsModel; }
+let _vsLegacyModel: string = "";
+export function getVsLegacyModel(): string { return _vsLegacyModel; }
 let _supermavenEnabled = false;
 
-let _umansState: any = { loggedIn: false, email: "", keys: [], currentKeyIndex: 0, enabledModels: [], userId: null, visionHandoff: { enabled: true, model: "umans:kimi-k2.7", prompt: "" } };
+let _umansState: any = { loggedIn: false, email: "", keys: [], currentKeyIndex: 0, enabledModels: [], userId: null, visionHandoff: { enabled: true, model: "umans-kimi-k2.7", prompt: "" } };
 
 let _dashboardConfig: Record<string, any> = {
   mode: "mock",
@@ -1094,13 +1094,13 @@ function loadConfig() {
       if (c.wallpaper) _wallpaperSource = c.wallpaper;
       if (c.wallpaperPrompt || c.freegenPrompt) _wallpaperPrompt = c.freegenPrompt || c.wallpaperPrompt;
       if (c.providers && Array.isArray(c.providers)) {
-        _activeProviders = c.providers.filter((p: string) => p !== "opencode" && p !== "go" && p !== "bitnet");
+        _activeProviders = c.providers.filter((p: string) => p !== "opencode" && p !== "go");
       } else if (c.provider) _activeProviders = [c.provider]; // migrate old single-value
       if (c.agnesKey) { _agnesApiKey = c.agnesKey; if (_activeProviders.indexOf("agnes") === -1) _activeProviders.push("agnes"); }
       if (c.codestralKey) { _codestralApiKey = c.codestralKey; if (_activeProviders.indexOf("codestral") === -1) _activeProviders.push("codestral"); }
       // migrate legacy providers out of active list
-      if (_activeProviders.some((p: string) => ["opencode", "go", "poll", "featherless", "openrouter", "zen", "bitnet"].includes(p))) {
-        _activeProviders = _activeProviders.filter((p: string) => !["opencode", "go", "poll", "featherless", "openrouter", "zen", "bitnet"].includes(p));
+      if (_activeProviders.some((p: string) => ["opencode", "go", "poll", "featherless", "openrouter", "zen"].includes(p))) {
+        _activeProviders = _activeProviders.filter((p: string) => !["opencode", "go", "poll", "featherless", "openrouter", "zen"].includes(p));
         if (_activeProviders.length === 0) _activeProviders = ["umans"];
       }
       if (c.githubSettings) {
@@ -1109,6 +1109,7 @@ function loadConfig() {
         if (c.githubSettings.displayName) setGithubDisplayName(c.githubSettings.displayName);
       }
       if (c.completionsModel) _completionsModel = c.completionsModel;
+      if (c.vsLegacyModel) _vsLegacyModel = c.vsLegacyModel;
       if (typeof c.supermavenEnabled === "boolean") {
         _supermavenEnabled = c.supermavenEnabled;
         setSupermavenEnabled(_supermavenEnabled);
@@ -1139,12 +1140,8 @@ function loadConfig() {
       }
       if (c.disabledModels && typeof c.disabledModels === "object") {
         for (const [tag, ids] of Object.entries(c.disabledModels as Record<string, string[]>)) {
-          if (Array.isArray(ids)) for (const id of ids) _modelStates[migrateModelId(id as string)] = false;
+          if (Array.isArray(ids)) for (const id of ids) _modelStates[id as string] = false;
         }
-      }
-      // Migrate umans.enabledModels to new format
-      if (_umansState.enabledModels && Array.isArray(_umansState.enabledModels)) {
-        _umansState.enabledModels = _umansState.enabledModels.map((id: string) => migrateModelId(id));
       }
       console.log(`[CONFIG] loaded from ${p}: ${_activeProviders.length} providers, ${Object.keys(_modelStates).length} model states`);
     } else {
@@ -1169,6 +1166,7 @@ function saveConfig() {
     existing.codestralKey = _codestralApiKey;
     existing.providers = _activeProviders;
     existing.completionsModel = _completionsModel;
+    existing.vsLegacyModel = _vsLegacyModel;
     existing.supermavenEnabled = _supermavenEnabled;
     existing.locale = getForcedLocale();
     existing.githubSettings = { skuMode: getGithubSku(), username: getGithubUsername(), displayName: getGithubDisplayName() };
@@ -1243,13 +1241,13 @@ function getDisplayNameOverride(id: string): string | null {
 function formatModelName(id: string): string {
   const override = getDisplayNameOverride(id);
   if (override) return override;
-  if (id.startsWith("umans:")) {
+  if (id.startsWith("umans-")) {
     const name = getUmansModelDisplayName(id);
     return name;
   }
-  const isFreebuff = id.startsWith("freebuff:");
+  const isFreebuff = id.startsWith("freebuff/");
   const limTag = isFreebuff && getFreebuffModelPremium(id) ? " [LIM]" : "";
-  const parts = getModelDisplayName(id.includes(":") ? id.split(":").slice(1).join(":") : id);
+  const parts = getModelDisplayName(id.includes("/") ? id.split("/").pop() || id : id);
   const l = id.toLowerCase();
   const hasThinking = !isFreebuff && (l.includes("deepseek-v4") || (l.includes("mimo") && !l.includes("glm") && !l.includes("kimi") && !l.includes("minimax") && !l.includes("qwen")));
   if (!hasThinking) return `${limTag} ${parts}`.trim();
@@ -1261,9 +1259,9 @@ function formatModelName(id: string): string {
 function getAgnesModels(): any[] {
   const modelIds = getModelIds();
   return modelIds.map((id: string) => {
-    const isFreebuff = id.startsWith("freebuff:");
-    const isAgnes = id.startsWith("agnes:");
-    const isCodestral = id.startsWith("codestral:");
+    const isFreebuff = id.startsWith("freebuff/");
+    const isAgnes = id.startsWith("agnes");
+    const isCodestral = id.startsWith("codestral/");
     const family = getModelFamily(id);
     const providerTag = getModelProviderTag(id);
     return {
@@ -1283,8 +1281,8 @@ function getModels(): any[] {
 
   const activeTags = activeModelTags();
   return modelIds.filter((id: string) => activeTags.has(getModelProviderTag(id))).map((id: string) => {
-    const isFreebuff = id.startsWith("freebuff:");
-    const isAgnes = id.startsWith("agnes:");
+    const isFreebuff = id.startsWith("freebuff/");
+    const isAgnes = id.startsWith("agnes");
     const family = getModelFamily(id);
     const providerTag = getModelProviderTag(id);
     const needsKey = isAgnes ? !hasAgnes : false;

@@ -80,7 +80,7 @@ export function detectSessionSignal(messages: any[]): { sessNum: number; keyIdx:
   return { sessNum: newEntry.sessNum, keyIdx: newEntry.keyIdx, keyLabel, sessionLabel };
 }
 
-export { getModelProviderTag, stripProviderPrefix };
+export { getModelProviderTag };
 
 // ── No-op model init (OC-GO removed) ──
 //

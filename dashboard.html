@@ -176,12 +176,19 @@
     #completionsModelSelect::-webkit-scrollbar-track { background: rgba(255,255,255,0.04); border-radius: 3px; }
     #completionsModelSelect::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.35) !important; border-radius: 3px; }
     #completionsModelSelect::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.45) !important; }
-    #completionsModelSelect::-webkit-scrollbar-button { display: none; }
-    #completionsModelSelect {
+#completionsModelSelect::-webkit-scrollbar-button { display: none; }
+#completionsModelSelect {
+#vsLegacyModelSelect::-webkit-scrollbar { width: 6px; }
+#vsLegacyModelSelect::-webkit-scrollbar-track { background: rgba(255,255,255,0.04); border-radius: 3px; }
+#vsLegacyModelSelect::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.35) !important; border-radius: 3px; }
+#vsLegacyModelSelect::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.45) !important; }
+#vsLegacyModelSelect::-webkit-scrollbar-button { display: none; }
+#vsLegacyModelSelect {
       scrollbar-width: thin;
       scrollbar-color: rgba(255,255,255,0.35) rgba(255,255,255,0.04);
     }
     #completionsModelSelect option { background: #1a1d23; color: white; }
+    #vsLegacyModelSelect option { background: #1a1d23; color: white; }
     .test-chat-body {
       padding: 8px;
       position: relative;
@@ -589,8 +596,8 @@
                     <label class="form-check-label" for="prov-codestral"><i class="bi bi-code-slash me-1"></i><span data-i18n="provider_codestral">CODESTRAL</span></label>
                   </div>
                   <div class="form-check">
-                    <input class="form-check-input provider-cb" type="checkbox" id="prov-other" value="other">
-                    <label class="form-check-label" for="prov-other"><i class="bi bi-cpu me-1"></i><span data-i18n="provider_other">OTHER</span></label>
+                    <input class="form-check-input provider-cb" type="checkbox" id="prov-bitnet" value="bitnet">
+                    <label class="form-check-label" for="prov-bitnet"><i class="bi bi-cpu me-1"></i><span data-i18n="provider_bitnet">BITNET</span></label>
                   </div>
 
                 </div>
@@ -602,9 +609,9 @@
                   <label class="form-check-label" for="umansVisionHandoffEnabled" style="color:rgba(255,255,255,0.9);cursor:pointer;font-size:12px" data-i18n="vision_handoff_enable">Enable — delegate image analysis to a vision-capable model</label>
                 </div>
                 <div class="test-chat-model-wrap mb-2" style="width:100%;max-width:none">
-                  <label class="test-chat-model-label" id="umansVisionHandoffModelLabel" tabindex="0">umans:kimi-k2.7</label>
+                  <label class="test-chat-model-label" id="umansVisionHandoffModelLabel" tabindex="0">umans-kimi-k2.7</label>
                   <select class="test-chat-model-select" id="umansVisionHandoffModelSelect" onchange="saveUmansVisionHandoff()">
-                    <option value="umans:kimi-k2.7">umans:kimi-k2.7</option>
+                    <option value="umans-kimi-k2.7">umans-kimi-k2.7</option>
                   </select>
                 </div>
                 <div style="font-size:10px;color:rgba(255,255,255,0.4)">Models with <code>supports_vision: "via-handoff"</code> (e.g. GLM 5.2) send images here for description, then receive text. Native Anthropic pass-through applies the handoff too.</div>
@@ -653,6 +660,18 @@
                 <div style="font-size:10px;color:rgba(255,255,255,0.4)">
                   <span id="supermavenEnabledNote">Supermaven uses <code>sm-agent</code> binary from VSCode for free code completions (~515 tokens/sec). Enable to intercept <code>/completions</code> calls.</span>
                 </div>
+              </div>
+              <div class="mb-3" id="vsLegacyModelSection">
+                <label class="form-label" style="font-size:11px;color:rgba(255,255,255,0.7)">
+                  <i class="bi bi-window-stack me-1"></i>VS Legacy Model (VS 2022 / 17.x)
+                </label>
+                <div class="test-chat-model-wrap mb-2" style="width:100%;max-width:none">
+                  <label class="test-chat-model-label" id="vsLegacyModelLabel" tabindex="0">— auto —</label>
+                  <select class="test-chat-model-select" id="vsLegacyModelSelect" onchange="saveVsLegacyModel()">
+                    <option value="">— auto —</option>
+                  </select>
+                </div>
+                <div style="font-size:10px;color:rgba(255,255,255,0.4)">Model used for VS 2022 (17.x) chat. When set, VS-family chat/model endpoints are intercepted even in Proxy mode. Required for VS22 chat to work.</div>
               </div>
             </div>
           </div>
@@ -1214,6 +1233,10 @@
         _completionsModel = data.completionsModel;
         populateCompletionsDropdown();
       }
+      if (data.vsLegacyModel !== undefined) {
+        _vsLegacyModel = data.vsLegacyModel;
+        populateVsLegacyDropdown();
+      }
       if (data.supermaven) {
         _supermavenEnabled = data.supermaven.enabled || false;
         const cb = document.getElementById('supermavenEnabled');
@@ -1268,6 +1291,10 @@
       if (data.completionsModel !== undefined) {
         _completionsModel = data.completionsModel;
         populateCompletionsDropdown();
+      }
+      if (data.vsLegacyModel !== undefined) {
+        _vsLegacyModel = data.vsLegacyModel;
+        populateVsLegacyDropdown();
       }
       if (data.supermaven) {
         _supermavenEnabled = data.supermaven.enabled || false;
@@ -1548,11 +1575,12 @@
         updateStats();
         populateTestChatModelSelect();
         populateCompletionsDropdown();
+        populateVsLegacyDropdown();
         return;
       }
       const enaModels = models.filter(m => m.enabled !== false && m.locked !== true).length;
       document.getElementById('modelCountBadge').textContent = enaModels + ' / ' + models.length;
-      const _provToTag = { umans: 'umans', freebuff: 'freebuff', agnes: 'agnes', other: 'other', codestral: 'codestral' };
+      const _provToTag = { umans: 'umans', freebuff: 'freebuff', agnes: 'agnes', bitnet: 'bitnet', codestral: 'codestral' };
       const activeTags = new Set(_activeProviders.map(p => _provToTag[p] || p));
       const groups = {};
       models.forEach((m, idx) => {
@@ -1565,7 +1593,7 @@
         { name: '[🇫🇷ᴇᴇ] FreeBuff:', tags: ['freebuff'] },
         { name: '💜 AgnesAI:', tags: ['agnes'], controlTag: 'agnes', checkKey: true },
         { name: 'Codestral:', tags: ['codestral'], prefix: '🔷' },
-        { name: 'Others:', tags: ['other'], prefix: '⚙️', defaultHidden: true },
+        { name: 'Others:', tags: ['bitnet', 'go'], prefix: '⚙️', defaultHidden: true },
       ];
       container.innerHTML = providerGroups.map(group => {
         const allItems = group.tags.reduce((acc, tag) => {
@@ -1602,6 +1630,7 @@
       updateStats();
       populateTestChatModelSelect();
       populateCompletionsDropdown();
+      populateVsLegacyDropdown();
     }
 
     function toggleModel(modelId) {
@@ -1785,7 +1814,7 @@
         const checked = enabled.has(id) ? ' checked' : '';
         return '<div class="form-check" style="display:inline-block;margin-right:12px;margin-bottom:4px">' +
           '<input class="form-check-input provider-cb" type="checkbox" id="umans-mod-' + escapeHtml(id) + '"' + checked + ' onchange="toggleUmansModel(\'' + escapeHtml(id) + '\', this.checked)" style="transform:scale(0.8);margin-top:3px">' +
-          '<label class="form-check-label" for="umans-mod-' + escapeHtml(id) + '" style="font-size:11px;cursor:pointer" title="' + escapeHtml(id) + '">' + escapeHtml(m.name || id.replace(/^umans:/i, '')) + '</label>' +
+          '<label class="form-check-label" for="umans-mod-' + escapeHtml(id) + '" style="font-size:11px;cursor:pointer" title="' + escapeHtml(id) + '">' + escapeHtml(m.name || id.replace(/^umans-/i, '')) + '</label>' +
           '</div>';
       }).join('');
     }
@@ -1946,7 +1975,7 @@
       const umansIds = ((window._groupedModels && window._groupedModels.umans) ? window._groupedModels.umans : []).map(m => m.id);
       const existing = new Set(Array.from(sel.options).map(o => o.value));
       for (const id of umansIds) { if (!existing.has(id)) { const opt = document.createElement('option'); opt.value = id; opt.textContent = id; sel.appendChild(opt); existing.add(id); } }
-      const cur = (vh && vh.model) || 'umans:kimi-k2.7';
+      const cur = (vh && vh.model) || 'umans-kimi-k2.7';
       cb.checked = vh ? !!vh.enabled : true;
       if (![...sel.options].some(o => o.value === cur)) { const opt = document.createElement('option'); opt.value = cur; opt.textContent = cur; sel.appendChild(opt); }
       sel.value = cur;
@@ -1955,7 +1984,7 @@
 
     function saveUmansVisionHandoff() {
       const enabled = document.getElementById('umansVisionHandoffEnabled')?.checked;
-      const model = document.getElementById('umansVisionHandoffModelSelect')?.value || 'umans:kimi-k2.7';
+      const model = document.getElementById('umansVisionHandoffModelSelect')?.value || 'umans-kimi-k2.7';
       const label = document.getElementById('umansVisionHandoffModelLabel');
       if (label) label.textContent = model;
       wsSend('umansSetVisionHandoff', { enabled, model });
@@ -2222,6 +2251,7 @@
     }
 
     let _completionsModel = '';
+    let _vsLegacyModel = '';
     let _supermavenEnabled = false;
     // ── Supermaven ──
     function toggleSupermaven() {
@@ -2301,6 +2331,51 @@
       syncCompletionsModelLabel();
     }
 
+    function saveVsLegacyModel() {
+      const sel = document.getElementById('vsLegacyModelSelect');
+      _vsLegacyModel = sel ? sel.value : '';
+      wsSend('setVsLegacyModel', { modelId: _vsLegacyModel });
+      syncVsLegacyModelLabel();
+      showToast(_vsLegacyModel ? 'VS Legacy model set' : 'VS legacy model disabled', 'info');
+    }
+    function syncVsLegacyModelLabel() {
+      const sel = document.getElementById('vsLegacyModelSelect');
+      const label = document.getElementById('vsLegacyModelLabel');
+      if (!sel || !label) return;
+      const opt = sel.selectedOptions[0];
+      if (!opt || !opt.value) { label.textContent = '\u2014 auto \u2014'; return; }
+      const name = opt.textContent || '';
+      const m = models.find(x => x.id === opt.value);
+      const pt = m?.providerTag || '';
+      const ptag = TEST_CHAT_PROVIDER_NAMES[pt] || '';
+      label.innerHTML = ptag ? '<span class="provider-tag">' + escapeHtml(ptag) + '</span>' + escapeHtml(name) : escapeHtml(name);
+    }
+    function populateVsLegacyDropdown() {
+      const sel = document.getElementById('vsLegacyModelSelect');
+      if (!sel) return;
+      const currentVal = sel.value;
+      sel.innerHTML = '<option value="">\u2014 auto \u2014</option>';
+      const enaModels = models.filter(m => m.enabled !== false && m.locked !== true);
+      const seen = new Set();
+      for (const m of enaModels) {
+        if (seen.has(m.id)) continue;
+        seen.add(m.id);
+        const opt = document.createElement('option');
+        opt.value = m.id;
+        opt.textContent = m.name || m.id;
+        if (m.id === _vsLegacyModel || m.id === currentVal) opt.selected = true;
+        sel.appendChild(opt);
+      }
+      if (_vsLegacyModel && !seen.has(_vsLegacyModel)) {
+        const opt = document.createElement('option');
+        opt.value = _vsLegacyModel;
+        opt.textContent = _vsLegacyModel + ' (saved)';
+        opt.selected = true;
+        sel.appendChild(opt);
+      }
+      syncVsLegacyModelLabel();
+    }
+
     function usageBarColor(pct) {
       if (pct >= 90) return '#dc3545';
       if (pct >= 70) return '#ffc107';
@@ -2323,7 +2398,7 @@
     function refreshModels() { wsSend('batchModelStates', { states: {} }); showToast('Models refreshed', 'info'); }
     function saveConfiguration() {
       const mode = document.querySelector('.btn-check[name="proxyMode"]:checked')?.value || 'mock';
-      wsSend('saveConfig', { mode, providers: _activeProviders, agnesKey: _agnesKey, codestralKey: _codestralKey, completionsModel: _completionsModel, supermavenEnabled: _supermavenEnabled });
+      wsSend('saveConfig', { mode, providers: _activeProviders, agnesKey: _agnesKey, codestralKey: _codestralKey, completionsModel: _completionsModel, vsLegacyModel: _vsLegacyModel, supermavenEnabled: _supermavenEnabled });
       showToast('Configuration saved', 'success');
     }
 
@@ -2514,7 +2589,7 @@
       const sel = document.getElementById('testChatModelSelect');
       if (!sel) return;
       const currentVal = sel.value;
-      const _provToTag = { umans: 'umans', freebuff: 'freebuff', agnes: 'agnes', other: 'other', codestral: 'codestral' };
+      const _provToTag = { umans: 'umans', freebuff: 'freebuff', agnes: 'agnes', bitnet: 'bitnet', codestral: 'codestral' };
        const activeTags = new Set(_activeProviders.map(p => _provToTag[p] || p));
       const visibleModels = models.filter(m => activeTags.has(m.providerTag || 'umans') && m.enabled !== false);
       if (visibleModels.length === 0) {
@@ -2528,7 +2603,7 @@
         if (!groups[pt]) groups[pt] = [];
         groups[pt].push(m);
       });
-      const providerOrder = ['umans', 'agnes', 'freebuff', 'other', 'codestral'];
+      const providerOrder = ['umans', 'agnes', 'freebuff', 'bitnet', 'codestral'];
       let html = '';
       for (const pt of providerOrder) {
         if (!groups[pt]) continue;

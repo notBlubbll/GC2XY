@@ -51,22 +51,28 @@ import { handleVSModels, VS_MODELS } from "./models.ts";
 import { recordTps, reqLog, agentTag } from "../../split-console.ts";
 import { trackRequest } from "../../usage-tracker.ts";
 import { appendFileSync } from "node:fs";
+import { getVsLegacyModel } from "../dashboard-handler.ts";
 import { getProjectRoot } from "../../shared.ts";
 import { anthropicToOpenAIRequest } from "../anthropic-bridge.ts";
 import { filterModelsByConfig } from "../../shared.ts";
 
 function isProviderRouted(model: string): boolean {
-  const tag = getModelProviderTag(model);
-  return tag !== "unknown";
+  if (model.startsWith("freebuff/")) return true;
+  if (model.startsWith("agnes")) return true;
+  if (model.startsWith("codestral/") || model.startsWith("mistral-")) return true;
+  if (model === "bitnet-demo" || model.startsWith("bitnet/")) return true;
+  if (model.startsWith("umans-") || getModelProviderTag(model) === "umans") return true;
+  if (model.startsWith("pol/")) return true;
+  if (model.startsWith("openrouter/")) return true;
+  return false;
 }
 
 function routeChat(model: string, messages: any[], tools: any[] | undefined, stream: boolean, extra: Record<string, any>, session?: { keyIdx?: number; sessionLabel?: string }): Promise<Response> {
-  const tag = getModelProviderTag(model);
-  if (tag === "freebuff") return freebuffChat(model, messages, tools, stream, { max_tokens: extra.max_tokens, temperature: extra.temperature, top_p: extra.top_p, ...extra });
-  if (tag === "agnes") return agnesChat(model, messages, tools, stream, { ...extra });
-  if (tag === "codestral") return codestralChat(model, messages, tools, stream, { max_tokens: extra.max_tokens, temperature: extra.temperature, top_p: extra.top_p });
-  if (tag === "other") return bitnetChat(model, messages, tools, stream, { max_tokens: extra.max_tokens, ...extra });
-  if (tag === "umans") return umansChat(model, messages, tools, stream, { ...extra });
+  if (model.startsWith("freebuff/")) return freebuffChat(model, messages, tools, stream, { max_tokens: extra.max_tokens, temperature: extra.temperature, top_p: extra.top_p, ...extra });
+  if (model.startsWith("agnes")) return agnesChat(model, messages, tools, stream, { ...extra });
+  if (model.startsWith("codestral/") || model.startsWith("mistral-")) return codestralChat(model, messages, tools, stream, { max_tokens: extra.max_tokens, temperature: extra.temperature, top_p: extra.top_p });
+  if (model === "bitnet-demo" || model.startsWith("bitnet/")) return bitnetChat(model, messages, tools, stream, { max_tokens: extra.max_tokens, ...extra });
+  if (model.startsWith("umans-") || getModelProviderTag(model) === "umans") return umansChat(model, messages, tools, stream, { ...extra });
   // OC-GO upstream removed — unknown/unprefixed models are rejected.
   return openAIChat(model, messages, tools, stream, extra, session?.keyIdx, session?.sessionLabel);
 }
@@ -81,6 +87,9 @@ function normalizeModelIdVs(model: string): string {
 
 async function resolveActiveChatModel(model: string): Promise<string> {
   const normalized = normalizeModelIdVs(model);
+  // VS 2022 (17.x) legacy: always use the configured legacy model when set
+  const legacyModel = getVsLegacyModel();
+  if (legacyModel) return legacyModel;
   if (isProviderRouted(normalized)) return normalized;
   // model is unknown / not among configured providers → pick a real default
   try {
@@ -365,7 +374,7 @@ function modelSupports(id: string): any {
   if (isChat) base.structured_outputs = true;
   if (isChat) base.vision = true;
   const supportsDeepThink = l.includes("deepseek") || l.includes("claude") || l.includes("mimo") ||
-    l.includes("codex") || (l.match(/gpt-?5/) && !l.includes("mini")) || l.includes("big-pickle") || l.startsWith("umans:");
+    l.includes("codex") || (l.match(/gpt-?5/) && !l.includes("mini")) || l.includes("big-pickle") || l.startsWith("umans-");
   if (supportsDeepThink) {
     base.adaptive_thinking = true;
     base.min_thinking_budget = 1024;
@@ -374,7 +383,7 @@ function modelSupports(id: string): any {
   if (l.includes("deepseek-v4")) {
     base.reasoning_effort = ["low", "medium", "high", "xhigh"];
   }
-  if ((l.includes("mimo") && !supportsDeepThink) || l.startsWith("umans:")) {
+  if ((l.includes("mimo") && !supportsDeepThink) || l.startsWith("umans-")) {
     base.reasoning_effort = ["low", "medium", "high"];
   }
   return base;
@@ -392,7 +401,7 @@ function modelLimits(id: string): any {
     limits.max_context_window_tokens = 400000; limits.max_output_tokens = 128000; limits.max_prompt_tokens = 272000; limits.max_non_streaming_output_tokens = 32000;
   } else if (l.includes("gpt-5-mini") || l.includes("gpt-5.4-mini") || l.includes("gpt-5.4-nano") || l.includes("gpt-5-nano")) {
     limits.max_context_window_tokens = 264000; limits.max_output_tokens = 64000; limits.max_prompt_tokens = 128000; limits.max_non_streaming_output_tokens = 16000;
-  } else if (l.startsWith("umans:")) {
+  } else if (l.startsWith("umans-")) {
     limits.max_context_window_tokens = 256000; limits.max_output_tokens = 64000; limits.max_prompt_tokens = 200000; limits.max_non_streaming_output_tokens = 16000;
   } else {
     limits.max_context_window_tokens = 128000; limits.max_output_tokens = 16384; limits.max_prompt_tokens = 64000; limits.max_non_streaming_output_tokens = 4096;
@@ -470,7 +479,8 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
   const { method, url, body, headers } = req;
 
   const editorVersion = headers["editor-version"] || "";
-  const isVisualStudio = editorVersion.startsWith("VS/VisualStudio");
+  const ua = (headers["user-agent"] || "").toLowerCase();
+  const isVisualStudio = editorVersion.startsWith("VS/VisualStudio") || /^VS\/\d/.test(editorVersion) || editorVersion.startsWith("VS/SSMS") || ua.includes("vsteamexplorer");
 
   if (!isVisualStudio) return { handled: false };
 
@@ -583,7 +593,7 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
       // a UMANS model we skip the anthropic-bridge translation entirely and
       // forward the Anthropic payload directly. The response is already in
       // Anthropic SSE/JSON format — no OpenAI→Anthropic conversion needed.
-      if (getModelProviderTag(model) === "umans") {
+      if (model.startsWith("umans-") || getModelProviderTag(model) === "umans") {
         const vsTag = agentTag(headers);
         const _lastUser = [...(parsed.messages || [])].reverse().find((m: any) => m.role === "user");
         const _preview = _lastUser ? safePreviewFromContent(_lastUser.content) : "";
@@ -638,7 +648,7 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
 
       const lastUserMsg = [...bridge.messages].reverse().find((m: any) => m.role === "user");
       const vsTag = agentTag(headers);
-      const vsProvider = getModelProviderTag(model);
+      const vsProvider = model.startsWith("umans-") ? "umans" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "unknown";
       const messagesPreview = lastUserMsg ? safePreviewFromContent(lastUserMsg.content) : "";
       const messagesComplete = reqLog({ tag: vsTag, provider: vsProvider, model, preview: messagesPreview, body: parsed });
 
@@ -1062,7 +1072,7 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
       }
 
       const vsTag = agentTag(headers);
-      const vsProvider = getModelProviderTag(model);
+      const vsProvider = model.startsWith("umans-") ? "umans" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "unknown";
 
       const lastPreview = [...cleanMessages].reverse().find((m: any) => m.role === "user");
       const messagesPreview = lastPreview ? safePreviewFromContent(lastPreview.content) : "";
@@ -1358,7 +1368,7 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
     try {
       const vsTag = agentTag(headers);
       const lastUserMsg = [...chatMessages].reverse().find((m: any) => m.role === "user");
-      const vsProvider = getModelProviderTag(model);
+      const vsProvider = model.startsWith("umans-") ? "umans" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "unknown";
 
       const chatExtras: Record<string, any> = { max_tokens: maxTokens };
       if (parsed.reasoning) chatExtras.reasoning = parsed.reasoning;
@@ -1487,6 +1497,52 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
   // POST /models - VS model list
   const vsModelsResult = await handleVSModels(req);
   if (vsModelsResult.handled) return vsModelsResult;
+
+  // POST /models/session or /v1/models/session — VS 2022 (17.x) auto model resolution
+  // VS 2022 calls GetNewAutoModelAsync which POSTs to /models/session to get a
+  // "model session token" before sending the actual chat request. Real GitHub
+  // may not support this older flow → return a fake session with the legacy model.
+  if (method === "POST" && (url === "/models/session" || url === "/v1/models/session" || url.startsWith("/models/session?") || url.startsWith("/v1/models/session?"))) {
+    const legacyModel = getVsLegacyModel() || "umans-kimi-k2.7";
+    const now = Math.floor(Date.now() / 1000);
+    const sessionId = `sess-${forge.util.bytesToHex(forge.random.getBytesSync(8))}`;
+    const tokenPayload = JSON.stringify({ sub: forge.util.bytesToHex(forge.random.getBytesSync(20)), iat: now, exp: now + 3600 });
+    const sessionToken = `eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.${Buffer.from(tokenPayload).toString("base64url")}.${forge.util.bytesToHex(forge.random.getBytesSync(32))}`;
+    return { handled: true, response: jsonResponse({
+      available_models: [legacyModel],
+      selected_model: legacyModel,
+      session_token: sessionToken,
+      session_id: sessionId,
+      id: sessionId,
+      expires_at: now + 3600,
+    }) };
+  }
+
+  // GET /embeddings/models — embedding model list (VS 2022 queries this)
+  if (method === "GET" && (url === "/embeddings/models" || url.startsWith("/embeddings/models?"))) {
+    return { handled: true, response: jsonResponse({ data: [] }) };
+  }
+
+  // POST /v1/embeddings or /embeddings — VS 2022 builds embedding vectors for
+  // suggested actions. Must return one vector per input element.
+  if (method === "POST" && (url.includes("/embeddings") || url.includes("/v1/embeddings"))) {
+    let parsed: any = {};
+    try { parsed = JSON.parse(body?.toString() || "{}"); } catch {}
+    const input = parsed.input || "";
+    const inputCount = Array.isArray(input) ? input.length : 1;
+    const dims = 1536;
+    const data = Array.from({ length: inputCount }, (_, i) => ({
+      object: "embedding",
+      index: i,
+      embedding: Array.from({ length: dims }, () => (Math.random() * 2 - 1) * 0.01),
+    }));
+    return { handled: true, response: jsonResponse({
+      object: "list",
+      data,
+      model: "text-embedding-3-small",
+      usage: { prompt_tokens: inputCount * 2, total_tokens: inputCount * 2 },
+    }) };
+  }
 
   // Never swallow OAuth/auth routes with the catch-all mock — returning
   // {"ok":true,"message":"VS mock response"} (no access_token) breaks the

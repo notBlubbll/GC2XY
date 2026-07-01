@@ -13,14 +13,21 @@ import { getModelIds as getBitnetIds } from "./handlers/bitnet-client.ts";
 import { initModels as initUmans, getModelIds as getUmansIds } from "./handlers/umans-client.ts";
 
 export async function addModels(): Promise<string[]> {
-  const [fbIds, agnesIds, codestralIds, umansIds] = await Promise.all([
+  const results = await Promise.allSettled([
     initFreebuffModels(),
     initAgnes(),
     initCodestral(),
     initUmans(),
   ]);
 
+  const fbIds = results[0].status === "fulfilled" ? results[0].value : [];
+  const agnesIds = results[1].status === "fulfilled" ? results[1].value : [];
+  const codestralIds = results[2].status === "fulfilled" ? results[2].value : [];
+  const umansIds = results[3].status === "fulfilled" ? results[3].value : [];
+
   const all = [...new Set([...fbIds, ...agnesIds, ...codestralIds, ...getBitnetIds(), ...umansIds])];
+  if (all.length === 0) console.log("[MODELS] WARNING: all providers returned empty!");
+  else console.log(`[MODELS] ${all.length} models: ${all.slice(0, 8).join(", ")}${all.length > 8 ? "..." : ""}`);
   setModelsList(all);
   return all;
 }

@@ -44,17 +44,22 @@ export function isSSMS(headers: Record<string, string>): boolean {
 }
 
 function isProviderRouted(model: string): boolean {
-  const tag = getModelProviderTag(model);
-  return tag !== "unknown";
+  if (model.startsWith("freebuff/")) return true;
+  if (model.startsWith("agnes")) return true;
+  if (model.startsWith("codestral/") || model.startsWith("mistral-")) return true;
+  if (model === "bitnet-demo" || model.startsWith("bitnet/")) return true;
+  if (model.startsWith("umans-") || getModelProviderTag(model) === "umans") return true;
+  if (model.startsWith("pol/")) return true;
+  if (model.startsWith("openrouter/")) return true;
+  return false;
 }
 
 function routeChat(model: string, messages: any[], tools: any[] | undefined, stream: boolean, extra: Record<string, any>, session?: { keyIdx?: number; sessionLabel?: string }): Promise<Response> {
-  const tag = getModelProviderTag(model);
-  if (tag === "freebuff") return freebuffChat(model, messages, tools, stream, { max_tokens: extra.max_tokens, temperature: extra.temperature, top_p: extra.top_p, ...extra });
-  if (tag === "agnes") return agnesChat(model, messages, tools, stream, { ...extra });
-  if (tag === "codestral") return codestralChat(model, messages, tools, stream, { max_tokens: extra.max_tokens, temperature: extra.temperature, top_p: extra.top_p });
-  if (tag === "other") return bitnetChat(model, messages, tools, stream, { max_tokens: extra.max_tokens, ...extra });
-  if (tag === "umans") return umansChat(model, messages, tools, stream, { ...extra });
+  if (model.startsWith("freebuff/")) return freebuffChat(model, messages, tools, stream, { max_tokens: extra.max_tokens, temperature: extra.temperature, top_p: extra.top_p, ...extra });
+  if (model.startsWith("agnes")) return agnesChat(model, messages, tools, stream, { ...extra });
+  if (model.startsWith("codestral/") || model.startsWith("mistral-")) return codestralChat(model, messages, tools, stream, { max_tokens: extra.max_tokens, temperature: extra.temperature, top_p: extra.top_p });
+  if (model === "bitnet-demo" || model.startsWith("bitnet/")) return bitnetChat(model, messages, tools, stream, { max_tokens: extra.max_tokens, ...extra });
+  if (model.startsWith("umans-") || getModelProviderTag(model) === "umans") return umansChat(model, messages, tools, stream, { ...extra });
   // OC-GO upstream removed — unknown/unprefixed models are rejected.
   return openAIChat(model, messages, tools, stream, extra, session?.keyIdx, session?.sessionLabel);
 }
@@ -138,7 +143,7 @@ async function handleSSMSChatCompletions(req: HandlerInput): Promise<HandlerResu
 
   const session = detectSessionSignal(chatMessages);
   const vsTag = agentTag(headers);
-  const vsProvider = getModelProviderTag(model);
+  const vsProvider = model.startsWith("umans-") ? "umans" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "unknown";
   const completeLog = reqLog({ tag: vsTag, provider: vsProvider, model, preview: extractUserPrompt(chatMessages), body: parsed });
 
   // Build extras

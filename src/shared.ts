@@ -338,6 +338,45 @@ export function jsonResponse(body: Record<string, any>, status = 200): HttpRespo
   };
 }
 
+/**
+ * GitHub API JSON response — includes the standard OAuth/rate-limit headers
+ * that Octokit.net (VS Team Explorer) checks to verify token validity.
+ * Without x-oauth-scopes, VS reports "User is not signed into GitHub".
+ */
+export function ghApiJsonResponse(body: Record<string, any>, status = 200, extra: Record<string, string> = {}): HttpResponse {
+  const now = Math.floor(Date.now() / 1000);
+  const reset = now + 3600;
+  return {
+    statusCode: status,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "private, max-age=60, s-maxage=60",
+      "access-control-allow-origin": "*",
+      "access-control-expose-headers": "ETag, Link, Location, Retry-After, X-GitHub-OTP, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Used, X-RateLimit-Resource, X-RateLimit-Reset, X-OAuth-Scopes, X-Accepted-OAuth-Scopes, X-Poll-Interval, X-GitHub-Media-Type, X-GitHub-SSO, X-GitHub-Request-Id, Deprecation, Sunset, Warning",
+      "x-oauth-scopes": "gist, read:org, repo, user, workflow, write:public_key",
+      "x-oauth-client-id": "a200baed193bb2088a6e",
+      "x-accepted-oauth-scopes": "",
+      "x-github-media-type": "github.v3; format=json",
+      "x-github-api-version-selected": "2022-11-28",
+      "x-ratelimit-limit": "5000",
+      "x-ratelimit-remaining": "4999",
+      "x-ratelimit-reset": String(reset),
+      "x-ratelimit-used": "1",
+      "x-ratelimit-resource": "core",
+      "x-github-request-id": `MITM:${Date.now().toString(16)}`,
+      "strict-transport-security": "max-age=31536000; includeSubdomains; preload",
+      "x-frame-options": "deny",
+      "x-content-type-options": "nosniff",
+      "x-xss-protection": "0",
+      "referrer-policy": "origin-when-cross-origin, strict-origin-when-cross-origin",
+      "content-security-policy": "default-src 'none'",
+      "server": "github.com",
+      ...extra,
+    },
+    body: Buffer.from(JSON.stringify(body)),
+  };
+}
+
 export function htmlResponse(html: string, status = 200): HttpResponse {
   return {
     statusCode: status,
@@ -493,22 +532,18 @@ export function killPortProcess(port: number): void {
 }
 
 export function getModelProviderTag(modelId: string): string {
-  if (modelId.startsWith("umans:")) return "umans";
-  if (modelId.startsWith("freebuff:")) return "freebuff";
-  if (modelId.startsWith("agnes:")) return "agnes";
-  if (modelId.startsWith("codestral:")) return "codestral";
-  if (modelId.startsWith("other:")) return "other";
+  if (modelId.startsWith("umans-")) return "umans";
+  if (modelId.startsWith("freebuff/")) return "freebuff";
+  if (modelId.startsWith("openrouter/")) return "openrouter";
+  if (modelId.startsWith("agnes")) return "agnes";
+  if (modelId.startsWith("codestral")) return "codestral";
+  if (modelId.startsWith("bitnet/") || modelId === "bitnet-demo") return "bitnet";
+  if (modelId.endsWith("-free") || modelId === "big-pickle" || modelId === "nemotron-3-super-free" || modelId === "ring-2.6-1t-free") return "zen";
   return "unknown";
 }
 
-export function stripProviderPrefix(modelId: string): string {
-  const idx = modelId.indexOf(":");
-  if (idx < 0) return modelId;
-  return modelId.slice(idx + 1);
-}
-
 export function filterModelsByConfig(modelIds: string[]): string[] {
-  const PROVIDER_MAP: Record<string, string> = { freebuff: "freebuff", agnes: "agnes", codestral: "codestral", other: "other", umans: "umans" };
+  const PROVIDER_MAP: Record<string, string> = { freebuff: "freebuff", agnes: "agnes", codestral: "codestral", bitnet: "bitnet", umans: "umans", openrouter: "openrouter", zen: "zen" };
   try {
     const cp = join(getProjectRoot(), ".config", "config.json");
     if (existsSync(cp)) {

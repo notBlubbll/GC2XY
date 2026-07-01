@@ -6,7 +6,7 @@ import { chatCompletion as openAIChat, storeReasoning, getModelCtx, modelHasVisi
 import { chatCompletion as freebuffChat, getFreebuffModelPremium } from "./freebuff-client.ts";
 import { chatCompletion as agnesChat } from "./agnes-client.ts";
 import { getCompletionsModel } from "./dashboard-handler.ts";
-import { completions as codestralFim, chatCompletion as codestralChat } from "./codestral-client.ts";
+import { completions as codestralFim } from "./codestral-client.ts";
 import { chatCompletion as bitnetChat } from "./bitnet-client.ts";
 import { chatCompletion as umansChat, anthropicChatCompletion as umansAnthropicChat } from "./umans-client.ts";
 import { isSupermavenEnabled, isSupermavenReady, supermavenCodeComplete } from "./supermaven-client.ts";
@@ -18,17 +18,22 @@ import { anthropicToOpenAIRequest } from "./anthropic-bridge.ts";
 import { ensureVSModels, VS_MODELS, detectVendor } from "./vs/models.ts";
 
 function isProviderRouted(model: string): boolean {
-  const tag = getModelProviderTag(model);
-  return tag !== "unknown";
+  if (model.startsWith("freebuff/")) return true;
+  if (model.startsWith("agnes")) return true;
+  if (model.startsWith("codestral/") || model.startsWith("mistral-")) return true;
+  if (model === "bitnet-demo" || model.startsWith("bitnet/")) return true;
+  if (model.startsWith("umans-") || getModelProviderTag(model) === "umans") return true;
+  if (model.startsWith("pol/")) return true;
+  if (model.startsWith("openrouter/")) return true;
+  return false;
 }
 
 function routeChat(model: string, messages: any[], tools: any[] | undefined, stream: boolean, extra: Record<string, any>, session?: { keyIdx?: number; sessionLabel?: string }): Promise<Response> {
-  const tag = getModelProviderTag(model);
-  if (tag === "freebuff") return freebuffChat(model, messages, tools, stream, { max_tokens: extra.max_tokens, temperature: extra.temperature, top_p: extra.top_p, ...extra });
-  if (tag === "agnes") return agnesChat(model, messages, tools, stream, { ...extra });
-  if (tag === "codestral") return codestralChat(model, messages, tools, stream, { max_tokens: extra.max_tokens, temperature: extra.temperature, top_p: extra.top_p });
-  if (tag === "other") return bitnetChat(model, messages, tools, stream, { max_tokens: extra.max_tokens, temperature: extra.temperature, top_p: extra.top_p });
-  if (tag === "umans") return umansChat(model, messages, tools, stream, { ...extra });
+  if (model.startsWith("freebuff/")) return freebuffChat(model, messages, tools, stream, { max_tokens: extra.max_tokens, temperature: extra.temperature, top_p: extra.top_p, ...extra });
+  if (model.startsWith("agnes")) return agnesChat(model, messages, tools, stream, { ...extra });
+  if (model.startsWith("codestral/") || model.startsWith("mistral-")) return codestralChat(model, messages, tools, stream, { max_tokens: extra.max_tokens, temperature: extra.temperature, top_p: extra.top_p });
+  if (model === "bitnet-demo" || model.startsWith("bitnet/")) return bitnetChat(model, messages, tools, stream, { max_tokens: extra.max_tokens, temperature: extra.temperature, top_p: extra.top_p });
+  if (model.startsWith("umans-") || getModelProviderTag(model) === "umans") return umansChat(model, messages, tools, stream, { ...extra });
   // OC-GO upstream removed — unknown/unprefixed models are rejected.
   return openAIChat(model, messages, tools, stream, extra, session?.keyIdx, session?.sessionLabel);
 }
@@ -300,7 +305,7 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
     const lastUserMsg = [...messages].reverse().find((m: any) => m.role === "user");
     const queryPreview = lastUserMsg ? safePreviewFromContent(lastUserMsg.content) : "";
     const tag = agentTag(headers);
-    const provider = getModelProviderTag(model);
+    const provider = model.startsWith("umans-") ? "umans" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "unknown";
     const completeLog = reqLog({ tag, provider, model, preview: queryPreview, body: parsed });
     const startTime = Date.now();
 
@@ -370,7 +375,7 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
       // ── Native UMANS Anthropic pass-through ───────────────────────────
       // UMANS upstream natively supports /messages, so skip the anthropic-bridge
       // and forward the Anthropic payload directly when the routed model is UMANS.
-      if (getModelProviderTag(model) === "umans") {
+      if (model.startsWith("umans-") || getModelProviderTag(model) === "umans") {
         const resp = await umansAnthropicChat(parsed);
         const respCt = resp.headers.get("content-type") || (isStream ? "text/event-stream" : "application/json");
         console.log(`[COPILOT /v1/messages] native-umans req=${model} status=${resp.status} ct=${respCt}`);
@@ -731,7 +736,7 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
     const lastUserMsg = [...messages].reverse().find((m: any) => m.role === "user");
     const chatPreview = lastUserMsg ? safePreviewFromContent(lastUserMsg.content) : "";
     const tag = agentTag(headers);
-    const provider = getModelProviderTag(model);
+    const provider = model.startsWith("umans-") ? "umans" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "unknown";
     const completeLog = reqLog({ tag, provider, model, preview: chatPreview, body: parsed });
     const startTime = Date.now();
 
@@ -1084,7 +1089,7 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
     ];
 
     const tag = agentTag(headers);
-    const provider = getModelProviderTag(model);
+    const provider = model.startsWith("umans-") ? "umans" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "unknown";
     const completeLog = reqLog({ tag, provider, model, preview: userContent, body: parsed });
     const startTime = Date.now();
 

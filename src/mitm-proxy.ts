@@ -12,12 +12,13 @@ import * as recorder from "./commands.ts";
 
 let _trafficLoggingEnabled = process.env.RECORD_MODE === "1";
 import * as deviceLogin from "./handlers/device-login-emulator.ts";
+import { isVSLegacyClient } from "./handlers/vs-legacy/index.ts";
 import * as offlineStore from "./offline-store.ts";
 import * as splitConsole from "./split-console.ts";
 import { ts, agentTag, agentName, colorMethod, colorStatus, httpLogLine, generalLogLine, getTps, isDebug } from "./split-console.ts";
 import { getProjectRoot, getMode, setMode, isProxy, isHybrid, isMock, killPortProcess } from "./shared.ts";
 import { addModels } from "./models.ts";
-import { handleDashboard, incrementRequests as dashIncReq, createWsServer, startWsPushLoop } from "./handlers/dashboard-handler.ts";
+import { handleDashboard, incrementRequests as dashIncReq, createWsServer, startWsPushLoop, getVsLegacyModel } from "./handlers/dashboard-handler.ts";
 import { patchSsmsMcpConfigs } from "./mcp-writer.ts";
 
 // Real IP cache to bypass hosts file for non-intercepted requests
@@ -59,7 +60,7 @@ const INTERCEPT_MODE = process.env.INTERCEPT_MODE || "hosts";
 mkdirSync(LOG_DIR, { recursive: true });
 mkdirSync(CERT_DIR, { recursive: true });
 
-
+try { unlinkSync("package-lock.json"); } catch {}
 
 // Logging with datetime + mode suffix
 const modeLogStr = isProxy() ? "PROXY" : isHybrid() ? "hybrid" : "mock";
@@ -579,6 +580,26 @@ addRequestInterceptor(async (req) => {
             headers: result.response.headers,
             body: result.response.body,
           };
+        }
+      }
+    } else {
+      // Proxy mode: intercept ALL VS 2022 (17.x) requests when a VS legacy
+      // model is configured. VS 2022 uses an older API flow that real GitHub
+      // doesn't support (GetNewAutoModelAsync → /models/session → 400 text/plain).
+      const legacyModel = getVsLegacyModel();
+      if (legacyModel && isVSLegacyClient(req.headers)) {
+        const result = await deviceLogin.handleDeviceLogin(handlerInput);
+        if (result.handled && result.response) {
+          if (result.response._streamed) {
+            req._responseSent = true;
+          } else {
+            req.response = {
+              statusCode: result.response.statusCode,
+              statusMessage: result.response.statusMessage || "OK",
+              headers: result.response.headers,
+              body: result.response.body,
+            };
+          }
         }
       }
     }

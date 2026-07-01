@@ -104,16 +104,19 @@ Categorizes models into sections in the VS picker dropdown:
 
 ### `model_picker_price_category`
 
-A separate top-level field on the model object (NOT inside billing), indicates cost tier:
+A separate top-level field on the model object (NOT inside billing), indicates cost tier. The authoritative enum is `ModelPickerPriceCategory` in `github/copilot-sdk` (`rust/src/generated/api_types.rs`), auto-generated from `api.schema.json`:
 
 | Value | Used For |
 |-------|----------|
+| `"very_high"` | Highest relative token cost tier (most expensive models) |
 | `"high"` | Premium/expensive models (opus, pro, codex) |
 | `"medium"` | Mid-tier (sonnet, standard) |
 | `"low"` | Free/cheap models (haiku, free_limited_copilot) |
 
 - This field is independent of `model_picker_category`
-- Provider separator entries use `"high"` to visually separate groups at the top
+- The enum also has an `Unknown` variant (`#[serde(other)]`, default) for forward compatibility — any unrecognized string deserializes to it, so clients tolerate new tiers without breaking
+- In `microsoft/vscode` the type is a plain `string?` (`src/typings/copilot-api.d.ts:156`), so the Rust SDK is the only place the closed set is enforced
+- Provider separator entries use `"very_high"` to visually separate groups at the top (the strongest visual separator)
 
 ### `policy.state` for Premium Models
 

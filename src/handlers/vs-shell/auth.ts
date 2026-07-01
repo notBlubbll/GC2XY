@@ -67,8 +67,8 @@ function getSkuFromGh(): { copilot_plan: string; access_type_sku: string; sku: s
 }
 
 function getRemainingQuota(): { chat: number; completions: number } {
-  // 42% used: chat 290/500, completions 2320/4000
-  return { chat: 290, completions: 2320 };
+  // VS22 displays remaining as consumed, so return 42% remaining → shows "42% consumed"
+  return { chat: 210, completions: 1680 };
 }
 
 function generateTrackingId(): string {
@@ -87,13 +87,20 @@ export const VS_REDIRECT_URI_PREFIX = "vsweb+githubsi://authcode/";
  */
 export function isVSOAuthFlow(req: HandlerInput): boolean {
   const { method, url, headers } = req;
-  if (!isVSShell(headers)) return false;
 
   // Token exchange: VS client posts to /login/oauth/access_token
-  if (method === "POST" && url.includes("/login/oauth/access_token")) return true;
+  if (method === "POST" && url.includes("/login/oauth/access_token")) {
+    // VS Team Explorer posts with its own user-agent; the browser may not
+    if (isVSShell(headers)) return true;
+    // Also accept form posts from the browser (in hybrid mode the browser
+    // POSTs the access_token exchange on behalf of VS)
+    return true;
+  }
 
-  // Authorize: browser requests with VS-specific client_id or redirect_uri
-  if (method === "GET" && url.includes("/login/oauth/authorize")) {
+  // Authorize/select_account: browser requests with VS client_id in URL
+  // The browser opens the OAuth URL — it has a Chrome UA, not VS headers.
+  // We must check the client_id / redirect_uri in the query params instead.
+  if (method === "GET" && (url.includes("/login/oauth/authorize") || url.includes("/login/oauth/select_account"))) {
     const queryIdx = url.indexOf("?");
     if (queryIdx >= 0) {
       const params = new URLSearchParams(url.slice(queryIdx));
@@ -102,6 +109,25 @@ export function isVSOAuthFlow(req: HandlerInput): boolean {
       if (clientId === VS_CLIENT_ID || redirectUri.startsWith(VS_REDIRECT_URI_PREFIX)) {
         return true;
       }
+      // Also match localhost redirect_uri (VS 2022 uses http://localhost:PORT/)
+      if (redirectUri.startsWith("http://localhost:") || redirectUri.startsWith("http://127.0.0.1:")) {
+        return true;
+      }
+    }
+  }
+
+  // POST authorize_app / select_account form submissions (from browser)
+  if (method === "POST" && (url.includes("/login/oauth/authorize_app") || url.includes("/login/oauth/select_account"))) {
+    const queryIdx = url.indexOf("?");
+    if (queryIdx >= 0) {
+      const params = new URLSearchParams(url.slice(queryIdx));
+      const clientId = params.get("client_id") || "";
+      if (clientId === VS_CLIENT_ID) return true;
+    }
+    // Also check form body
+    const formBody = req.body?.toString() || "";
+    if (formBody.includes(`client_id=${VS_CLIENT_ID}`) || formBody.includes(`client_id=a200baed193bb2088a6e`)) {
+      return true;
     }
   }
 
@@ -133,7 +159,7 @@ export function handleVSShellCopilotUser(req: HandlerInput): HandlerResult | nul
       chat_enabled: true,
       cli_enabled: true,
       cli_remote_control_enabled: true,
-      copilotignore_enabled: true,
+      copilotignore_enabled: copilot_plan !== "individual",
       copilot_plan,
       editor_preview_features_enabled: true,
       is_mcp_enabled: true,
@@ -170,7 +196,8 @@ export function handleVSShellToken(req: HandlerInput): HandlerResult | null {
   const resetDate = new Date("2120-01-01T00:00:00Z");
   const resetTs = Math.floor(resetDate.getTime() / 1000);
   const q = getRemainingQuota();
-  const { sku } = getSkuFromGh();
+  const { sku, copilot_plan } = getSkuFromGh();
+  const isEnterprise = copilot_plan !== "individual";
   const token = `tid=${tid};exp=${exp};iat=${iat};sku=${sku};proxy-ep=proxy.individual.githubcopilot.com;st=dotcom;chat=1;cit=1;malfil=1;editor_preview_features=1;agent_mode=1;agent_mode_auto_approval=1;mcp=1;blackbird_external_indexing=1;client_byok=0;rt=1;ip=0.0.0.0;asn=AS000000;cq=3934;rd=${resetTs}`;
   return {
     handled: true,
@@ -183,9 +210,9 @@ export function handleVSShellToken(req: HandlerInput): HandlerResult | null {
       chat_enabled: true,
       chat_jetbrains_enabled: true,
       code_quote_enabled: true,
-      code_review_enabled: true,
+      code_review_enabled: isEnterprise,
       codesearch: true,
-      copilotignore_enabled: true,
+      copilotignore_enabled: isEnterprise,
       endpoints: {
         api: "https://api.individual.githubcopilot.com",
         "origin-tracker": "https://origin-tracker.individual.githubcopilot.com",
@@ -194,9 +221,9 @@ export function handleVSShellToken(req: HandlerInput): HandlerResult | null {
       },
       expires_at: exp,
       iat,
+      individual: true,
       limited_user_quotas: { chat: q.chat, completions: q.completions },
       limited_user_reset_date: resetTs,
-      quota_reset_date: resetTs,
       public_suggestions: "disabled",
       refresh_in: 1500,
       sku,

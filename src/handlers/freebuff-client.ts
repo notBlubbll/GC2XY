@@ -147,13 +147,13 @@ function normalizeChatMessages(messages: any[]): any[] {
 }
 
 export const FREEBUFF_MODEL_INFO: Record<string, { family: string; paramCount: number; contextLength: number; capabilities: string[] }> = {
-  "freebuff:deepseek/deepseek-v4-pro":   { family: "deepseek4",  paramCount: 1600000000000, contextLength: 1048576, capabilities: ["completion", "tools", "thinking"] },
-  "freebuff:deepseek/deepseek-v4-flash": { family: "deepseek4",  paramCount: 158000000000,  contextLength: 1048576, capabilities: ["completion", "tools", "thinking"] },
-  "freebuff:minimax/minimax-m2.7":       { family: "minimax-m2", paramCount: 229000000000,  contextLength: 196608,  capabilities: ["completion", "tools", "thinking"] },
-  "freebuff:minimax/minimax-m3":         { family: "minimax-m3", paramCount: 229000000000,  contextLength: 256000,  capabilities: ["completion", "tools", "thinking", "vision"] },
-  "freebuff:mimo/mimo-v2.5":             { family: "mimo",       paramCount: 456000000000,  contextLength: 262144,  capabilities: ["completion", "tools", "thinking"] },
-  "freebuff:mimo/mimo-v2.5-pro":         { family: "mimo",       paramCount: 456000000000,  contextLength: 262144,  capabilities: ["completion", "tools", "thinking"] },
-  "freebuff:moonshotai/kimi-k2.6":       { family: "kimi-k2",    paramCount: 1040000000000, contextLength: 262144,  capabilities: ["vision", "thinking", "completion", "tools"] },
+  "freebuff/deepseek/deepseek-v4-pro":   { family: "deepseek4",  paramCount: 1600000000000, contextLength: 1048576, capabilities: ["completion", "tools", "thinking"] },
+  "freebuff/deepseek/deepseek-v4-flash": { family: "deepseek4",  paramCount: 158000000000,  contextLength: 1048576, capabilities: ["completion", "tools", "thinking"] },
+  "freebuff/minimax/minimax-m2.7":       { family: "minimax-m2", paramCount: 229000000000,  contextLength: 196608,  capabilities: ["completion", "tools", "thinking"] },
+  "freebuff/minimax/minimax-m3":         { family: "minimax-m3", paramCount: 229000000000,  contextLength: 256000,  capabilities: ["completion", "tools", "thinking", "vision"] },
+  "freebuff/mimo/mimo-v2.5":             { family: "mimo",       paramCount: 456000000000,  contextLength: 262144,  capabilities: ["completion", "tools", "thinking"] },
+  "freebuff/mimo/mimo-v2.5-pro":         { family: "mimo",       paramCount: 456000000000,  contextLength: 262144,  capabilities: ["completion", "tools", "thinking"] },
+  "freebuff/moonshotai/kimi-k2.6":       { family: "kimi-k2",    paramCount: 1040000000000, contextLength: 262144,  capabilities: ["vision", "thinking", "completion", "tools"] },
 };
 
 // ── Module State ──
@@ -250,7 +250,7 @@ async function refreshModels(): Promise<void> {
       for (const [model, agent] of rootMapping) {
         if (EXCLUDED_DYNAMIC_MODELS.has(model)) { skipped++; continue; }
         modelToAgent.set(model, agent);
-        allModels.push("freebuff:" + model);
+        allModels.push("freebuff/" + model);
         const meta = metadata.get(model);
         modelMetadata.set(model, meta || { displayName: model.split("/").pop() || model, premium: false, multimodal: false });
       }
@@ -259,7 +259,7 @@ async function refreshModels(): Promise<void> {
       for (const h of HARDCODED_MODELS) {
         if (!modelToAgent.has(h.model)) {
           modelToAgent.set(h.model, h.agent);
-          allModels.push("freebuff:" + h.model);
+          allModels.push("freebuff/" + h.model);
           modelMetadata.set(h.model, { displayName: h.displayName, premium: h.premium, multimodal: h.multimodal });
         }
       }
@@ -281,7 +281,7 @@ async function refreshModels(): Promise<void> {
   const modelMetadata = new Map<string, ModelMeta>();
   for (const h of HARDCODED_MODELS) {
     modelToAgent.set(h.model, h.agent);
-    allModels.push("freebuff:" + h.model);
+    allModels.push("freebuff/" + h.model);
     modelMetadata.set(h.model, { displayName: h.displayName, premium: h.premium, multimodal: h.multimodal });
   }
   allModels.sort();
@@ -293,7 +293,7 @@ async function refreshModels(): Promise<void> {
 
 function buildModelIds(): string[] {
   if (_fetchedAllModels.length > 0) return _fetchedAllModels;
-  return HARDCODED_MODELS.map(h => "freebuff:" + h.model);
+  return HARDCODED_MODELS.map(h => "freebuff/" + h.model);
 }
 
 function resolveAgent(strippedModel: string): string | null {
@@ -303,19 +303,19 @@ function resolveAgent(strippedModel: string): string | null {
 }
 
 export function getFreebuffModelPremium(fullId: string): boolean {
-  const stripped = fullId.replace(/^freebuff:/, "");
+  const stripped = fullId.replace(/^freebuff\//, "");
   const meta = _fetchedModelMetadata.get(stripped);
   return meta ? meta.premium : false;
 }
 
 export function getFreebuffModelMultimodal(fullId: string): boolean {
-  const stripped = fullId.replace(/^freebuff:/, "");
+  const stripped = fullId.replace(/^freebuff\//, "");
   const meta = _fetchedModelMetadata.get(stripped);
   return meta ? meta.multimodal : false;
 }
 
 export function getFreebuffModelDisplayName(fullId: string): string | null {
-  const stripped = fullId.replace(/^freebuff:/, "");
+  const stripped = fullId.replace(/^freebuff\//, "");
   const meta = _fetchedModelMetadata.get(stripped);
   return meta ? meta.displayName : null;
 }
@@ -966,7 +966,7 @@ async function _doChat(modelId: string, messages: any[], tools?: any[], stream =
     return new Response(JSON.stringify({ error: { message: "no freebuff tokens configured", type: "server_error" } }), { status: 503, headers: { "content-type": "application/json" } });
   }
 
-  let strippedModel = modelId.replace(/^freebuff:/, "");
+  let strippedModel = modelId.replace(/^freebuff\//, "");
   if (CANONICAL_ALIASES[strippedModel]) strippedModel = CANONICAL_ALIASES[strippedModel];
 
   // Validate agents + fire-and-forget ads/streak (like upstream)

@@ -233,7 +233,7 @@ let _config: UmansConfig = {
   password: "",
   appSession: "",
   visionHandoffEnabled: true,
-  visionHandoffModel: "umans:kimi-k2.7",
+  visionHandoffModel: "umans-kimi-k2.7",
   visionHandoffPrompt: "",
   cacheEnabled: true,
   cacheTtl: 60 * 1000,
@@ -251,7 +251,7 @@ export function setUmansConfig(cfg: Partial<UmansConfig>) {
 
 export function setUmansVisionHandoff(enabled: boolean, model?: string, prompt?: string) {
   _config.visionHandoffEnabled = enabled;
-  if (model !== undefined) _config.visionHandoffModel = model.trim() || "umans:kimi-k2.7";
+  if (model !== undefined) _config.visionHandoffModel = model.trim() || "umans-kimi-k2.7";
   if (prompt !== undefined) _config.visionHandoffPrompt = prompt;
 }
 
@@ -761,10 +761,8 @@ export async function getCatalogData(): Promise<Record<string, any>> {
     modelInfoMap = {};
     for (const [id, info] of Object.entries(data as Record<string, any>)) {
       if (!info || typeof info !== "object") continue;
-      // Transform upstream "umans-X" IDs to "umans:X" format
-      const externalId = id.startsWith("umans-") ? "umans:" + id.slice(6) : id;
-      modelInfoMap[externalId] = info;
-      if (info.display_name) modelDisplayNameMap[externalId] = info.display_name.replace(/^Umans\s+/i, "");
+      modelInfoMap[id] = info;
+      if (info.display_name) modelDisplayNameMap[id] = info.display_name.replace(/^Umans\s+/i, "");
     }
   }
   return data;
@@ -772,7 +770,7 @@ export async function getCatalogData(): Promise<Record<string, any>> {
 
 export function getModelDisplayName(id: string): string {
   if (modelDisplayNameMap[id]) return modelDisplayNameMap[id];
-  const base = id.replace(/^umans:/i, "");
+  const base = id.replace(/^umans-/i, "");
   return base.split("-").map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(" ");
 }
 
@@ -785,13 +783,9 @@ export async function initModels(): Promise<string[]> {
   try {
     const data = await getCatalogData();
     if (data && typeof data === "object" && !Array.isArray(data.data)) {
-      _cachedModelIds = Object.keys(data).filter(id => id && typeof data[id] === "object")
-        .map(id => id.startsWith("umans-") ? "umans:" + id.slice(6) : id);
+      _cachedModelIds = Object.keys(data).filter(id => id && typeof data[id] === "object");
     } else if (data && Array.isArray(data.data)) {
-      _cachedModelIds = data.data.map((m: any) => {
-        const raw = typeof m === "string" ? m : m.id || "";
-        return raw.startsWith("umans-") ? "umans:" + raw.slice(6) : raw;
-      }).filter(Boolean);
+      _cachedModelIds = data.data.map((m: any) => typeof m === "string" ? m : m.id || "").filter(Boolean);
     }
   } catch (e: any) {
     if (isDebug()) console.log(`[UMANS] initModels failed: ${e.message}`);
@@ -826,22 +820,15 @@ function needsVisionHandoff(resolvedModel: string): boolean {
 }
 
 // Resolve a requested model ID to its umans- catalog ID (stripping thinking tags).
-// External IDs use "umans:" prefix; upstream API expects "umans-" prefix.
 function resolveUmansModelId(requestedModel: string): string {
   if (!requestedModel) return requestedModel;
   const { base } = parseUmansThinkingTag(requestedModel);
-  // Convert external "umans:X" to upstream "umans-X"
-  if (base.startsWith("umans:")) {
-    const upstream = "umans-" + base.slice(6);
-    return upstream;
-  }
-  // Unprefixed — try adding umans- prefix for upstream lookup
-  const upstreamPrefixed = "umans-" + base;
-  const externalPrefixed = "umans:" + base;
-  if (modelInfoMap[externalPrefixed]) return upstreamPrefixed;
-  if (_config.enabledModels.includes(externalPrefixed)) return upstreamPrefixed;
+  if (base.startsWith("umans-")) return base;
+  const prefixed = "umans-" + base;
+  if (modelInfoMap[prefixed]) return prefixed;
+  if (_config.enabledModels.includes(prefixed)) return prefixed;
   if (_config.enabledModels.includes(base)) return base;
-  return upstreamPrefixed;
+  return base;
 }
 
 // Walk a content array (OpenAI or Anthropic format) and collect image parts.
@@ -874,7 +861,7 @@ function collectImageParts(payload: any): { container: any[]; index: number; dat
 }
 
 async function analyzeImageViaHandoff(dataUri: string, key: string, keyName: string, sessNum: number, imageIndex: number): Promise<string> {
-  const handoffModel = resolveUmansModelId(_config.visionHandoffModel || "umans:kimi-k2.7");
+  const handoffModel = _config.visionHandoffModel || "umans-kimi-k2.7";
   const prompt = _config.visionHandoffPrompt || DEFAULT_VISION_HANDOFF_PROMPT;
   const handoffPayload = {
     model: handoffModel,
@@ -912,7 +899,7 @@ async function performVisionHandoff(payload: any, resolvedModel: string, key: st
   if (!needsVisionHandoff(resolvedModel)) return 0;
   const imageParts = collectImageParts(payload);
   if (imageParts.length === 0) return 0;
-  const handoffModel = resolveUmansModelId(_config.visionHandoffModel || "umans:kimi-k2.7");
+  const handoffModel = _config.visionHandoffModel || "umans-kimi-k2.7";
   console.log(`[UMANS] [Session#${sessNum}>${keyName}]-[${resolvedModel}]-vision-handoff: ${imageParts.length} image(s) → ${handoffModel}`);
   const descriptions = await Promise.all(imageParts.map((ip, i) => analyzeImageViaHandoff(ip.dataUri, key, keyName, sessNum, i)));
   for (let i = 0; i < imageParts.length; i++) {

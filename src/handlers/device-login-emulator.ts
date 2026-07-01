@@ -6,6 +6,7 @@ import { handleCopilot } from "./copilot-handler.ts";
 import { handleRepo } from "./repo-handler.ts";
 import { handleVisualStudio } from "./vs/handler.ts";
 import { handleVSShell } from "./vs-shell/index.ts";
+import { handleVSLegacy } from "./vs-legacy/index.ts";
 import { handleGHCPApp } from "./ghcp-app/index.ts";
 import { handleSSMSChat, handleSSMSUsage } from "./ssms/index.ts";
 import { isDebug } from "../split-console.ts";
@@ -14,18 +15,18 @@ export async function handleDeviceLogin(req: HandlerInput): Promise<HandlerResul
   try {
     let result: HandlerResult;
 
-    // SSMS usage/quota handler runs FIRST — SSMS uses a different quota
-    // format than VS (full quota_snapshots with token_based_billing) and
-    // breaks if it gets the VS-style 6-field format. Only handles
-    // /copilot_internal/user and /copilot_internal/v2/token for SSMS clients.
+    // SSMS usage/quota handler runs FIRST
     result = handleSSMSUsage(req);
     if (result.handled) return result;
 
+    // VS 2022 (17.x) legacy handler — handles ALL VS22 endpoints
+    // (auth, models, chat, embeddings, agents) in one place.
+    // Must run before handleVSShell and handleVisualStudio so VS22
+    // gets the correct format (VS22 uses /chat/completions, not /responses).
+    result = await handleVSLegacy(req);
+    if (result.handled) return result;
+
     // Unified VS-family auth (VS Copilot Client + VS Team Explorer).
-    // Handles copilot_internal/* for both, and explicitly passes through
-    // OAuth/login routes so handleAuth can issue fake tokens — the VS
-    // chat handler's catch-all would otherwise swallow them with a
-    // token-less mock and break sign-in (VS error 723).
     result = handleVSShell(req);
     if (result.handled) return result;
 
@@ -38,8 +39,6 @@ export async function handleDeviceLogin(req: HandlerInput): Promise<HandlerResul
     result = await handleGHCPApp(req);
     if (result.handled) return result;
 
-    // VS Team Explorer chat requests spoof editor-version then delegate to
-    // the VS chat handler. Auth routes already handled above by handleVSShell.
     result = await handleSSMSChat(req);
     if (result.handled) return result;
 

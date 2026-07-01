@@ -62,7 +62,7 @@ function saveCachedModels(ids: string[]) {
 }
 
 function isCodestralFamily(id: string): boolean {
-  const prefix = "codestral:";
+  const prefix = "codestral/";
   const lid = id.toLowerCase();
   if (!lid.startsWith(prefix)) return false;
   const after = id.slice(prefix.length);
@@ -76,10 +76,10 @@ function filterCodestralFamily(ids: string[]): string[] {
 
 // Known Codestral models (fallback if API /models is unavailable)
 const KNOWN_MODELS = [
-  "codestral:codestral-latest",
-  "codestral:devstral-2512",
-  "codestral:devstral-medium-latest",
-  "codestral:devstral-latest",
+  "codestral/codestral-latest",
+  "codestral/devstral-2512",
+  "codestral/devstral-medium-latest",
+  "codestral/devstral-latest",
 ];
 
 // ── Model Init ──
@@ -98,7 +98,7 @@ async function fetchModels(): Promise<string[]> {
       const raw: string[] = (data?.data || []).map((m: any) =>
         typeof m === "string" ? m : m.id || ""
       ).filter((id: string) => id.length > 0);
-      const ids: string[] = raw.map((id: string) => id.startsWith("codestral:") ? id : `codestral:${id}`)
+      const ids: string[] = raw.map((id: string) => id.startsWith("codestral/") ? id : `codestral/${id}`)
         .filter((id: string) => /codestral|devstral/i.test(id));
       if (ids.length > 0) {
         saveCachedModels(ids);
@@ -117,7 +117,7 @@ export async function initModels(): Promise<string[]> {
 
   const disk = loadCachedModels();
   if (disk && disk.length > 0) {
-    const migrated = disk.map(id => id.startsWith("codestral:") ? id : `codestral:${id}`).filter(isCodestralFamily);
+    const migrated = disk.map(id => id.startsWith("codestral/") ? id : `codestral/${id}`).filter(isCodestralFamily);
     if (migrated.some((id, i) => id !== disk[i])) saveCachedModels(migrated);
     _cachedIds = migrated;
     _initialized = true;
@@ -149,7 +149,7 @@ export async function completions(
   const key = getCodestralKey();
   if (!key) throw new Error("No Codestral API key configured.");
 
-  const strippedModel = modelId.replace(/^codestral:/, "");
+  const strippedModel = modelId.replace(/^codestral\//, "");
   const url = `${BASE}/fim/completions`;
 
   const body: any = {
@@ -216,7 +216,7 @@ export async function chatCompletion(
   const key = getCodestralKey();
   if (!key) throw new Error("No Codestral API key configured.");
 
-  const strippedModel = modelId.replace(/^codestral:/, "");
+  const strippedModel = modelId.replace(/^codestral\//, "");
   const url = `${BASE}/chat/completions`;
 
   let _toolChoice: any;

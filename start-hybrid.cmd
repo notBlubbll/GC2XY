@@ -83,38 +83,12 @@ if "%ENFORCE_NODE%"=="1" goto :try_node
 if not exist "%USERPROFILE%\.bun\bin\bun.exe" goto :try_node
 set "RUNTIME=bun"
 set "PATH=%USERPROFILE%\.bun\bin;%PATH%"
-if not exist "node_modules" (
-    if exist "package-lock.json" del /q "package-lock.json"
-    if exist "bun.lock" del /q "bun.lock"
-    echo [INFO] Installing dependencies via bun...
-    call bun install
-    if errorlevel 1 (
-        echo ERROR: bun install failed.
-        pause
-        exit /b 1
-    )
-    if exist "package-lock.json" del /q "package-lock.json"
-    if exist "bun.lock" del /q "bun.lock"
-)
 set RUNTIME_FOUND=1
 goto :check_runtime
 
 :try_node
 where node >nul 2>&1
 if %ERRORLEVEL% NEQ 0 goto :check_runtime
-if not exist "node_modules" (
-    if exist "package-lock.json" del /q "package-lock.json"
-    if exist "bun.lock" del /q "bun.lock"
-    echo [INFO] Installing Node.js dependencies...
-    call npm install --no-audit --no-fund
-    if errorlevel 1 (
-        echo ERROR: npm install failed.
-        pause
-        exit /b 1
-    )
-    if exist "package-lock.json" del /q "package-lock.json"
-    if exist "bun.lock" del /q "bun.lock"
-)
 set "RUNTIME=node"
 set "NODE_RUNNER=node node_modules\tsx\dist\cli.cjs"
 set RUNTIME_FOUND=1

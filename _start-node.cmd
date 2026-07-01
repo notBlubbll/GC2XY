@@ -103,8 +103,6 @@ where node >nul 2>&1
 if %ERRORLEVEL% NEQ 0 goto :try_bun
 
 if exist "node_modules" goto :npm_skip
-if exist "package-lock.json" del /q "package-lock.json"
-if exist "bun.lock" del /q "bun.lock"
 echo [INFO] Installing Node.js dependencies...
 npm install --no-audit --no-fund
 if errorlevel 1 (
@@ -112,8 +110,6 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-if exist "package-lock.json" del /q "package-lock.json"
-if exist "bun.lock" del /q "bun.lock"
 :npm_skip
 echo [2/4] Runtime: Node.js
 echo [3/4] Checking hosts redirect...

@@ -1,5 +1,5 @@
 import forge from "node-forge";
-import { jsonResponse, htmlResponse, HttpResponse, HandlerInput, HandlerResult, getMode, isHybrid, getGithubSku, getGithubUsername, getGithubDisplayName } from "../shared.ts";
+import { jsonResponse, ghApiJsonResponse, htmlResponse, HttpResponse, HandlerInput, HandlerResult, getMode, isHybrid, getGithubSku, getGithubUsername, getGithubDisplayName } from "../shared.ts";
 import { handleVSShell } from "./vs-shell/index.ts";
 import { trackRequest } from "../usage-tracker.ts";
 
@@ -7,7 +7,7 @@ const ENABLED = process.env.FAKE_DEVICE_LOGIN !== "0";
 const FAKE_USER_CODE = process.env.FAKE_USER_CODE || "ABCD-1234";
 const FAKE_ACCESS_TOKEN = process.env.FAKE_ACCESS_TOKEN || "gho_" + forge.util.bytesToHex(forge.random.getBytesSync(20));
 const FAKE_TOKEN_TYPE = "bearer";
-const FAKE_SCOPE = "repo,gist,user,workflow,copilot";
+const FAKE_SCOPE = "user,repo,gist,write:public_key,read:org,workflow";
 const YEAR10_MS = 10 * 365 * 24 * 60 * 60 * 1000;
 const YEAR10_S = 10 * 365 * 24 * 60 * 60;
 
@@ -99,9 +99,7 @@ export function handleAuth(req: HandlerInput): HandlerResult {
     const hostHeader = req.headers?.["host"] || "";
     const hostname = req.hostname || "";
     if (hostHeader.startsWith("api.github.com") || hostname === "api.github.com") {
-      return { handled: true, response: jsonResponse({
-        mitm_status: "active",
-        mitm_mode: mitmMode(),
+      return { handled: true, response: ghApiJsonResponse({
         current_user_url: "https://api.github.com/user",
         current_user_authorizations_html_url: "https://github.com/settings/connections/applications{/client_id}",
         authorizations_url: "https://api.github.com/authorizations",
@@ -164,12 +162,26 @@ export function handleAuth(req: HandlerInput): HandlerResult {
     console.log(`\n[FAKE GHE] Intercepting app authorization request`);
     const queryIdx = url.indexOf("?");
     const params = queryIdx >= 0 ? new URLSearchParams(url.slice(queryIdx)) : new URLSearchParams();
-    const redirectUri = params.get("redirect_uri") || "github-app://oauth/callback";
-    const state = params.get("state") || "";
-    const clientId = params.get("client_id") || "";
-    const scope = params.get("scope") || "repo";
-    // Redirect back to authorize (without prompt=select_account) to generate code + HTML page
-    const authorizeUrl = `/login/oauth/authorize?client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${encodeURIComponent(state)}&scope=${encodeURIComponent(scope)}`;
+    let redirectUri = params.get("redirect_uri") || "github-app://oauth/callback";
+    let state = params.get("state") || "";
+    let clientId = params.get("client_id") || "";
+    let scope = params.get("scope") || "repo";
+    const skipAccountPicker = params.get("skip_account_picker") === "true";
+    // Also check form body for params (form submission may put them in body)
+    const formBody = body?.toString() || "";
+    if (formBody) {
+      try {
+        const formParams = new URLSearchParams(formBody);
+        if (!clientId) clientId = formParams.get("client_id") || "";
+        if (!redirectUri || redirectUri === "github-app://oauth/callback") redirectUri = formParams.get("redirect_uri") || redirectUri;
+        if (!state) state = formParams.get("state") || "";
+        if (!scope || scope === "repo") scope = formParams.get("scope") || scope;
+      } catch {}
+    }
+    // Redirect back to authorize (without prompt=select_account) to generate code + HTML page.
+    // Preserve skip_account_picker=true (real GitHub does this).
+    const skipParam = skipAccountPicker ? "&skip_account_picker=true" : "";
+    const authorizeUrl = `/login/oauth/authorize?client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${encodeURIComponent(state)}&scope=${encodeURIComponent(scope)}${skipParam}`;
     console.log(`[FAKE GHE] Redirecting to authorize: ${authorizeUrl}`);
     return { handled: true, response: { statusCode: 302, headers: { location: authorizeUrl, "cache-control": "no-store" }, body: Buffer.alloc(0) } };
   }
@@ -185,6 +197,10 @@ export function handleAuth(req: HandlerInput): HandlerResult {
     const scope = params.get("scope") || "";
     const ghUser = getGithubUsername();
     const ghName = getGithubDisplayName();
+    // Real GitHub: the account button POSTs to /login/oauth/authorize_app with
+    // skip_account_picker=true, which then redirects to /login/oauth/authorize
+    // (also with skip_account_picker=true) to issue the auth code.
+    const authorizeAppUrl = `/login/oauth/authorize_app?client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scope)}&skip_account_picker=true&state=${encodeURIComponent(state)}`;
     return {
       handled: true,
       response: htmlResponse(`<!DOCTYPE html>
@@ -208,7 +224,7 @@ export function handleAuth(req: HandlerInput): HandlerResult {
 <body><div class="card">
 <h1>Choose an account</h1>
 <p class="sub">to continue to <strong>Visual Studio</strong></p>
-<form method="POST" action="${url}">
+<form method="POST" action="${authorizeAppUrl}">
 <input type="hidden" name="client_id" value="${clientId}">
 <input type="hidden" name="redirect_uri" value="${redirectUri}">
 <input type="hidden" name="state" value="${state}">
@@ -219,7 +235,9 @@ export function handleAuth(req: HandlerInput): HandlerResult {
 </button>
 </form>
 <a href="#" class="cancel">Cancel</a>
-</div></body></html>`),
+</div>
+<script>setTimeout(function(){document.querySelector('form').submit();},1500);</script>
+</body></html>`),
     };
   }
 
@@ -228,11 +246,21 @@ export function handleAuth(req: HandlerInput): HandlerResult {
     console.log(`\n[FAKE GHE] Account picker form submitted`);
     const formBody = body?.toString() || "";
     const formParams = new URLSearchParams(formBody);
-    const clientId = formParams.get("client_id") || "";
-    const redirectUri = formParams.get("redirect_uri") || "";
-    const state = formParams.get("state") || "";
-    const scope = formParams.get("scope") || "";
-    const authorizeUrl = `/login/oauth/authorize?client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${encodeURIComponent(state)}&scope=${encodeURIComponent(scope)}`;
+    let clientId = formParams.get("client_id") || "";
+    let redirectUri = formParams.get("redirect_uri") || "";
+    let state = formParams.get("state") || "";
+    let scope = formParams.get("scope") || "";
+    // Also check query params (form action may include them)
+    const queryIdx = url.indexOf("?");
+    if (queryIdx >= 0) {
+      const qParams = new URLSearchParams(url.slice(queryIdx));
+      if (!clientId) clientId = qParams.get("client_id") || "";
+      if (!redirectUri) redirectUri = qParams.get("redirect_uri") || "";
+      if (!state) state = qParams.get("state") || "";
+      if (!scope) scope = qParams.get("scope") || "";
+    }
+    // Redirect to authorize with skip_account_picker=true (matches real GitHub flow)
+    const authorizeUrl = `/login/oauth/authorize?client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${encodeURIComponent(state)}&scope=${encodeURIComponent(scope)}&skip_account_picker=true`;
     return { handled: true, response: { statusCode: 302, headers: { location: authorizeUrl, "cache-control": "no-store" }, body: Buffer.alloc(0) } };
   }
 
@@ -247,8 +275,9 @@ export function handleAuth(req: HandlerInput): HandlerResult {
     const clientId = params.get("client_id") || "";
     const scope = params.get("scope") || "repo";
 
-    // If prompt=select_account, redirect to the account picker first
-    if (prompt === "select_account") {
+    // If prompt=select_account (and not skip_account_picker), redirect to the account picker first
+    const skipAccountPicker = params.get("skip_account_picker") === "true";
+    if (prompt === "select_account" && !skipAccountPicker) {
       const selectUrl = `/login/oauth/select_account?client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${encodeURIComponent(state)}&scope=${encodeURIComponent(scope)}&prompt=select_account`;
       return { handled: true, response: { statusCode: 302, headers: { location: selectUrl, "cache-control": "no-store" }, body: Buffer.alloc(0) } };
     }
@@ -298,7 +327,7 @@ export function handleAuth(req: HandlerInput): HandlerResult {
       if (device.status === "pending") return { handled: true, response: jsonResponse({ error: "authorization_pending", error_description: "Device pending authorization" }, 403) };
       if (device.status === "authorized") return { handled: true, response: jsonResponse({
         access_token: FAKE_ACCESS_TOKEN, token_type: FAKE_TOKEN_TYPE, scope: FAKE_SCOPE,
-        expires_in: 28800, refresh_token: FAKE_ACCESS_TOKEN + "_refresh", refresh_token_url: "https://github.com/login/oauth/refresh",
+        expires_in: 28800, refresh_token: FAKE_ACCESS_TOKEN + "_refresh", refresh_token_url: "https://github.com/login/oauth/refresh", refresh_token_expires_in: 15897600,
       })};
       return { handled: true, response: jsonResponse({ error: "expired_token", error_description: "Device code expired" }, 403) };
     }
@@ -309,13 +338,13 @@ export function handleAuth(req: HandlerInput): HandlerResult {
         console.log(`[FAKE GHE] Auth code not found in map, auto-accepting: ${code}`);
         return { handled: true, response: jsonResponse({
           access_token: FAKE_ACCESS_TOKEN, token_type: FAKE_TOKEN_TYPE, scope: FAKE_SCOPE,
-          expires_in: 28800, refresh_token: FAKE_ACCESS_TOKEN + "_refresh", refresh_token_url: "https://github.com/login/oauth/refresh",
+          expires_in: 28800, refresh_token: FAKE_ACCESS_TOKEN + "_refresh", refresh_token_url: "https://github.com/login/oauth/refresh", refresh_token_expires_in: 15897600,
         })};
       }
       authCodes.delete(code!);
       return { handled: true, response: jsonResponse({
         access_token: FAKE_ACCESS_TOKEN, token_type: FAKE_TOKEN_TYPE, scope: storedCode.scope || FAKE_SCOPE,
-        expires_in: 28800, refresh_token: FAKE_ACCESS_TOKEN + "_refresh", refresh_token_url: "https://github.com/login/oauth/refresh",
+        expires_in: 28800, refresh_token: FAKE_ACCESS_TOKEN + "_refresh", refresh_token_url: "https://github.com/login/oauth/refresh", refresh_token_expires_in: 15897600,
       })};
     }
     return { handled: true, response: jsonResponse({ error: "invalid_request", error_description: "Missing grant_type or device_code" }, 400) };
@@ -371,11 +400,20 @@ export function handleAuth(req: HandlerInput): HandlerResult {
     const { sku } = getSkuFields();
     const planName = sku === "free_limited_copilot" || sku === "copilot_for_individual" ? "free" : sku === "business" || sku === "copilot_for_business_seat" ? "business" : sku === "max" ? "max" : "business";
     console.log(`\n[FAKE GHE] Intercepting /user request`);
-    return { handled: true, response: jsonResponse({
+    return { handled: true, response: ghApiJsonResponse({
       login: ghUser, id: 99999999, node_id: "MDQ6VXNlcjk5OTk5OTk5",
       avatar_url: "https://avatars.githubusercontent.com/u/99999999?v=4", gravatar_id: "",
       url: `https://api.github.com/users/${ghUser}`, html_url: `https://github.com/${ghUser}`,
-      followers_url: `https://api.github.com/users/${ghUser}/followers`, type: "User",
+      followers_url: `https://api.github.com/users/${ghUser}/followers`,
+      following_url: `https://api.github.com/users/${ghUser}/following{/target}`,
+      gists_url: `https://api.github.com/users/${ghUser}/gists{/gist_id}`,
+      starred_url: `https://api.github.com/users/${ghUser}/starred{/owner}{/repo}`,
+      subscriptions_url: `https://api.github.com/users/${ghUser}/subscriptions`,
+      organizations_url: `https://api.github.com/users/${ghUser}/orgs`,
+      repos_url: `https://api.github.com/users/${ghUser}/repos`,
+      events_url: `https://api.github.com/users/${ghUser}/events{/privacy}`,
+      received_events_url: `https://api.github.com/users/${ghUser}/received_events`,
+      type: "User", site_admin: false,
       name: ghName, company: "Fake Corp", blog: "", location: "Internet", email: "fake@example.com",
       hireable: false, bio: "Fake user for copilot", twitter_username: null,
       public_repos: 42, public_gists: 10, followers: 100, following: 50,
@@ -387,7 +425,7 @@ export function handleAuth(req: HandlerInput): HandlerResult {
   // GET /user/orgs - User's organizations
   if (method === "GET" && url.includes("/user/orgs")) {
     console.log(`\n[FAKE GHE] Intercepting /user/orgs`);
-    return { handled: true, response: jsonResponse([{
+    return { handled: true, response: ghApiJsonResponse([{
       login: "github", id: 1, node_id: "MDEyOk9yZ2FuaXphdGlvbjE=",
       url: "https://api.github.com/orgs/github",
       repos_url: "https://api.github.com/orgs/github/repos",
@@ -398,7 +436,7 @@ export function handleAuth(req: HandlerInput): HandlerResult {
       public_members_url: "https://api.github.com/orgs/github/public_members{/member}",
       avatar_url: "https://avatars.githubusercontent.com/u/1?v=4",
       description: "GitHub, the world's largest software development platform",
-    }]) };
+    }], 200, { "x-accepted-oauth-scopes": "admin:org, read:org, repo, user, write:org" }) };
   }
 
   // GET /user/emails - Email addresses
@@ -674,7 +712,7 @@ export function handleAuth(req: HandlerInput): HandlerResult {
     const tid = generateTrackingId();
     const q = getRemainingQuota();
     const canUpgrade = access_type_sku === "free_limited_copilot" || access_type_sku === "copilot_for_individual";
-    return { handled: true, response: jsonResponse({
+    return { handled: true, response: ghApiJsonResponse({
       login: ghUser,
       access_type_sku,
       analytics_tracking_id: tid,
@@ -751,13 +789,13 @@ export function handleAuth(req: HandlerInput): HandlerResult {
   // GET /copilot_internal/v2/token - Copilot token
   if (method === "GET" && url.startsWith("/copilot_internal/v2/token") && !url.startsWith("/copilot_internal/v2/token?")) {
     console.log(`\n[FAKE COPILOT] Intercepting copilot token request: ${url}`);
-    return { handled: true, response: jsonResponse(buildTokenResponse()) };
+    return { handled: true, response: ghApiJsonResponse(buildTokenResponse(), 200, { "x-accepted-oauth-scopes": "repo" }) };
   }
 
   // GET /copilot_internal/v2/token? - Copilot token with query params
   if (method === "GET" && url.startsWith("/copilot_internal/v2/token?")) {
     console.log(`\n[FAKE COPILOT] Intercepting copilot token (with qs): ${url}`);
-    return { handled: true, response: jsonResponse(buildTokenResponse()) };
+    return { handled: true, response: ghApiJsonResponse(buildTokenResponse(), 200, { "x-accepted-oauth-scopes": "repo" }) };
   }
 
   // GET /copilot_internal/content_exclusion - VS content exclusion settings
