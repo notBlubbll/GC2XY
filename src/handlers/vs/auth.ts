@@ -28,9 +28,9 @@ function getSkuFromGh(): { copilot_plan: string; access_type_sku: string; sku: s
     case "pro":
     case "copilot_for_individual": return { copilot_plan: "individual", access_type_sku: "copilot_for_individual", sku: "copilot_for_individual" };
     case "business":
-    case "copilot_for_business_seat": return { copilot_plan: "business", access_type_sku: "copilot_for_business_seat", sku: "business" };
+    case "copilot_for_business_seat": return { copilot_plan: "business", access_type_sku: "copilot_for_business_seat", sku: "copilot_for_business_seat" };
     case "max": return { copilot_plan: "max", access_type_sku: "max", sku: "max" };
-    default: return { copilot_plan: "enterprise", access_type_sku: "copilot_enterprise_seat", sku: "enterprise" };
+    default: return { copilot_plan: "enterprise", access_type_sku: "copilot_enterprise_seat", sku: "copilot_enterprise_seat" };
   }
 }
 
@@ -82,6 +82,7 @@ export function handleVSCopilotUser(req: HandlerInput): HandlerResult | null {
   const canUpgrade = access_type_sku === "free_limited_copilot" || access_type_sku === "copilot_for_individual";
   return { handled: true, response: jsonResponse({
     login: ghUser,
+    name: getGithubDisplayName(),
     access_type_sku,
     analytics_tracking_id: tid,
     assigned_date: assignedDate.toISOString(),
@@ -162,7 +163,7 @@ export function handleVSToken(req: HandlerInput): HandlerResult | null {
 export function handleVSContentExclusion(req: HandlerInput): HandlerResult | null {
   const { method, url } = req;
   if (method !== "GET" || !url.includes("/copilot_internal/content_exclusion")) return null;
-  return { handled: true, response: jsonResponse({ exclusions: [], scope: "all", enabled: false }) };
+  return { handled: true, response: jsonResponse({ excluded_paths: [], excluded_content: [] }) };
 }
 
 export function handleVSAuth(req: HandlerInput): HandlerResult {

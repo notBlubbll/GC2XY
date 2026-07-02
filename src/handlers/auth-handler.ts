@@ -7,7 +7,7 @@ const ENABLED = process.env.FAKE_DEVICE_LOGIN !== "0";
 const FAKE_USER_CODE = process.env.FAKE_USER_CODE || "ABCD-1234";
 const FAKE_ACCESS_TOKEN = process.env.FAKE_ACCESS_TOKEN || "gho_" + forge.util.bytesToHex(forge.random.getBytesSync(20));
 const FAKE_TOKEN_TYPE = "bearer";
-const FAKE_SCOPE = "user,repo,gist,write:public_key,read:org,workflow";
+const FAKE_SCOPE = "user,repo,gist,write:public_key,read:org,workflow,notifications,read:gpg_key";
 const YEAR10_MS = 10 * 365 * 24 * 60 * 60 * 1000;
 const YEAR10_S = 10 * 365 * 24 * 60 * 60;
 
@@ -24,9 +24,9 @@ function getSkuFields(): { copilot_plan: string; access_type_sku: string; sku: s
     case "pro":
     case "copilot_for_individual": return { copilot_plan: "individual", access_type_sku: "copilot_for_individual", sku: "copilot_for_individual", individual: true };
     case "business":
-    case "copilot_for_business_seat": return { copilot_plan: "business", access_type_sku: "copilot_for_business_seat", sku: "business", individual: false };
+    case "copilot_for_business_seat": return { copilot_plan: "business", access_type_sku: "copilot_for_business_seat", sku: "copilot_for_business_seat", individual: false };
     case "max": return { copilot_plan: "max", access_type_sku: "max", sku: "max", individual: false };
-    default: return { copilot_plan: "enterprise", access_type_sku: "copilot_enterprise_seat", sku: "enterprise", individual: false };
+    default: return { copilot_plan: "enterprise", access_type_sku: "copilot_enterprise_seat", sku: "copilot_enterprise_seat", individual: false };
   }
 }
 
@@ -714,6 +714,7 @@ export function handleAuth(req: HandlerInput): HandlerResult {
     const canUpgrade = access_type_sku === "free_limited_copilot" || access_type_sku === "copilot_for_individual";
     return { handled: true, response: ghApiJsonResponse({
       login: ghUser,
+      name: getGithubDisplayName(),
       access_type_sku,
       analytics_tracking_id: tid,
       assigned_date: new Date(Date.now() - 86400000 * 11).toISOString(),
@@ -799,19 +800,18 @@ export function handleAuth(req: HandlerInput): HandlerResult {
   }
 
   // GET /copilot_internal/content_exclusion - VS content exclusion settings
-  // Real GitHub returns 404 for free-tier users (captured). Our previous 200 with
-  // {exclusions:[],scope:"all",enabled:false} failed to deserialize as
-  // CopilotExclusionRules, causing VS to conservatively exclude ALL files and
-  // fail every chat request with CopilotExclusionRulesLoadingException.
-  // Returning 404 lets VS skip exclusion processing gracefully.
+  // VS22 17.12 CopilotClientManager treats ANY non-200 as fatal and disables
+  // Copilot entirely ("could not fetch the repository policy"). The previous
+  // 404 approach worked for older VS22 but 17.12+ requires 200. The earlier
+  // 200 attempt used {exclusions:[],scope:"all",enabled:false} which failed
+  // because the field name "exclusions" doesn't match CopilotExclusionRules
+  // (expects "excluded_paths" + "excluded_content"), causing null fields →
+  // CopilotExclusionRulesLoadingException. Correct field names fix both issues.
   if (method === "GET" && url.includes("/copilot_internal/content_exclusion")) {
-    console.log(`\n[FAKE COPILOT] Intercepting content exclusion (404): ${url}`);
+    console.log(`\n[FAKE COPILOT] Intercepting content exclusion (200): ${url}`);
     return {
       handled: true,
-      response: jsonResponse(
-        { message: "Not Found", documentation_url: "https://docs.github.com/rest", status: "404" },
-        404,
-      ),
+      response: jsonResponse({ excluded_paths: [], excluded_content: [] }),
     };
   }
 

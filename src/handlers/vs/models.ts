@@ -7,6 +7,7 @@ import { getModelCtx, getModelDisplayName, getModelProviderTag } from "../openai
 import { addModels } from "../../models.ts";
 import { isDebug } from "../../split-console.ts";
 import { getUmansThinkingModes } from "../umans-client.ts";
+import { getVsLegacyModel } from "../dashboard-handler.ts";
 
 const VS_MODELS: any[] = [];
 let _lastModelIds: string[] = [];
@@ -38,7 +39,7 @@ function isFreeModel(id: string): boolean {
 // ── Free model lightweight tuning ──
 // model_picker_category: "lightweight" | model_picker_price_category: "low"
 // is_chat_fallback: true  (eligible as auto-fallback)
-// 
+//
 // When switching to real GitHub token_prices format for Copilot Chat:
 //   getBilling() → { token_prices: { input_price: 0, output_price: 0, cache_price: 0, batch_size: 1000000 } }
 //   variant billing → same token_prices block (no is_premium/multiplier/restricted_to)
@@ -208,7 +209,7 @@ async function ensureModels() {
       billing: getBilling(id, fakeMult),
       policy: { state: "enabled", terms: `Enable access to the ${id} model. [Learn more](https://opencode.ai)` },
     };
-    model.supported_endpoints = ["/v1/messages", "/chat/completions", "/responses", "ws:/responses"];
+    model.supported_endpoints = ["/v1/messages", "/chat/completions", "/responses", "/completions", "ws:/responses"];
     model.capabilities = {
       family: id,
       object: "model_capabilities",
@@ -254,7 +255,7 @@ async function ensureModels() {
   for (const id of models) { try { addModel(id); } catch (e: any) { console.log(`[VS MODELS] addModel(${id}) failed: ${e.message}`); } }
 
   // Build separators by cloning a real model to avoid field mismatch
-  const template = VS_MODELS.find((m: any) => !m.id.startsWith("_cat_") && !m.id.includes("["));
+  const template = VS_MODELS.find((m: any) => !m.id.startsWith("_cat_") && !m.id.includes("[")) ;
   if (template && VS_MODELS.length > 0) {
     const SEP_ORDER = ["codestral", "freebuff", "agnes", "umans"];
     const PROVIDER_NAMES: Record<string, string> = {
@@ -320,11 +321,97 @@ async function ensureModels() {
   }
 
   if (isDebug()) console.log(`\n[MODEL CACHE] vs/models.ts rebuilt ${VS_MODELS.length} models (cats: ${VS_MODELS.filter((m:any) => typeof m.id === "string" && m.id.startsWith("cat_")).map((m:any) => m.id).join(", ") || "none"})`);
+  console.log(`[VS MODELS] rebuilt ${VS_MODELS.length} models (default: ${VS_MODELS.find((m:any) => !String(m.id).startsWith("cat_") && !String(m.id).startsWith("_cat_"))?.id || "none"})`);
   } catch (e: any) {
     console.log(`[VS MODELS] rebuild failed: ${e.message}`);
   } finally {
   _rebuilding = false;
   }
+}
+
+// Return a flat model list (no category separators) for VS2022, which has no
+// model picker dropdown. VS22's CopilotModelResolver needs a simple flat list
+// with exactly one is_chat_default model — category separator entries
+// (cat_*/_cat_*) confuse the resolver and can trigger "No model found".
+// VS22 17.12 has a hardcoded list of "client supported models" (from the token
+// response's SupportedModels field / compiled constants). It intersects these
+// with the /models response. If the intersection is empty, CopilotModelResolver
+// throws "No model found that matches the request." The FollowUpGenerator and
+// other secondary intents (ExplainIntent, etc.) use these hardcoded IDs for
+// lightweight tasks like generating follow-up suggestions.
+//
+// We inject alias entries for each VS22 hardcoded model ID so the intersection
+// is non-empty. When VS22 sends a request with one of these IDs, resolveModel()
+// in vs-legacy/index.ts maps it to the configured legacy model (e.g.
+// umans-kimi-k2.7), so the actual upstream call uses a real model.
+const VS22_CLIENT_MODELS: { id: string; category: string; fallback: boolean }[] = [
+  { id: "gpt-4o",                category: "powerful",   fallback: false },
+  { id: "gpt-4.1",               category: "powerful",   fallback: false },
+  { id: "copilot-base",          category: "lightweight", fallback: true  },
+  { id: "gpt-4o-mini",           category: "lightweight", fallback: true  },
+  { id: "o1",                    category: "powerful",   fallback: false },
+  { id: "o3-mini",               category: "lightweight", fallback: true  },
+  { id: "claude-3.5-sonnet",     category: "powerful",   fallback: false },
+  { id: "claude-3.7-sonnet",     category: "powerful",   fallback: false },
+  { id: "gpt-4o-2024-11-20",     category: "powerful",   fallback: false },
+  { id: "gpt-4.1-2025-04-14",    category: "powerful",   fallback: false },
+  { id: "gpt-4o-2024-05-13",     category: "powerful",   fallback: false },
+  { id: "gpt-4o-mini-2024-07-18", category: "lightweight", fallback: true  },
+  { id: "o1-2024-12-17",         category: "powerful",   fallback: false },
+  { id: "o3-mini-2025-01-31",    category: "lightweight", fallback: true  },
+  { id: "claude-sonnet-4",       category: "powerful",   fallback: false },
+];
+
+export function getVSModelsFlat(): any[] {
+  const flat = VS_MODELS.filter((m: any) => {
+    const id = String(m.id || "");
+    return !id.startsWith("cat_") && !id.startsWith("_cat_");
+  }).map((m: any) => ({ ...m }));
+  // VS22 override: flatten billing so CopilotModelResolver doesn't reject all
+  // models as unaffordable. The context-length multiplier (2000+) is fine for
+  // VS26 (display only) but VS22's resolver checks it against premium_interactions
+  // quota and throws "No model found" when cost exceeds remaining quota.
+  // Making all models is_premium:false avoids the premium_interactions check
+  // entirely — the resolver skips affordability for non-premium models.
+  for (const m of flat) {
+    m.billing = { is_premium: false, multiplier: 1, restricted_to: [] };
+  }
+  // Ensure exactly one is_chat_default
+  const legacyModelId = getVsLegacyModel();
+  let defaultSet = false;
+  if (legacyModelId) {
+    for (const m of flat) m.is_chat_default = false;
+    const match = flat.find((m: any) => m.id === legacyModelId);
+    if (match) { match.is_chat_default = true; defaultSet = true; }
+  }
+  if (!defaultSet) {
+    for (const m of flat) m.is_chat_default = false;
+    if (flat.length > 0) flat[0].is_chat_default = true;
+  }
+  // Inject VS22 hardcoded client model IDs as aliases so the intersection
+  // of client-supported × server-provided is non-empty. These are clones
+  // of the default model with different IDs. resolveModel() maps them to
+  // the real upstream model at request time.
+  const template = flat.find((m: any) => m.is_chat_default) || flat[0];
+  if (template) {
+    const existingIds = new Set(flat.map((m: any) => m.id));
+    for (const cm of VS22_CLIENT_MODELS) {
+      if (existingIds.has(cm.id)) continue;
+      flat.push({
+        ...template,
+        id: cm.id,
+        name: cm.id,
+        version: cm.id,
+        vendor: "OpenAI",
+        model_picker_category: cm.category,
+        is_chat_default: false,
+        is_chat_fallback: cm.fallback,
+        billing: { is_premium: false, multiplier: 1, restricted_to: [] },
+        policy: { state: "enabled", terms: `Enable access to the ${cm.id} model. [Learn more](https://opencode.ai)` },
+      });
+    }
+  }
+  return flat;
 }
 
 export async function handleVSModels(req: HandlerInput): Promise<HandlerResult> {

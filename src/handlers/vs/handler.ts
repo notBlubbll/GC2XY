@@ -439,7 +439,7 @@ async function ensureModels() {
       is_chat_fallback: true,
       billing: { is_premium: true, multiplier: 1, restricted_to: ["pro", "pro_plus", "business", "enterprise", "max"] },
 
-      supported_endpoints: ["/chat/completions", "/v1/messages", "/responses", "ws:/responses"],
+      supported_endpoints: ["/chat/completions", "/v1/messages", "/responses", "/completions", "ws:/responses"],
       capabilities: {
         family: id, object: "model_capabilities", type: "chat", tokenizer: "o200k_base",
         limits: modelLimits(id),
@@ -1550,6 +1550,11 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
   // after OAuth client request"). Let handleAuth handle them.
   const isAuthRoute = url.includes("/login/oauth/") || url.includes("/login/device") || url === "/login" || url.startsWith("/login?");
   if (isAuthRoute) {
+    return { handled: false };
+  }
+
+  // Don't swallow /completions (inline code completions) — let handleCopilot handle it
+  if (method === "POST" && url.includes("/completions") && !url.includes("/chat/completions")) {
     return { handled: false };
   }
 

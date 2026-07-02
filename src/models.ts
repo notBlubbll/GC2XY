@@ -11,8 +11,14 @@ import { initModels as initAgnes, getModelIds as getAgnes } from "./handlers/agn
 import { initModels as initCodestral, getModelIds as getCodestralIds } from "./handlers/codestral-client.ts";
 import { getModelIds as getBitnetIds } from "./handlers/bitnet-client.ts";
 import { initModels as initUmans, getModelIds as getUmansIds } from "./handlers/umans-client.ts";
+import { initModelCtxMap } from "./handlers/openai-client.ts";
 
 export async function addModels(): Promise<string[]> {
+  // Fetch real context windows from models.dev/api.json so multipliers are
+  // per-model instead of falling back to 200000 (→ 2000.01) for everything.
+  // Awaited so the cache is populated before ensureModels() looks up getModelCtx().
+  try { await initModelCtxMap(); } catch {}
+
   const results = await Promise.allSettled([
     initFreebuffModels(),
     initAgnes(),

@@ -20,6 +20,7 @@ import {
   HandlerResult,
   getGithubSku,
   getGithubUsername,
+  getGithubDisplayName,
 } from "../../shared.ts";
 import { trackRequest } from "../../usage-tracker.ts";
 
@@ -58,11 +59,11 @@ function getSkuFromGh(): { copilot_plan: string; access_type_sku: string; sku: s
       return { copilot_plan: "individual", access_type_sku: "copilot_for_individual", sku: "copilot_for_individual" };
     case "business":
     case "copilot_for_business_seat":
-      return { copilot_plan: "business", access_type_sku: "copilot_for_business_seat", sku: "business" };
+      return { copilot_plan: "business", access_type_sku: "copilot_for_business_seat", sku: "copilot_for_business_seat" };
     case "max":
       return { copilot_plan: "max", access_type_sku: "max", sku: "max" };
     default:
-      return { copilot_plan: "enterprise", access_type_sku: "copilot_enterprise_seat", sku: "enterprise" };
+      return { copilot_plan: "enterprise", access_type_sku: "copilot_enterprise_seat", sku: "copilot_enterprise_seat" };
   }
 }
 
@@ -151,6 +152,7 @@ export function handleVSShellCopilotUser(req: HandlerInput): HandlerResult | nul
     handled: true,
     response: jsonResponse({
       login: ghUser,
+      name: getGithubDisplayName(),
       access_type_sku,
       analytics_tracking_id: tid,
       assigned_date: assignedDate.toISOString(),
@@ -239,15 +241,11 @@ export function handleVSShellToken(req: HandlerInput): HandlerResult | null {
 export function handleVSShellContentExclusion(req: HandlerInput): HandlerResult | null {
   const { method, url } = req;
   if (method !== "GET" || !url.includes("/copilot_internal/content_exclusion")) return null;
-  // Real GitHub returns 404 for free-tier users — VS handles this gracefully.
-  // Returning 200 with a JSON body caused CopilotExclusionRulesLoader to throw
-  // a deserialization error, which made VS exclude ALL files and fail chat.
+  // VS22 17.12 disables Copilot on non-200. Must return 200 with correct
+  // field names (excluded_paths/excluded_content, NOT "exclusions").
   return {
     handled: true,
-    response: jsonResponse(
-      { message: "Not Found", documentation_url: "https://docs.github.com/rest", status: "404" },
-      404,
-    ),
+    response: jsonResponse({ excluded_paths: [], excluded_content: [] }),
   };
 }
 

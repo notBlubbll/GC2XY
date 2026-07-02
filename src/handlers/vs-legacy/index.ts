@@ -11,7 +11,7 @@ import { filterModelsByConfig } from "../../shared.ts";
 import { getVsLegacyModel } from "../dashboard-handler.ts";
 import { recordTps, reqLog, agentTag } from "../../split-console.ts";
 import { trackRequest } from "../../usage-tracker.ts";
-import { handleVSModels, ensureVSModels, VS_MODELS } from "../vs/models.ts";
+import { ensureVSModels, VS_MODELS, getVSModelsFlat } from "../vs/models.ts";
 import { appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { buildResponsesFromChatCompletion, streamChatCompletionToResponses, streamResponsesObjectToSSE, flattenResponsesInput, ResponsesOptions } from "../vs/response-converter.ts";
@@ -27,11 +27,12 @@ function isVSLegacy(headers: Record<string, string>): boolean {
   // VS 2022 (17.x) and older: editor-version VS/17.x or VS/VisualStudio.17.x
   const m = ev.match(/VS\/(?:VisualStudio\.)?(\d+)/);
   if (m) return parseInt(m[1]) < 18;
-  // VS Team Explorer with version 17.x
+  // VS Team Explorer Copilot UA: "VSTeamExplorer-GitHub/<version>"
+  // Octokit.net REST client UA: "VSTeamExplorer-GitHub (Win32NT ...)" — NOT Copilot, do not treat as legacy
   if (ua.includes("vsteamexplorer")) {
     const vm = ua.match(/vsteamexplorer[^\/]*\/(\d+)/);
     if (vm) return parseInt(vm[1]) < 18;
-    return true; // assume legacy if no version
+    // No /version in UA → Octokit.net GitHub REST client (not Copilot). Not VS Legacy.
   }
   return false;
 }
@@ -47,11 +48,11 @@ function getSku() {
       return { copilot_plan: "individual", access_type_sku: "copilot_for_individual", sku: "copilot_for_individual" };
     case "business":
     case "copilot_for_business_seat":
-      return { copilot_plan: "business", access_type_sku: "copilot_for_business_seat", sku: "business" };
+      return { copilot_plan: "business", access_type_sku: "copilot_for_business_seat", sku: "copilot_for_business_seat" };
     case "max":
       return { copilot_plan: "max", access_type_sku: "max", sku: "max" };
     default:
-      return { copilot_plan: "enterprise", access_type_sku: "copilot_enterprise_seat", sku: "enterprise" };
+      return { copilot_plan: "enterprise", access_type_sku: "copilot_enterprise_seat", sku: "copilot_enterprise_seat" };
   }
 }
 
@@ -119,6 +120,9 @@ export async function handleVSLegacy(req: HandlerInput): Promise<HandlerResult> 
   const ua = headers["user-agent"] || "";
   console.log(`[VS LEGACY] ${method} ${url} (editor: ${ev}, ua: ${ua.slice(0, 50)})`);
 
+  // Debug trace — write to .cache/vs-legacy-trace.txt
+  try { appendFileSync(join(getProjectRoot(), ".cache", "vs-legacy-trace.txt"), `${new Date().toISOString()} ${method} ${url} ev=${ev} ua=${ua.slice(0,40)}\n`); } catch {}
+
   const { copilot_plan, access_type_sku, sku } = getSku();
   const isEnterprise = copilot_plan !== "individual";
   const q = getQuota();
@@ -131,7 +135,7 @@ export async function handleVSLegacy(req: HandlerInput): Promise<HandlerResult> 
   nextMonth.setUTCHours(0, 0, 0, 0);
   const resetTs = Math.floor(nextMonth.getTime() / 1000);
   const resetDateStr = nextMonth.toISOString().slice(0, 10);
-  const nowIso = new Date().toISOString();
+
   // Monthly quotas: free=200/2000, enterprise=500/4000
   const monthlyChat = isEnterprise ? 500 : 200;
   const monthlyComp = isEnterprise ? 4000 : 2000;
@@ -145,6 +149,7 @@ export async function handleVSLegacy(req: HandlerInput): Promise<HandlerResult> 
     const canUpgrade = access_type_sku === "free_limited_copilot" || access_type_sku === "copilot_for_individual";
     return { handled: true, response: ghApiJsonResponse({
       login: ghUser,
+      name: getGithubDisplayName(),
       access_type_sku,
       analytics_tracking_id: tid,
       assigned_date: new Date(Date.now() - 12 * 86400000).toISOString(),
@@ -168,36 +173,34 @@ export async function handleVSLegacy(req: HandlerInput): Promise<HandlerResult> 
         proxy: "https://proxy.individual.githubcopilot.com",
         telemetry: "https://telemetry.individual.githubcopilot.com",
       },
+      monthly_quotas: { chat: monthlyChat, completions: monthlyComp },
+      limited_user_quotas: { chat: q.chat, completions: q.completions },
+      limited_user_reset_date: resetDateStr,
+      quota_reset_date: resetDateStr,
       quota_snapshots: {
         chat: {
-          overage_count: 0,
-          overage_permitted: false,
-          percent_remaining: chatPct,
-          quota_id: "chat",
-          quota_remaining: q.chat,
+          entitlement: isEnterprise ? 0 : monthlyChat,
+          remaining: isEnterprise ? 0 : q.chat,
+          percent_remaining: isEnterprise ? 0 : chatPct,
           unlimited: isEnterprise,
-          timestamp_utc: nowIso,
-          has_unlimited_access: isEnterprise,
+          overage_permitted: false,
+          overage_count: 0,
         },
         completions: {
-          overage_count: 0,
-          overage_permitted: false,
-          percent_remaining: compPct,
-          quota_id: "completions",
-          quota_remaining: q.completions,
+          entitlement: isEnterprise ? 0 : monthlyComp,
+          remaining: isEnterprise ? 0 : q.completions,
+          percent_remaining: isEnterprise ? 0 : compPct,
           unlimited: isEnterprise,
-          timestamp_utc: nowIso,
-          has_unlimited_access: isEnterprise,
+          overage_permitted: false,
+          overage_count: 0,
         },
         premium_interactions: {
-          overage_count: 0,
-          overage_permitted: true,
+          entitlement: 1000,
+          remaining: 580,
           percent_remaining: 58,
-          quota_id: "premium_interactions",
-          quota_remaining: 580,
           unlimited: false,
-          timestamp_utc: nowIso,
-          has_unlimited_access: false,
+          overage_permitted: true,
+          overage_count: 0,
         },
       },
     }) };
@@ -227,7 +230,7 @@ export async function handleVSLegacy(req: HandlerInput): Promise<HandlerResult> 
       },
       expires_at: exp,
       iat: now,
-      individual: true,
+      individual: !isEnterprise,
       limited_user_quotas: { chat: q.chat, completions: q.completions },
       limited_user_reset_date: resetTs,
       public_suggestions: "disabled",
@@ -240,23 +243,24 @@ export async function handleVSLegacy(req: HandlerInput): Promise<HandlerResult> 
   }
 
   // ── AUTH: /copilot_internal/content_exclusion ──
+  // VS22 17.12 disables Copilot on non-200. Must return 200 with correct
+  // field names (excluded_paths/excluded_content, NOT "exclusions").
   if (method === "GET" && url.includes("/copilot_internal/content_exclusion")) {
-    return { handled: true, response: jsonResponse({ message: "Not Found", documentation_url: "https://docs.github.com/rest", status: "404" }, 404) };
+    return { handled: true, response: jsonResponse({ excluded_paths: [], excluded_content: [] }) };
   }
 
   // ── MODELS: GET /models ──
+  // VS22 has no model picker dropdown — return a flat list without category
+  // separator entries (cat_*/_cat_*). VS22's CopilotModelResolver expects a
+  // simple list with exactly one is_chat_default model.
   if (method === "GET" && (url === "/models" || url.startsWith("/models?") || url === "/v1/models" || url.startsWith("/v1/models?"))) {
     trackRequest("vs");
-    try {
-      const vsModelsResult = await handleVSModels(req);
-      if (vsModelsResult.handled) return vsModelsResult;
-    } catch (e: any) {
-      console.log(`[VS LEGACY] handleVSModels failed: ${e.message}, building inline`);
-    }
-    // Fallback: ensure models loaded and return directly
+    try { appendFileSync(join(getProjectRoot(), ".cache", "vs-legacy-trace.txt"), `  -> /models handler REACHED\n`); } catch {}
     try { await ensureVSModels(); } catch (e: any) { console.log(`[VS LEGACY] ensureVSModels failed: ${e.message}`); }
-    if (VS_MODELS.length === 0) {
-      console.log("[VS LEGACY] VS_MODELS empty — building minimal fallback model");
+    const flatModels = getVSModelsFlat();
+    try { appendFileSync(join(getProjectRoot(), ".cache", "vs-legacy-trace.txt"), `  -> getVSModelsFlat returned ${flatModels.length} models (VS_MODELS total=${VS_MODELS.length})\n`); } catch {}
+    if (flatModels.length === 0) {
+      console.log("[VS LEGACY] flat model list empty — building minimal fallback");
       const fallbackModels: any[] = [{
         id: "agnes-2.0-flash", object: "model", name: "✨￤Agnes 2.0 Flash",
         vendor: "AgnesAI", version: "agnes-2.0-flash", preview: false,
@@ -264,7 +268,7 @@ export async function handleVSLegacy(req: HandlerInput): Promise<HandlerResult> 
         is_chat_default: true, is_chat_fallback: true,
         billing: { is_premium: false, multiplier: 1, restricted_to: [] },
         policy: { state: "enabled", terms: "" },
-        supported_endpoints: ["/chat/completions", "/responses"],
+        supported_endpoints: ["/chat/completions", "/responses", "/completions"],
         capabilities: { family: "agnes", object: "model_capabilities", type: "chat", tokenizer: "o200k_base",
           limits: { max_context_window_tokens: 128000, max_output_tokens: 32000, max_prompt_tokens: 64000, max_non_streaming_output_tokens: 16000 },
           supports: { streaming: true, tool_calls: true, parallel_tool_calls: true, vision: false, structured_outputs: true } },
@@ -273,20 +277,34 @@ export async function handleVSLegacy(req: HandlerInput): Promise<HandlerResult> 
       console.log(`[VS LEGACY] /models fallback response: ${data.data.length} models`);
       return { handled: true, response: jsonResponse(data) };
     }
-    const data = { data: VS_MODELS, object: "list" };
-    console.log(`[VS LEGACY] /models response: ${data.data.length} models`);
+    const data = { data: flatModels, object: "list" };
+    const defaultModel = flatModels.find((m: any) => m.is_chat_default);
+    console.log(`[VS LEGACY] /models flat response: ${flatModels.length} models (default: ${defaultModel?.id || "none"})`);
+    try { const fs = require("node:fs"); const p = require("node:path"); fs.writeFileSync(p.join(getProjectRoot(), ".cache", "vs-legacy-models-dump.json"), JSON.stringify(data, null, 2)); } catch {}
     return { handled: true, response: jsonResponse(data) };
   }
 
   // ── MODELS: POST /models/session ──
   if (method === "POST" && (url === "/models/session" || url === "/v1/models/session" || url.startsWith("/models/session?") || url.startsWith("/v1/models/session?"))) {
-    const legacyModel = getVsLegacyModel() || "umans-kimi-k2.7";
+    try { await ensureVSModels(); } catch {}
+    // Use the flat model list (no category separators) so available_models
+    // only contains real model IDs that exist in the /models response.
+    const flatModels = getVSModelsFlat();
+    const legacyModel = getVsLegacyModel();
+    let selectedModel: string;
+    if (legacyModel && flatModels.some((m: any) => m.id === legacyModel)) {
+      selectedModel = legacyModel;
+    } else {
+      selectedModel = flatModels[0]?.id || "agnes-2.0-flash";
+    }
+    const availableModels = flatModels.map((m: any) => m.id);
+    console.log(`[VS LEGACY] /models/session selected=${selectedModel}, available=${availableModels.length} models`);
     const sessionId = `sess-${forge.util.bytesToHex(forge.random.getBytesSync(8))}`;
     const tokenPayload = JSON.stringify({ sub: forge.util.bytesToHex(forge.random.getBytesSync(20)), iat: now, exp: now + 3600 });
     const sessionToken = `eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.${Buffer.from(tokenPayload).toString("base64url")}.${forge.util.bytesToHex(forge.random.getBytesSync(32))}`;
     return { handled: true, response: jsonResponse({
-      available_models: [legacyModel],
-      selected_model: legacyModel,
+      available_models: availableModels.length > 0 ? availableModels : [selectedModel],
+      selected_model: selectedModel,
       session_token: sessionToken,
       session_id: sessionId,
       id: sessionId,
@@ -611,6 +629,11 @@ export async function handleVSLegacy(req: HandlerInput): Promise<HandlerResult> 
   // api.github.com endpoints (meta, gists, notifications, search, settings, etc.)
   // — let handleAuth handle them so VS gets proper responses.
   if (url === "/" || url.startsWith("/meta") || url.startsWith("/gists") || url.startsWith("/notifications") || url.startsWith("/search/") || url.startsWith("/settings/") || url.startsWith("/orgs/") || url.startsWith("/app") || url.startsWith("/installation")) {
+    return { handled: false };
+  }
+
+  // Don't swallow /completions (inline code completions) — let handleCopilot handle it
+  if (method === "POST" && url.includes("/completions") && !url.includes("/chat/completions")) {
     return { handled: false };
   }
 
