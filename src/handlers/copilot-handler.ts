@@ -16,7 +16,7 @@ import { repairToolCalls, detectApologyText, detectToolLoop, bumpSalvageStat, ex
 import { StreamResponseLogger } from "../streaming-log.ts";
 import { anthropicToOpenAIRequest } from "./anthropic-bridge.ts";
 import { ensureVSModels, VS_MODELS, detectVendor } from "./vs/models.ts";
-import { buildResponsesFromChatCompletion, streamResponsesObjectToSSE } from "./vs/response-converter.ts";
+import { buildResponsesFromChatCompletion, streamResponsesObjectToSSE, flattenResponsesInput } from "./vs/response-converter.ts";
 
 function isProviderRouted(model: string): boolean {
   if (model.startsWith("freebuff/")) return true;
@@ -1097,10 +1097,14 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
       }
       _lastRealModel = model;
 
-      const messages = [
-        ...(instructions ? [{ role: "system", content: instructions }] : []),
-        { role: "user", content: userContent },
-      ];
+      const { messages: flatMessages, system: flatSystem } = flattenResponsesInput(input);
+      const messages: any[] = [];
+      const sysParts: string[] = [];
+      if (flatSystem) sysParts.push(flatSystem);
+      if (instructions) sysParts.push(instructions);
+      if (sysParts.length) messages.push({ role: "system", content: sysParts.join("\n\n") });
+      for (const m of flatMessages) messages.push(m);
+      if (!messages.find((m: any) => m.role === "user")) messages.push({ role: "user", content: userContent });
 
       const provider = model.startsWith("umans-") ? "umans" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "unknown";
       const scrubbed3 = scrubTaskComplete(messages, tools);
