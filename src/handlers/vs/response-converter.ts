@@ -101,7 +101,7 @@ export function buildResponsesTaskComplete(model: string): any {
     name: "task_complete",
     arguments: "{}",
   }];
-  resp.usage = { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
+  resp.usage = { input_tokens: 0, output_tokens: 0, total_tokens: 0, input_tokens_details: { cached_tokens: 0 }, output_tokens_details: { reasoning_tokens: 0 } };
   return resp;
 }
 
@@ -169,6 +169,8 @@ export function buildResponsesFromChatCompletion(data: any, opts: ResponsesOptio
     input_tokens: usage.prompt_tokens || 0,
     output_tokens: usage.completion_tokens || 0,
     total_tokens: usage.total_tokens || 0,
+    input_tokens_details: { cached_tokens: (usage as any).prompt_tokens_details?.cached_tokens ?? 0 },
+    output_tokens_details: { reasoning_tokens: (usage as any).completion_tokens_details?.reasoning_tokens ?? 0 },
   };
   return resp;
 }

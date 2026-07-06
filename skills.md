@@ -291,7 +291,7 @@ The `/models` handler in `handleVSLegacy` has a **3-tier fallback**:
 
 ### Hybrid Mode Interception
 
-In hybrid mode, browser GET requests with `Accept: text/html` are passed through to real GitHub — EXCEPT when `isVsOAuth` is true (URL contains `client_id=a200baed193bb2088a6e`). This ensures the VS OAuth flow is always intercepted, even in hybrid mode.
+In hybrid mode, browser GET requests with `Accept: text/html` are passed through to real GitHub — EXCEPT when `isVsOAuth` is true (URL contains `client_id=a200baed193bb2088a6e` for VS, or `client_id=01ab8ac9400c4e429b23` / `get_started_with=copilot-vscode` / `redirect_uri=...vscode.dev/redirect` for VS Code). This ensures the VS and VS Code OAuth flows are always intercepted, even in hybrid mode.
 
 ```typescript
 if (isHybridMode && isBrowser && method === "GET" && !isVsOAuth) {

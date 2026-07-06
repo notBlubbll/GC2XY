@@ -1,6 +1,6 @@
 import { reqLog } from "./split-console.ts";
 
-type EndpointType = "ghcp" | "vs" | "copilot" | "auth" | "other";
+type EndpointType = "ghcp" | "vs" | "copilot" | "auth" | "desktop" | "other";
 
 interface EndpointStats {
   requests: number;
@@ -19,6 +19,7 @@ const _endpoints: Record<EndpointType, EndpointStats> = {
   vs: { requests: 0, inputTokens: 0, outputTokens: 0, cost: 0 },
   copilot: { requests: 0, inputTokens: 0, outputTokens: 0, cost: 0 },
   auth: { requests: 0, inputTokens: 0, outputTokens: 0, cost: 0 },
+  desktop: { requests: 0, inputTokens: 0, outputTokens: 0, cost: 0 },
   other: { requests: 0, inputTokens: 0, outputTokens: 0, cost: 0 },
 };
 
@@ -40,6 +41,7 @@ export function detectEndpoint(req: { url?: string; method?: string; headers?: R
   const host = (req.headers?.["host"] || "").toLowerCase();
 
   if (ua.startsWith("github-app/")) return "ghcp";
+  if (ua.includes("undici")) return "desktop";
   if (ua.includes("vscopilotclient")) return "copilot";
   const _edVer = (req.headers?.["editor-version"] || "").toLowerCase();
   const _interactionType = req.headers?.["x-interaction-type"] || "";

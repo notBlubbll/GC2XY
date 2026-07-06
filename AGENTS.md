@@ -144,6 +144,9 @@ sc failure w3svc reset= 86400 actions= restart/5000/restart/10000/restart/30000
 | `handlers/ghcp-app/index.ts` | GitHub App (Windows) route dispatcher: detects `github-app/*` User-Agent |
 | `handlers/ghcp-app/auth.ts` | GHCP app auth helpers and detection |
 | `handlers/ghcp-app/models.ts` | GHCP app model list format |
+| `handlers/copilot-desktop/index.ts` | GitHub Copilot Desktop route dispatcher: detects `undici` User-Agent, logs traffic |
+| `handlers/copilot-desktop/auth.ts` | Copilot Desktop auth handler: device code, OAuth token, user, copilot user/token |
+| `handlers/copilot-desktop/models.ts` | Copilot Desktop model list (non-thinking, simple format) |
 | `handlers/repo-handler.ts` | Repository operations: issues, comments, reactions, releases, assets, feedback |
 | `shared.ts` | Shared types (`HttpResponse`, `HandlerInput`, `HandlerResult`) and helpers |
 | `record-replay.ts` | Record/replay console for capturing and replaying HTTP flows (legacy; cache.ts is the modern replacement) |
@@ -261,6 +264,10 @@ The proxy supports **5 upstream model providers** determined by model ID prefix.
 ### GHCP App (github-app/* User-Agent)
 
 The GitHub App for Windows (Rust, `github-app/*` User-Agent) is detected and routed through `handlers/ghcp-app/`. Currently serves models from `ghcp-app/models.ts` and defers auth to the default handler.
+
+### Copilot Desktop (undici User-Agent)
+
+GitHub Copilot Desktop (Node.js backend, `User-Agent: undici`) is detected and routed through `handlers/copilot-desktop/`. It gets its own dedicated auth handler (`auth.ts`) serving device code, OAuth token, user, copilot user/token, content exclusion, and repository search responses. Models are served by `models.ts` without thinking variants. Unrecognized desktop traffic is logged and passed through to the shared Copilot handler for chat/completions. In proxy mode, all desktop auth and Copilot API paths are intercepted so traffic can be logged and faked.
 
 ### Copilot Proxy API (api.individual.githubcopilot.com) — Non-VS/Non-GHCP
 
@@ -419,6 +426,17 @@ Session events are internal background activity (agent state tracking, event str
 | POST | `/telemetry` or `/telemetry/*` | 204 No Content, empty body | `device-login-emulator.ts:11` |
 
 Telemetry is blocked in mock and hybrid modes (returns 204 immediately). In proxy mode the fake handler chain is skipped entirely, so telemetry passes through to the real endpoint.
+
+### Proxy Mode Interception
+
+In proxy mode, the fake handler chain is skipped for most traffic — requests forward to real GitHub and responses are cached. However, specific client types are still intercepted:
+
+- **VS 2022** (`VS/17.x`) — when a VS legacy model is configured
+- **GHCP App** (`github-app/*` UA) — Copilot API paths + GHCP-specific paths
+- **Copilot Desktop** (`undici` UA) — auth + Copilot API paths
+- **VS-family** (Visual Studio, SSMS) — auth + Copilot API paths
+- **GitHub CLI** (`gh` CLI subprocess) — auth + Copilot API paths
+- **VS Code OAuth** (`client_id=01ab8ac9400c4e429b23`, `get_started_with=copilot-vscode`, or `Visual Studio Code` UA) — `/login/oauth/*` and `/login/device*` paths, so the fake account picker + fake token flow runs instead of forwarding to real GitHub
 
 ### Catch-All
 

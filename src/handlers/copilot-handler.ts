@@ -16,6 +16,7 @@ import { repairToolCalls, detectApologyText, detectToolLoop, bumpSalvageStat, ex
 import { StreamResponseLogger } from "../streaming-log.ts";
 import { anthropicToOpenAIRequest } from "./anthropic-bridge.ts";
 import { ensureVSModels, VS_MODELS, detectVendor } from "./vs/models.ts";
+import { buildResponsesFromChatCompletion, streamResponsesObjectToSSE } from "./vs/response-converter.ts";
 
 function isProviderRouted(model: string): boolean {
   if (model.startsWith("freebuff/")) return true;
@@ -933,6 +934,11 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
     return { handled: true, response: { statusCode: 201, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "access-control-allow-origin": "*" }, body: Buffer.from(JSON.stringify({ id: session.id, agent_task_id: session.agent_task_id, task_id: session.task_id })) } };
   }
 
+  // GET /agents/sessions - list sessions (returns empty array)
+  if (method === "GET" && url.match(/\/agents\/sessions(\?|$)/)) {
+    return { handled: true, response: jsonResponse({ sessions: [], total_count: 0, page_size: 20, page_number: 1 }) };
+  }
+
   // GET /agents/sessions/{id} - get session state
   if (method === "GET" && url.match(/\/agents\/sessions\/[^/]+$/)) {
     const sessionId = url.split("/agents/sessions/")[1]?.split(/[?#]/)[0] || "";
@@ -1041,8 +1047,8 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
     return { handled: true, response: { statusCode: 201, headers: { "content-length": "0", "content-type": "application/json" }, body: Buffer.alloc(0) } };
   }
 
-  // POST /responses - OpenAI Responses API (Copilot CLI agent mode)
-  if (method === "POST" && (url === "/responses" || url.startsWith("/responses?"))) {
+  // POST /responses - OpenAI Responses API (VS Code Copilot Chat + Copilot CLI agent mode)
+  if (method === "POST" && (url === "/responses" || url.startsWith("/responses?"))) { trackRequest("copilot");
     let parsed: any = {};
     try { parsed = JSON.parse(body?.toString() || "{}"); } catch {}
     let model = parsed.model || "";
@@ -1054,46 +1060,49 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
     const userContent = typeof input === "string" ? input :
       Array.isArray(input) ? input.map((m: any) => safePreviewFromContent(m.content) || safePreviewFromContent(m) || "").join("\n") : "Hello";
 
-    await ensureModels();
-    const modelOverrides: Record<string, string> = {
-      "gpt-4o": "", "gpt-4": "", "gpt-3.5-turbo": "", "gpt-4-turbo": "",
-      "claude-haiku-4.5": "", "gpt-5-mini": "", "gpt-4.1": "", "qwen3.5-plus": "",
-    };
-    if (modelOverrides[model] !== undefined) {
-      const real = FAKE_MODELS.find((m: any) => m.id.startsWith("deepseek") && !m.id.includes("-embedding"))
-        || FAKE_MODELS.find((m: any) => {
-          const v = detectVendor(m.id);
-          return !m.id?.includes("-embedding") && v !== "MiniMax" && v !== "Moonshot AI" && v !== "Zhipu AI" && v !== "Alibaba Cloud";
-        });
-      model = real?.id || model;
-    }
-    if (!FAKE_MODELS.find((m: any) => m.id === model) && !isProviderRouted(model)) {
-      const origModel = model;
-      if (!model && _lastRealModel) {
-        model = _lastRealModel;
-      } else {
+    const tag = agentTag(headers);
+    const initialProvider = model.startsWith("umans-") ? "umans" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "unknown";
+    const completeLog = reqLog({ tag, provider: initialProvider, model: model || "?", preview: userContent, body: parsed });
+    const startTime = Date.now();
+    let sseHeadersSent = false;
+    let sseRespId = "";
+
+    try {
+      await ensureModels();
+      const modelOverrides: Record<string, string> = {
+        "gpt-4o": "", "gpt-4": "", "gpt-3.5-turbo": "", "gpt-4-turbo": "",
+        "claude-haiku-4.5": "", "gpt-5-mini": "", "gpt-4.1": "", "qwen3.5-plus": "",
+      };
+      if (modelOverrides[model] !== undefined) {
         const real = FAKE_MODELS.find((m: any) => m.id.startsWith("deepseek") && !m.id.includes("-embedding"))
           || FAKE_MODELS.find((m: any) => {
             const v = detectVendor(m.id);
             return !m.id?.includes("-embedding") && v !== "MiniMax" && v !== "Moonshot AI" && v !== "Zhipu AI" && v !== "Alibaba Cloud";
           });
-        model = real?.id || (FAKE_MODELS.length > 0 ? FAKE_MODELS[0].id : "big-pickle");
+        model = real?.id || model;
       }
-      console.log(`[MODEL] ${origModel || "(empty)"} not found, picked ${model}`);
-    }
-    _lastRealModel = model;
+      if (!FAKE_MODELS.find((m: any) => m.id === model) && !isProviderRouted(model)) {
+        const origModel = model;
+        if (!model && _lastRealModel) {
+          model = _lastRealModel;
+        } else {
+          const real = FAKE_MODELS.find((m: any) => m.id.startsWith("deepseek") && !m.id.includes("-embedding"))
+            || FAKE_MODELS.find((m: any) => {
+              const v = detectVendor(m.id);
+              return !m.id?.includes("-embedding") && v !== "MiniMax" && v !== "Moonshot AI" && v !== "Zhipu AI" && v !== "Alibaba Cloud";
+            });
+          model = real?.id || (FAKE_MODELS.length > 0 ? FAKE_MODELS[0].id : "big-pickle");
+        }
+        console.log(`[MODEL] ${origModel || "(empty)"} not found, picked ${model}`);
+      }
+      _lastRealModel = model;
 
-    const messages = [
-      ...(instructions ? [{ role: "system", content: instructions }] : []),
-      { role: "user", content: userContent },
-    ];
+      const messages = [
+        ...(instructions ? [{ role: "system", content: instructions }] : []),
+        { role: "user", content: userContent },
+      ];
 
-    const tag = agentTag(headers);
-    const provider = model.startsWith("umans-") ? "umans" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "unknown";
-    const completeLog = reqLog({ tag, provider, model, preview: userContent, body: parsed });
-    const startTime = Date.now();
-
-    try {
+      const provider = model.startsWith("umans-") ? "umans" : model.startsWith("freebuff/") ? "freebuff" : model.startsWith("agnes") ? "agnes" : model.startsWith("codestral") ? "codestral" : (model === "bitnet-demo" || model.startsWith("bitnet/")) ? "bitnet" : "unknown";
       const scrubbed3 = scrubTaskComplete(messages, tools);
       const cleanMsgs3 = scrubbed3.messages;
       const cleanTools3 = scrubbed3.tools;
@@ -1200,7 +1209,15 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
           created_at: Math.floor(Date.now() / 1000),
           model, instructions,
           output,
-          usage: data.usage || { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+          usage: data.usage
+            ? {
+                input_tokens: data.usage.prompt_tokens ?? data.usage.input_tokens ?? 0,
+                output_tokens: data.usage.completion_tokens ?? data.usage.output_tokens ?? 0,
+                total_tokens: data.usage.total_tokens ?? 0,
+                input_tokens_details: { cached_tokens: data.usage.prompt_tokens_details?.cached_tokens ?? 0 },
+                output_tokens_details: { reasoning_tokens: data.usage.completion_tokens_details?.reasoning_tokens ?? 0 },
+              }
+            : { input_tokens: 0, output_tokens: 0, total_tokens: 0, input_tokens_details: { cached_tokens: 0 }, output_tokens_details: { reasoning_tokens: 0 } },
         })};
       }
 
@@ -1210,40 +1227,67 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
         const actualStream = isStream && respCt.includes("text/event-stream");
         if (!actualStream) {
           const data: any = await resp.json().catch(() => ({}));
-          const respId = `resp_${forge.util.bytesToHex(forge.random.getBytesSync(8))}`;
-          const msgId = `msg_${forge.util.bytesToHex(forge.random.getBytesSync(8))}`;
           const head = `HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-store\r\naccess-control-allow-origin: *\r\nx-accel-buffering: no\r\nconnection: close\r\n\r\n`;
           sock.write(head);
-          sock.write(`event: response.created\ndata: ${JSON.stringify({ response: { id: respId, object: "response", created_at: Math.floor(Date.now() / 1000), model, instructions, status: "completed", incomplete_details: null, output: [], usage: data.usage || null } })}\n\n`);
-          const msg = data.choices?.[0]?.message || {};
-          let outIdx = 0;
-          if (msg.content) {
-            sock.write(`event: response.output_item.added\ndata: ${JSON.stringify({ response_id: respId, output_index: outIdx, item: { id: msgId, type: "message", role: "assistant", content: [{ type: "output_text", text: msg.content }], status: "completed" } })}\n\n`);
-            outIdx++;
+          sseHeadersSent = true;
+
+          // If upstream returned an error (no choices), synthesize a message
+          // so VS Code shows the error text instead of "The model unexpectedly
+          // did not return a response."
+          const msg = data.choices?.[0]?.message;
+          if (!msg) {
+            const errText = data.error?.message || JSON.stringify(data).slice(0, 200) || `upstream status ${resp.status}`;
+            data.choices = [{ message: { role: "assistant", content: `[Error] Upstream returned ${resp.status}: ${errText}` } }];
+          } else if (msg.content) {
+            msg.content = stripCopilotGreeting(msg.content);
+          } else if (!msg.tool_calls?.length) {
+            msg.content = "(The model returned an empty response.)";
           }
-          if (msg.tool_calls?.length) {
-            for (const tc of msg.tool_calls) {
-              const fn = tc.function || tc;
-              const callId = normalizeToolCallId(tc.id, "openai");
-              const args = typeof fn.arguments === "string" ? fn.arguments : JSON.stringify(fn.arguments || {});
-              sock.write(`event: response.output_item.added\ndata: ${JSON.stringify({ response_id: respId, output_index: outIdx, item: { id: callId, type: "function_call", status: "completed", name: fn.name || extractNameFromToolId(tc.id) || "unknown", arguments: args, call_id: callId } })}\n\n`);
-              outIdx++;
+
+          // Run tool salvager on non-streamed tool calls
+          if (msg?.tool_calls?.length) {
+            const { repaired, dropped } = repairToolCalls(msg.tool_calls);
+            const allDropped = msg.tool_calls.length > 0 && repaired.length === 0;
+            const isApology = detectApologyText(msg.content || "");
+            const isLoop = repaired.length
+              ? detectToolLoop(messages, { name: repaired[0].function?.name || "", arguments: repaired[0].function?.arguments || "{}" })
+              : { inLoop: false, count: 0, tool: "", args: "" };
+            if ((isApology && allDropped) || isLoop.inLoop) {
+              bumpSalvageStat(isLoop.inLoop ? "loopInjected" : "apologyInjected");
+              msg.tool_calls = [{ id: `call_${forge.util.bytesToHex(forge.random.getBytesSync(6))}`, type: "function", function: { name: "task_complete", arguments: "{}" } }];
+            } else {
+              msg.tool_calls = repaired;
             }
+          } else if (msg && detectApologyText(msg.content || "")) {
+            bumpSalvageStat("apologyInjected");
+            msg.tool_calls = [{ id: `call_${forge.util.bytesToHex(forge.random.getBytesSync(6))}`, type: "function", function: { name: "task_complete", arguments: "{}" } }];
           }
-          sock.write(`event: response.done\ndata: ${JSON.stringify({ response_id: respId })}\n\n`);
+
+          // Build a proper Responses API object and stream it as SSE —
+          // emits response.created → output_item.added → output_text.delta →
+          // output_item.done → response.completed with correct usage fields.
+          const rr = buildResponsesFromChatCompletion(data, { model });
+          try {
+            for await (const chunk of streamResponsesObjectToSSE(rr)) {
+              if (sock.destroyed || sock.closed) break;
+              try { sock.write(chunk); } catch { break; }
+            }
+          } catch {}
           sock.end();
           if (completeLog) completeLog(Date.now() - startTime);
           return { handled: true, response: { statusCode: 200, headers: {}, body: Buffer.alloc(0), _streamed: true } };
         }
         const respId = `resp_${forge.util.bytesToHex(forge.random.getBytesSync(8))}`;
+        sseRespId = respId;
       const msgId = `msg_${forge.util.bytesToHex(forge.random.getBytesSync(8))}`;
       const head = `HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-store\r\naccess-control-allow-origin: *\r\nx-accel-buffering: no\r\nx-quota-snapshot-chat: ent=500&ov=0.0&ovPerm=false&rem=58.0&rst=${new Date(new Date().getFullYear(), new Date().getMonth() + 1, 1).toISOString()}&totRem=290.0\r\nx-quota-snapshot-completions: ent=4000&ov=0.0&ovPerm=false&rem=58.0&rst=${new Date(new Date().getFullYear(), new Date().getMonth() + 1, 1).toISOString()}&totRem=2320.0\r\nconnection: close\r\n\r\n`;
         sock.write(head);
+        sseHeadersSent = true;
 
         sock.write(`event: response.created\ndata: ${JSON.stringify({ response: { id: respId, object: "response", created_at: Math.floor(Date.now() / 1000), model, instructions, status: "in_progress", incomplete_details: null, output: [], usage: null } })}\n\n`);
         let outputIndex = 0;
         sock.write(`event: response.output_item.added\ndata: ${JSON.stringify({ response_id: respId, output_index: outputIndex, item: { id: msgId, type: "message", role: "assistant", content: [], status: "in_progress" } })}\n\n`);
-        sock.write(`event: response.content_part.added\ndata: ${JSON.stringify({ response_id: respId, item_id: msgId, output_index: outputIndex, content_index: 0, part: { type: "text", text: "" } })}\n\n`);
+        sock.write(`event: response.content_part.added\ndata: ${JSON.stringify({ response_id: respId, item_id: msgId, output_index: outputIndex, content_index: 0, part: { type: "output_text", text: "", annotations: [] } })}\n\n`);
 
         const reader = resp.body!.getReader();
         const decoder = new TextDecoder();
@@ -1252,6 +1296,7 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
         let nextToolOutputIdx = 1;
         let gBuf = "";
         let gDone = false;
+        let upstreamUsage: any = null;
         const streamLog = new StreamResponseLogger({ endpoint: "/responses", model, resolved: model, status: resp.status });
         while (true) {
           const { done, value } = await reader.read();
@@ -1309,7 +1354,7 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
                   }
                 }
                 if (d.choices?.[0]?.finish_reason) streamLog.setFinishReason(d.choices[0].finish_reason);
-                if (d.usage) streamLog.setUsage(d.usage);
+                if (d.usage) { streamLog.setUsage(d.usage); upstreamUsage = d.usage; }
               } catch {}
             }
           }
@@ -1328,10 +1373,15 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
           gDone = true;
         }
 
-        const outputItems: any[] = [{ id: msgId, type: "message", role: "assistant", content: [{ type: "text", text: fullContent }] }];
+        if (!fullContent && !Object.keys(toolCallAccum).length) {
+          fullContent = "(The model returned an empty response.)";
+          sock.write(`event: response.output_text.delta\ndata: ${JSON.stringify({ response_id: respId, item_id: msgId, output_index: outputIndex, content_index: 0, delta: fullContent })}\n\n`);
+        }
+
+        const outputItems: any[] = [{ id: msgId, type: "message", role: "assistant", content: [{ type: "output_text", text: fullContent, annotations: [] }] }];
         sock.write(`event: response.output_text.done\ndata: ${JSON.stringify({ response_id: respId, item_id: msgId, output_index: outputIndex, content_index: 0, text: fullContent })}\n\n`);
-        sock.write(`event: response.content_part.done\ndata: ${JSON.stringify({ response_id: respId, item_id: msgId, output_index: outputIndex, content_index: 0, part: { type: "text", text: fullContent } })}\n\n`);
-        sock.write(`event: response.output_item.done\ndata: ${JSON.stringify({ response_id: respId, output_index: outputIndex, item: { id: msgId, type: "message", role: "assistant", content: [{ type: "text", text: fullContent }], status: "completed" } })}\n\n`);
+        sock.write(`event: response.content_part.done\ndata: ${JSON.stringify({ response_id: respId, item_id: msgId, output_index: outputIndex, content_index: 0, part: { type: "output_text", text: fullContent, annotations: [] } })}\n\n`);
+        sock.write(`event: response.output_item.done\ndata: ${JSON.stringify({ response_id: respId, output_index: outputIndex, item: { id: msgId, type: "message", role: "assistant", content: [{ type: "output_text", text: fullContent, annotations: [] }], status: "completed" } })}\n\n`);
 
         // ── Tool salvager (responses streaming path) ──
         // Buffer was collected during stream; run salvager on accumulated tool calls.
@@ -1386,7 +1436,24 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
             sock.write(`event: response.output_item.done\ndata: ${JSON.stringify({ response_id: respId, output_index: acc.ouputIndex, item: { id: acc.id, type: "function_call", status: "completed", name: acc.name, call_id: acc.id, arguments: args } })}\n\n`);
           }
         }
-        sock.write(`event: response.completed\ndata: ${JSON.stringify({ response: { id: respId, object: "response", created_at: Math.floor(Date.now() / 1000), model, instructions, status: "completed", incomplete_details: null, output: outputItems, usage: { input_tokens: 0, output_tokens: fullContent.length, total_tokens: fullContent.length } } })}\n\n`);
+        const respUsage = upstreamUsage
+          ? {
+              input_tokens: upstreamUsage.prompt_tokens ?? upstreamUsage.input_tokens ?? 0,
+              output_tokens: upstreamUsage.completion_tokens ?? upstreamUsage.output_tokens ?? fullContent.length,
+              total_tokens: upstreamUsage.total_tokens ?? 0,
+              input_tokens_details: { cached_tokens: upstreamUsage.prompt_tokens_details?.cached_tokens ?? 0 },
+              output_tokens_details: { reasoning_tokens: upstreamUsage.completion_tokens_details?.reasoning_tokens ?? 0 },
+            }
+          : { input_tokens: 0, output_tokens: fullContent.length, total_tokens: fullContent.length, input_tokens_details: { cached_tokens: 0 }, output_tokens_details: { reasoning_tokens: 0 } };
+        const copilotUsage = {
+          token_details: [
+            { batch_size: 1000000, cost_per_batch: 25000000000, token_count: respUsage.input_tokens, token_type: "input" },
+            { batch_size: 1000000, cost_per_batch: 2000000000, token_count: 0, token_type: "cache_read" },
+            { batch_size: 1000000, cost_per_batch: 200000000000, token_count: respUsage.output_tokens, token_type: "output" },
+          ],
+          total_nano_aiu: respUsage.output_tokens * 100000,
+        };
+        sock.write(`event: response.completed\ndata: ${JSON.stringify({ copilot_usage: copilotUsage, response: { id: respId, object: "response", created_at: Math.floor(Date.now() / 1000), model, instructions, status: "completed", incomplete_details: null, output: outputItems, usage: respUsage } })}\n\n`);
         sock.end();
         const elapsed = Date.now() - startTime;
         if (completeLog) completeLog(elapsed);
@@ -1394,10 +1461,38 @@ export async function handleCopilot(req: HandlerInput): Promise<HandlerResult> {
         return { handled: true, response: { statusCode: 200, headers: {}, body: Buffer.alloc(0), _streamed: true } };
       }
 
+      if (completeLog) completeLog(Date.now() - startTime);
       return { handled: true, response: jsonResponse({ error: "no socket" }, 500) };
     } catch (e: any) {
       const elapsed = Date.now() - startTime;
       if (completeLog) completeLog(elapsed);
+      console.log(`[COPILOT /responses] error: ${e.message}`);
+      const errSock = req.clientSocket;
+      if (isStream && errSock && !errSock.destroyed && !errSock.closed) {
+        const errMsg = `Mock response (upstream: ${e.message})`;
+        if (sseHeadersSent) {
+          try {
+            const rid = sseRespId || `resp_${forge.util.bytesToHex(forge.random.getBytesSync(8))}`;
+            errSock.write(`event: response.output_text.delta\ndata: ${JSON.stringify({ response_id: rid, delta: errMsg })}\n\n`);
+            errSock.write(`event: response.output_text.done\ndata: ${JSON.stringify({ response_id: rid, text: errMsg })}\n\n`);
+            errSock.write(`event: response.completed\ndata: ${JSON.stringify({ copilot_usage: { token_details: [], total_nano_aiu: 0 }, response: { id: rid, object: "response", status: "completed", output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: errMsg, annotations: [] }] }], usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 } } })}\n\n`);
+          } catch {}
+          try { errSock.end(); } catch {}
+          return { handled: true, response: { statusCode: 200, headers: {}, body: Buffer.alloc(0), _streamed: true } };
+        }
+        const data = { choices: [{ index: 0, message: { role: "assistant", content: errMsg }, finish_reason: "stop" }], usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 } };
+        const rr = buildResponsesFromChatCompletion(data, { model });
+        try {
+          const head = `HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-store\r\naccess-control-allow-origin: *\r\nx-accel-buffering: no\r\nconnection: close\r\n\r\n`;
+          errSock.write(head);
+          for await (const chunk of streamResponsesObjectToSSE(rr)) {
+            if (errSock.destroyed || errSock.closed) break;
+            try { errSock.write(chunk); } catch { break; }
+          }
+        } catch {}
+        try { errSock.end(); } catch {}
+        return { handled: true, response: { statusCode: 200, headers: {}, body: Buffer.alloc(0), _streamed: true } };
+      }
       const tcId = `call_${forge.util.bytesToHex(forge.random.getBytesSync(6))}`;
       return { handled: true, response: jsonResponse({
         choices: [{ index: 0, message: { role: "assistant", content: `Mock response (upstream: ${e.message})`, tool_calls: [{ id: tcId, type: "function", function: { name: "task_complete", arguments: "{}" } }] }, finish_reason: "tool_calls" }],

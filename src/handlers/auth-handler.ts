@@ -91,7 +91,7 @@ export function handleAuth(req: HandlerInput): HandlerResult {
   if (!ENABLED) return { handled: false };
   const { method, url, body, headers } = req;
   const isHybridMode = isHybrid();
-  const isVsOAuth = url.includes("vsweb+githubsi://") || url.includes("vsweb%2Bgithubsi%3A%2F%2F") || url.includes("client_id=a200baed193bb2088a6e");
+  const isVsOAuth = url.includes("vsweb+githubsi://") || url.includes("vsweb%2Bgithubsi%3A%2F%2F") || url.includes("client_id=a200baed193bb2088a6e") || url.includes("client_id=01ab8ac9400c4e429b23") || url.includes("get_started_with=copilot-vscode") || url.includes("redirect_uri=https%3A%2F%2Fvscode.dev%2Fredirect");
   const isBrowser = (headers?.["accept"] || "").includes("text/html");
 
   // ✨ ALWAYS return JSON for api.github.com/ — checked first, before hybrid passthrough
@@ -137,7 +137,7 @@ export function handleAuth(req: HandlerInput): HandlerResult {
     }
   }
 
-  if (isHybridMode && isBrowser && method === "GET" && !isVsOAuth) {
+  if (isHybridMode && isBrowser && method === "GET" && !isVsOAuth && !url.includes("/login/device")) {
     return { handled: false };
   }
 
@@ -288,7 +288,7 @@ export function handleAuth(req: HandlerInput): HandlerResult {
     const fakeSessionId = forge.util.bytesToHex(forge.random.getBytesSync(32));
     authCodes.set(fakeCode, { code: fakeCode, clientId, redirectUri, scope, createdAt: Date.now() });
     console.log(`[FAKE GHE] Generated auth code: ${fakeCode} for client: ${clientId}`);
-    const callbackUrl = `${redirectUri}?browser_session_id=${fakeSessionId}&code=${fakeCode}&state=${state}`;
+    const callbackUrl = `${redirectUri}?browser_session_id=${fakeSessionId}&code=${fakeCode}&state=${encodeURIComponent(state)}`;
     return {
       handled: true,
       response: htmlResponse(`<!DOCTYPE html>

@@ -1092,10 +1092,10 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
       if (parsed.stop !== undefined) respExtras.stop = parsed.stop;
       const fallbackRouted = await routeChatWithFallback(model, cleanMessages, cleanToolsBn, isStream, respExtras, vsSession);
       let resp = fallbackRouted.response;
-      const rawText = await responseBodyToString(resp);
       const respCt = resp.headers.get("content-type") || "";
-      console.log(`[VS RESPONSES] req=${model} resolved=${fallbackRouted.model} status=${resp.status} ct=${respCt} rawLen=${rawText.length}`);
-      vsRespLog(`[ROUTE] resolved=${fallbackRouted.model} status=${resp.status} ct=${respCt} rawLen=${rawText.length} rawPreview=${rawText.slice(0, 800).replace(/\n/g, "\\n")}`);
+      const upstreamIsSSE = respCt.includes("event-stream");
+      console.log(`[VS RESPONSES] req=${model} resolved=${fallbackRouted.model} status=${resp.status} ct=${respCt} stream=${isStream} sse=${upstreamIsSSE}`);
+      vsRespLog(`[ROUTE] resolved=${fallbackRouted.model} status=${resp.status} ct=${respCt} stream=${isStream}`);
 
       const respOpts: ResponsesOptions = {
         model: fallbackRouted.model,
@@ -1115,34 +1115,10 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
         messages: cleanMessages,
       };
 
-      const upstreamIsSSE = respCt.includes("event-stream") || rawText.trim().startsWith("data:");
-
-      // Build the final response object first (handles non-JSON, stripping, salvaging, etc.)
-      let openaiData: any;
-      if (upstreamIsSSE) {
-        // Use already parsed streaming logic below; don't pre-build JSON here.
-      } else {
-        if (resp.status >= 400) {
-          console.log(`[VS RESPONSES] upstream error ${resp.status}: ${rawText.slice(0, 500)}`);
-          vsRespLog(`[UPSTREAM ERROR] status=${resp.status} body=${rawText.slice(0, 500)}`);
-          const errMsg = rawText.length > 500 ? rawText.slice(0, 500) + "..." : rawText;
-          openaiData = { choices: [{ message: { role: "assistant", content: `[Error] Upstream returned ${resp.status}: ${errMsg}` } }] };
-        } else {
-          try { openaiData = JSON.parse(rawText); } catch (e: any) {
-            console.log(`[VS RESPONSES] upstream non-JSON (${resp.status}): ${rawText.slice(0, 300)}`);
-            openaiData = { choices: [{ message: { role: "assistant", content: `Upstream error (${resp.status}): ${rawText.slice(0, 500)}` } }] };
-          }
-          if (openaiData?.choices?.[0]?.message?.content) {
-            openaiData.choices[0].message.content = stripCopilotGreeting(openaiData.choices[0].message.content);
-          }
-        }
-      }
-
-      // The client requested stream=true, so WE are responsible for streaming back as SSE
-      // regardless of whether the upstream returned a JSON blob or proper SSE.
       const sock = req.clientSocket;
       const copilotServiceReqId = headers["x-request-id"] || forge.util.bytesToHex(forge.random.getBytesSync(16));
       const quotaHeaders = buildQuotaSnapshotHeaders();
+
       if (isStream && sock) {
         const respHead = `HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\ncontent-security-policy: default-src 'none'; sandbox\r\nstrict-transport-security: max-age=31536000\r\naccess-control-allow-origin: *\r\nx-accel-buffering: no\r\nx-copilot-service-request-id: ${copilotServiceReqId}\r\n${quotaHeaders}connection: close\r\n\r\n`;
         sock.write(respHead);
@@ -1150,16 +1126,8 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
         let emittedBytes = 0;
         let firstChunk = "";
         try {
-          if (upstreamIsSSE) {
-            const reader = new ReadableStream({
-              start(controller) {
-                const lines = rawText.split("\n");
-                for (const line of lines) {
-                  controller.enqueue(new TextEncoder().encode(line + "\n"));
-                }
-                controller.close();
-              }
-            }).getReader();
+          if (upstreamIsSSE && resp.body) {
+            const reader = resp.body.getReader();
             for await (const chunk of streamChatCompletionToResponses(reader, respOpts)) {
               if (sock.destroyed || sock.closed) break;
               emittedBytes += chunk.length;
@@ -1167,6 +1135,23 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
               try { sock.write(chunk); } catch { break; }
             }
           } else {
+            const rawText = await responseBodyToString(resp);
+            vsRespLog(`[ROUTE] rawLen=${rawText.length} rawPreview=${rawText.slice(0, 800).replace(/\n/g, "\\n")}`);
+            let openaiData: any;
+            if (resp.status >= 400) {
+              console.log(`[VS RESPONSES] upstream error ${resp.status}: ${rawText.slice(0, 500)}`);
+              vsRespLog(`[UPSTREAM ERROR] status=${resp.status} body=${rawText.slice(0, 500)}`);
+              const errMsg = rawText.length > 500 ? rawText.slice(0, 500) + "..." : rawText;
+              openaiData = { choices: [{ message: { role: "assistant", content: `[Error] Upstream returned ${resp.status}: ${errMsg}` } }] };
+            } else {
+              try { openaiData = JSON.parse(rawText); } catch (e: any) {
+                console.log(`[VS RESPONSES] upstream non-JSON (${resp.status}): ${rawText.slice(0, 300)}`);
+                openaiData = { choices: [{ message: { role: "assistant", content: `Upstream error (${resp.status}): ${rawText.slice(0, 500)}` } }] };
+              }
+              if (openaiData?.choices?.[0]?.message?.content) {
+                openaiData.choices[0].message.content = stripCopilotGreeting(openaiData.choices[0].message.content);
+              }
+            }
             const rr = buildResponsesFromChatCompletion(openaiData, respOpts);
             vsRespLog(`[RESPONSE JSON] output_items=${rr.output?.length || 0} firstText=${JSON.stringify(rr.output?.[0]?.content?.[0]?.text || "").slice(0, 200)}`);
             try {
@@ -1192,33 +1177,46 @@ export async function handleVisualStudio(req: HandlerInput): Promise<HandlerResu
         return { handled: true, response: { statusCode: 200, headers: {}, body: Buffer.alloc(0), _streamed: true } };
       }
 
-      // No socket fallback: build JSON object only if upstream was also non-streaming
+      // Non-streaming: buffer and process
+      const rawText = await responseBodyToString(resp);
+      vsRespLog(`[ROUTE] rawLen=${rawText.length} rawPreview=${rawText.slice(0, 800).replace(/\n/g, "\\n")}`);
+      let openaiData: any;
+      if (resp.status >= 400) {
+        console.log(`[VS RESPONSES] upstream error ${resp.status}: ${rawText.slice(0, 500)}`);
+        const errMsg = rawText.length > 500 ? rawText.slice(0, 500) + "..." : rawText;
+        openaiData = { choices: [{ message: { role: "assistant", content: `[Error] Upstream returned ${resp.status}: ${errMsg}` } }] };
+      } else {
+        try { openaiData = JSON.parse(rawText); } catch (e: any) {
+          openaiData = { choices: [{ message: { role: "assistant", content: `Upstream error (${resp.status}): ${rawText.slice(0, 500)}` } }] };
+        }
+        if (openaiData?.choices?.[0]?.message?.content) {
+          openaiData.choices[0].message.content = stripCopilotGreeting(openaiData.choices[0].message.content);
+        }
+      }
+
       const elapsed = Date.now() - startTime;
       if (responsesComplete) responsesComplete(elapsed);
-      if (!upstreamIsSSE) {
-        const rr = buildResponsesFromChatCompletion(openaiData, respOpts);
-        const quotaHdrs: Record<string, string> = {};
-        const now = new Date();
-        const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
-        const rst = nextMonth.toISOString();
-        quotaHdrs["x-quota-snapshot-chat"] = `ent=500&ov=0.0&ovPerm=false&rem=58.0&rst=${rst}&totRem=290.0`;
-        quotaHdrs["x-quota-snapshot-completions"] = `ent=4000&ov=0.0&ovPerm=false&rem=58.0&rst=${rst}&totRem=2320.0`;
-        quotaHdrs["x-quota-snapshot-premium_interactions"] = `ent=1000&ov=0.0&ovPerm=false&rem=58.0&rst=${rst}&totRem=580.0`;
-        quotaHdrs["x-copilot-service-request-id"] = copilotServiceReqId;
-        return { handled: true, response: {
-          statusCode: 200,
-          headers: {
-            "content-type": "application/json; charset=utf-8",
-            "cache-control": "no-cache",
-            "content-security-policy": "default-src 'none'; sandbox",
-            "strict-transport-security": "max-age=31536000",
-            "access-control-allow-origin": "*",
-            ...quotaHdrs,
-          },
-          body: Buffer.from(JSON.stringify(rr)),
-        } };
-      }
-      return { handled: true, response: jsonResponse({ error: "no socket" }, 500) };
+      const rr = buildResponsesFromChatCompletion(openaiData, respOpts);
+      const quotaHdrs: Record<string, string> = {};
+      const now = new Date();
+      const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+      const rst = nextMonth.toISOString();
+      quotaHdrs["x-quota-snapshot-chat"] = `ent=500&ov=0.0&ovPerm=false&rem=58.0&rst=${rst}&totRem=290.0`;
+      quotaHdrs["x-quota-snapshot-completions"] = `ent=4000&ov=0.0&ovPerm=false&rem=58.0&rst=${rst}&totRem=2320.0`;
+      quotaHdrs["x-quota-snapshot-premium_interactions"] = `ent=1000&ov=0.0&ovPerm=false&rem=58.0&rst=${rst}&totRem=580.0`;
+      quotaHdrs["x-copilot-service-request-id"] = copilotServiceReqId;
+      return { handled: true, response: {
+        statusCode: 200,
+        headers: {
+          "content-type": "application/json; charset=utf-8",
+          "cache-control": "no-cache",
+          "content-security-policy": "default-src 'none'; sandbox",
+          "strict-transport-security": "max-age=31536000",
+          "access-control-allow-origin": "*",
+          ...quotaHdrs,
+        },
+        body: Buffer.from(JSON.stringify(rr)),
+      } };
     } catch (e: any) {
       const elapsed = Date.now() - startTime;
       if (responsesComplete) responsesComplete(elapsed);

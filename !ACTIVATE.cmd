@@ -41,7 +41,7 @@ rem Remove leftover global ipport binding from old runs (poisons other IIS sites
 netsh http delete sslcert ipport=0.0.0.0:443 >nul 2>&1
 netsh http delete sslcert ipport=[::]:443 >nul 2>&1
 rem Remove SNI bindings for our hostnames
-for %%h in (github.com www.github.com api.github.com api.githubcopilot.com copilot-proxy.githubusercontent.com api.individual.githubcopilot.com origin-tracker.individual.githubcopilot.com proxy.individual.githubcopilot.com telemetry.individual.githubcopilot.com) do (
+for %%h in (github.com www.github.com api.github.com api.githubcopilot.com copilot-proxy.githubusercontent.com api.individual.githubcopilot.com origin-tracker.individual.githubcopilot.com proxy.individual.githubcopilot.com telemetry.individual.githubcopilot.com dc.services.visualstudio.com) do (
     netsh http delete sslcert "hostnameport=%%h:443" >nul 2>&1
 )
 
@@ -68,7 +68,7 @@ rem Always update physical path, app pool, and bindings (stale config from other
 %APP_CMD% set vdir "%SITE_NAME%/" -physicalPath:"%IIS_DIR%" >nul 2>&1
 %APP_CMD% set app "%SITE_NAME%/" -applicationPool:"%SITE_NAME%" >nul 2>&1
 %APP_CMD% set site "%SITE_NAME%" "/-bindings" >nul 2>&1
-for %%h in (github.com www.github.com api.github.com api.githubcopilot.com copilot-proxy.githubusercontent.com api.individual.githubcopilot.com origin-tracker.individual.githubcopilot.com proxy.individual.githubcopilot.com telemetry.individual.githubcopilot.com) do (
+for %%h in (github.com www.github.com api.github.com api.githubcopilot.com copilot-proxy.githubusercontent.com api.individual.githubcopilot.com origin-tracker.individual.githubcopilot.com proxy.individual.githubcopilot.com telemetry.individual.githubcopilot.com dc.services.visualstudio.com) do (
     %APP_CMD% set site "%SITE_NAME%" "/+bindings.[protocol='http',bindingInformation='*:80:%%h']" >nul 2>&1
     %APP_CMD% set site "%SITE_NAME%" "/+bindings.[protocol='https',bindingInformation='*:443:%%h',sslFlags='1']" >nul 2>&1
 )
@@ -173,7 +173,7 @@ findstr /C:"127.0.0.1 github.com" "C:\Windows\System32\drivers\etc\hosts" >nul 2
 if %ERRORLEVEL% equ 0 (
     echo   Hosts file already patched.
 ) else (
-    echo 127.0.0.1 github.com www.github.com api.github.com api.githubcopilot.com copilot-proxy.githubusercontent.com api.individual.githubcopilot.com origin-tracker.individual.githubcopilot.com proxy.individual.githubcopilot.com telemetry.individual.githubcopilot.com >> "C:\Windows\System32\drivers\etc\hosts"
+    echo 127.0.0.1 github.com www.github.com api.github.com api.githubcopilot.com copilot-proxy.githubusercontent.com api.individual.githubcopilot.com origin-tracker.individual.githubcopilot.com proxy.individual.githubcopilot.com telemetry.individual.githubcopilot.com dc.services.visualstudio.com >> "C:\Windows\System32\drivers\etc\hosts"
     echo   Hosts file patched.
 )
 ipconfig /flushdns >nul 2>&1
@@ -185,6 +185,16 @@ echo.
 set "gc2xy_SETUP_DONE=1"
 
 :skip_setup
+rem Always re-bind SSL cert when IIS is active — the proxy may have regenerated
+rem the intercept cert on restart, leaving the Windows store with a stale cert
+rem whose CA signature no longer matches (causes ERR_CERT_AUTHORITY_INVALID /
+rem certificate signature failure in VS Code / Chrome).
+sc query w3svc | findstr "RUNNING" >nul 2>&1
+if %ERRORLEVEL% equ 0 (
+    set IIS_PROXY=1
+    set gc2xy_HTTP_PORT=3080
+    call :iis_ssl_bind
+)
 if "%gc2xy_RESTART%"=="1" (
     set "gc2xy_RESTART="
     call :read_config_mode
@@ -264,7 +274,7 @@ if "!CERT_HASH!"=="" (
 )
 echo     Cert hash: !CERT_HASH!
 rem SNI-based bindings per intercepted host only (no ipport= — that poisons other IIS sites)
-for %%h in (github.com www.github.com api.github.com api.githubcopilot.com copilot-proxy.githubusercontent.com api.individual.githubcopilot.com origin-tracker.individual.githubcopilot.com proxy.individual.githubcopilot.com telemetry.individual.githubcopilot.com) do (
+for %%h in (github.com www.github.com api.github.com api.githubcopilot.com copilot-proxy.githubusercontent.com api.individual.githubcopilot.com origin-tracker.individual.githubcopilot.com proxy.individual.githubcopilot.com telemetry.individual.githubcopilot.com dc.services.visualstudio.com) do (
     netsh http delete sslcert hostnameport=%%h:443 >nul 2>&1
     netsh http add sslcert hostnameport=%%h:443 certhash=!CERT_HASH! appid={4dc3e181-e14b-4a21-b022-59fc669b0914} certstorename=MY >nul 2>&1
     if !ERRORLEVEL! equ 0 (echo     + %%h) else (echo     FAIL: %%h)

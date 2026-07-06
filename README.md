@@ -174,7 +174,7 @@ Implementation: `src/mcp-writer.ts`. Called from `mitm-proxy.ts` right after `cr
 | **Visual Studio** | `editor-version: VS/VisualStudio.*` header | Enterprise |
 | **VS Code** | `user-agent: VSCopilotClient/*` | Individual/Free |
 | **GitHub App (Windows)** | `user-agent: github-app/*` | Individual (via GHCP handler) |
-| **Copilot Desktop** | `user-agent: undici` | Individual/Free |
+| **Copilot Desktop** | `user-agent: undici` | Individual/Free (via copilot-desktop handler) |
 | **VS Team Explorer** | `user-agent: VSTeamExplorer-GitHub/*` | Enterprise |
 | **Browser** | `accept: text/html` | Individual/Free |
 

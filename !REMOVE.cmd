@@ -33,13 +33,14 @@ if not exist "%HOSTS%" goto :skip_hosts
 findstr /V "# MITM Debug Proxy" "%HOSTS%" > "%TEMP%\hosts-clean.tmp"
 findstr /V "127.0.0.1 github" "%TEMP%\hosts-clean.tmp" > "%TEMP%\hosts-clean2.tmp"
 findstr /V "127.0.0.1 api.github" "%TEMP%\hosts-clean2.tmp" > "%TEMP%\hosts-clean3.tmp"
-findstr /V "127.0.0.1 copilot" "%TEMP%\hosts-clean3.tmp" > "%TEMP%\hosts-clean4.tmp"
+findstr /V "127.0.0.1 dc.services" "%TEMP%\hosts-clean3.tmp" > "%TEMP%\hosts-clean4.tmp"
+findstr /V "127.0.0.1 copilot" "%TEMP%\hosts-clean4.tmp" > "%TEMP%\hosts-clean5.tmp"
 attrib -r "%HOSTS%" >nul 2>&1
-copy /Y "%TEMP%\hosts-clean4.tmp" "%HOSTS%" >nul 2>&1
+copy /Y "%TEMP%\hosts-clean5.tmp" "%HOSTS%" >nul 2>&1
 if %ERRORLEVEL% EQU 0 goto :hosts_ok
-powershell -NoProfile -Command "Get-Content '%TEMP%\hosts-clean4.tmp' | Set-Content '%HOSTS%' -Force"
+powershell -NoProfile -Command "Get-Content '%TEMP%\hosts-clean5.tmp' | Set-Content '%HOSTS%' -Force"
 :hosts_ok
-del "%TEMP%\hosts-clean.tmp" "%TEMP%\hosts-clean2.tmp" "%TEMP%\hosts-clean3.tmp" "%TEMP%\hosts-clean4.tmp" 2>nul
+del "%TEMP%\hosts-clean.tmp" "%TEMP%\hosts-clean2.tmp" "%TEMP%\hosts-clean3.tmp" "%TEMP%\hosts-clean4.tmp" "%TEMP%\hosts-clean5.tmp" 2>nul
 echo   Hosts file cleaned.
 :skip_hosts
 
@@ -70,7 +71,7 @@ rem Remove leftover global ipport bindings from old runs
 netsh http delete sslcert ipport=0.0.0.0:443 >nul 2>&1
 netsh http delete sslcert ipport=[::]:443 >nul 2>&1
 rem Remove SNI bindings for our hostnames
-for %%h in (github.com www.github.com api.github.com api.githubcopilot.com copilot-proxy.githubusercontent.com api.individual.githubcopilot.com origin-tracker.individual.githubcopilot.com proxy.individual.githubcopilot.com telemetry.individual.githubcopilot.com) do (
+for %%h in (github.com www.github.com api.github.com api.githubcopilot.com copilot-proxy.githubusercontent.com api.individual.githubcopilot.com origin-tracker.individual.githubcopilot.com proxy.individual.githubcopilot.com telemetry.individual.githubcopilot.com dc.services.visualstudio.com) do (
     netsh http delete sslcert "hostnameport=%%h:443" >nul 2>&1
 )
 iisreset

@@ -1,7 +1,7 @@
 ﻿import { createServer, createConnection, Socket, Server } from "node:net";
 import { createServer as createTlsServer, TLSSocket } from "node:tls";
-import { request as httpRequest } from "node:http";
-import { request as httpsRequest } from "node:https";
+import { request as httpRequest, Agent as HttpAgent } from "node:http";
+import { request as httpsRequest, Agent as HttpsAgent } from "node:https";
 import { generateKeyPairSync, createPrivateKey, createPublicKey, createHash } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, createWriteStream, appendFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
@@ -13,6 +13,7 @@ import * as recorder from "./commands.ts";
 let _trafficLoggingEnabled = process.env.RECORD_MODE === "1";
 import * as deviceLogin from "./handlers/device-login-emulator.ts";
 import { isVSLegacyClient } from "./handlers/vs-legacy/index.ts";
+import { isVSShell } from "./handlers/vs-shell/index.ts";
 import * as offlineStore from "./offline-store.ts";
 import * as splitConsole from "./split-console.ts";
 import { ts, agentTag, agentName, colorMethod, colorStatus, httpLogLine, generalLogLine, getTps, isDebug } from "./split-console.ts";
@@ -22,28 +23,100 @@ import { handleDashboard, incrementRequests as dashIncReq, createWsServer, start
 import { patchSsmsMcpConfigs } from "./mcp-writer.ts";
 
 // Real IP cache to bypass hosts file for non-intercepted requests
-const INTERCEPTED_HOSTS = ["github.com", "www.github.com", "api.github.com", "api.githubcopilot.com", "copilot-proxy.githubusercontent.com", "api.individual.githubcopilot.com", "origin-tracker.individual.githubcopilot.com", "proxy.individual.githubcopilot.com", "telemetry.individual.githubcopilot.com"];
+const INTERCEPTED_HOSTS = ["github.com", "www.github.com", "api.github.com", "api.githubcopilot.com", "copilot-proxy.githubusercontent.com", "api.individual.githubcopilot.com", "origin-tracker.individual.githubcopilot.com", "proxy.individual.githubcopilot.com", "telemetry.individual.githubcopilot.com", "dc.services.visualstudio.com"];
 const REAL_IPS: Record<string, string> = {
   "github.com": "140.82.121.4",
   "www.github.com": "140.82.121.3",
-  "api.github.com": "140.82.121.5",
-  "api.githubcopilot.com": "140.82.114.21",
+  "api.github.com": "140.82.121.6",
+  "api.githubcopilot.com": "140.82.113.22",
   "copilot-proxy.githubusercontent.com": "4.225.11.192",
-  "api.individual.githubcopilot.com": "140.82.113.22",
-  "origin-tracker.individual.githubcopilot.com": "140.82.113.22",
+  "api.individual.githubcopilot.com": "140.82.114.21",
+  "origin-tracker.individual.githubcopilot.com": "140.82.112.21",
   "proxy.individual.githubcopilot.com": "4.225.11.192",
-  "telemetry.individual.githubcopilot.com": "140.82.113.21",
+  "telemetry.individual.githubcopilot.com": "140.82.112.22",
+  "dc.services.visualstudio.com": "20.50.88.241",
   "127.0.0.1": "127.0.0.1",
 };
 const realIps = new Map<string, string>();
 
+const HTTP_UPSTREAM_AGENT = new HttpAgent({
+  keepAlive: true,
+  keepAliveMsecs: 60000,
+  maxSockets: 128,
+  maxFreeSockets: 64,
+  scheduling: "lifo",
+  timeout: 300000,
+});
+
+const HTTPS_UPSTREAM_AGENT = new HttpsAgent({
+  keepAlive: true,
+  keepAliveMsecs: 60000,
+  maxSockets: 128,
+  maxFreeSockets: 64,
+  scheduling: "lifo",
+  timeout: 300000,
+});
+
+function dohResolve(host: string, resolver = "cloudflare-dns.com"): Promise<string | null> {
+  return new Promise((resolve) => {
+    const url = `https://${resolver}/dns-query?name=${encodeURIComponent(host)}&type=A`;
+    const req = httpsRequest(url, {
+      method: "GET",
+      headers: { Accept: "application/dns-json" },
+      timeout: 5000,
+      rejectUnauthorized: false,
+    }, (res) => {
+      let data = "";
+      res.on("data", (chunk: Buffer) => { data += chunk.toString(); });
+      res.on("end", () => {
+        try {
+          const json = JSON.parse(data);
+          const answer = json.Answer?.find((a: any) => a.type === 1)?.data;
+          if (answer && typeof answer === "string") {
+            resolve(answer);
+          } else {
+            resolve(null);
+          }
+        } catch {
+          resolve(null);
+        }
+      });
+    });
+    req.on("error", () => resolve(null));
+    req.on("timeout", () => { req.destroy(); resolve(null); });
+    req.end();
+  });
+}
+
 async function getRealIp(host: string): Promise<string> {
   if (realIps.has(host)) return realIps.get(host)!;
+  // Try DNS-over-HTTPS first to avoid stale hardcoded fallback IPs
+  try {
+    const dohIp = await dohResolve(host);
+    if (dohIp) {
+      realIps.set(host, dohIp);
+      log("DEBUG", `DoH resolved ${host} -> ${dohIp}`);
+      return dohIp;
+    }
+  } catch {}
+  // Fall back to hardcoded map
   if (REAL_IPS[host]) {
     realIps.set(host, REAL_IPS[host]);
+    log("DEBUG", `Using hardcoded IP for ${host}: ${REAL_IPS[host]}`);
     return REAL_IPS[host];
   }
+  log("DEBUG", `No real IP for ${host}, using hostname as-is`);
   return host;
+}
+
+async function primeRealIpCache() {
+  for (const host of INTERCEPTED_HOSTS) {
+    if (host === "127.0.0.1") continue;
+    try {
+      const ip = await dohResolve(host);
+      if (ip) realIps.set(host, ip);
+    } catch {}
+  }
 }
 
 // Configuration -- mode from launch args or gc2xy_MODE env (dynamic via setMode)
@@ -292,7 +365,7 @@ function initCA() {
       const interceptedHosts = ["github.com", "www.github.com", "api.github.com", "api.githubcopilot.com",
         "copilot-proxy.githubusercontent.com", "api.individual.githubcopilot.com",
         "origin-tracker.individual.githubcopilot.com", "proxy.individual.githubcopilot.com",
-        "telemetry.individual.githubcopilot.com"];
+        "telemetry.individual.githubcopilot.com", "dc.services.visualstudio.com"];
       let bindOk = 0;
       for (const h of interceptedHosts) {
         spawnSync("netsh", ["http", "delete", "sslcert", `hostnameport=${h}:443`], { stdio: "ignore", timeout: 3000 });
@@ -583,11 +656,80 @@ addRequestInterceptor(async (req) => {
         }
       }
     } else {
-      // Proxy mode: intercept ALL VS 2022 (17.x) requests when a VS legacy
-      // model is configured. VS 2022 uses an older API flow that real GitHub
-      // doesn't support (GetNewAutoModelAsync → /models/session → 400 text/plain).
+      // Proxy mode: intercept VS 2022 (17.x) requests when a VS legacy model is
+      // configured. VS 2022 uses an older API flow that real GitHub doesn't
+      // support (GetNewAutoModelAsync → /models/session → 400 text/plain).
+      //
+      // Also intercept GitHub Desktop App (github-app/*) and GitHub Copilot
+      // Desktop (undici) Copilot API endpoints. The upstream /copilot_internal
+      // token call can hang, blocking model loading. By intercepting Copilot
+      // API endpoints (token, models, chat) we return fake responses
+      // immediately — models load and chat requests forward to the configured
+      // LLM provider. OAuth, /user, /repos, etc. still pass through to real
+      // GitHub with the real OAuth token.
       const legacyModel = getVsLegacyModel();
-      if (legacyModel && isVSLegacyClient(req.headers)) {
+      const ua = (req.headers["user-agent"] || "").toLowerCase();
+      const isGHCP = ua.startsWith("github-app/");
+      const isDesktop = ua.includes("undici");
+      const isVS = isVSShell(req.headers);
+      const isGhCli = ua.includes("github cli");
+      const copilotApiPath =
+        req.url.startsWith("/copilot_internal/") ||
+        req.url.startsWith("/models") || req.url.startsWith("/v1/models") ||
+        req.url.startsWith("/v1/chat/") || req.url.startsWith("/v1/messages") ||
+        req.url.startsWith("/v1/embeddings") || req.url.startsWith("/v1/tokenize") ||
+        req.url.startsWith("/completions") || req.url.startsWith("/responses") ||
+        req.url.startsWith("/agents/") || req.url.startsWith("/mcp");
+      // GitHub App needs Copilot API paths plus GHCP-specific paths (e.g.
+      // autopilot team membership) that real GitHub returns 404 for.
+      const ghcpSpecificPath = isGHCP && (
+        req.url.startsWith("/orgs/github/teams/autopilot/memberships/") ||
+        req.url.includes("/github/app/discussions") ||
+        req.url.includes("/github/github-app/discussions")
+      );
+      const ghcpCopilotPath = isGHCP && (copilotApiPath || ghcpSpecificPath);
+      // For Copilot Desktop we intercept both Copilot API paths and all auth
+      // endpoints so the dedicated desktop handler can serve fake auth/token
+      // responses while still logging the traffic.
+      const desktopAuthPath = isDesktop && (
+        req.url.startsWith("/login/") ||
+        req.url.startsWith("/user") ||
+        req.url.startsWith("/copilot_internal/") ||
+        copilotApiPath
+      );
+      // VS-family (Visual Studio + VS Team Explorer) auth/copilot endpoints
+      // must be intercepted so enterprise plan responses are returned; real
+      // GitHub rejects tokens that don't have Copilot entitlement.
+      const vsCopilotPath = isVS && (copilotApiPath || req.url.startsWith("/login/") || req.url.startsWith("/user"));
+      // GitHub CLI (gh) subprocess spawned by the GitHub Copilot desktop app.
+      // It uses GH_TOKEN (fake in hybrid/mock) which real GitHub rejects, so
+      // intercept its auth/copilot/model calls and serve fake responses.
+      const ghCliPath = isGhCli && (
+        req.url.startsWith("/user") ||
+        req.url.startsWith("/copilot_internal/") ||
+        req.url.startsWith("/models") || req.url.startsWith("/v1/models") ||
+        req.url.startsWith("/login/") ||
+        copilotApiPath
+      );
+      // VS Code OAuth flow happens in the browser (Chrome UA) — the URL
+      // carries VS Code Copilot signals (client_id=01ab8ac9400c4e429b23,
+      // get_started_with=copilot-vscode, redirect_uri=vscode.dev/redirect).
+      // VS Code's own token exchange POST has UA "Visual Studio Code".
+      // Intercept both so the fake account picker + fake token flow runs
+      // instead of forwarding to real GitHub with real session cookies.
+      const isVscodeClient = ua.includes("visual studio code");
+      const hasVscodeOAuthSignal =
+        req.url.includes("client_id=01ab8ac9400c4e429b23") ||
+        req.url.includes("get_started_with=copilot-vscode") ||
+        req.url.includes("redirect_uri=https%3A%2F%2Fvscode.dev%2Fredirect");
+      const vscodeOAuthPath = (req.url.startsWith("/login/oauth/") || req.url.startsWith("/login/device")) &&
+        (hasVscodeOAuthSignal || isVscodeClient);
+      if ((legacyModel && isVSLegacyClient(req.headers)) || ghcpCopilotPath || desktopAuthPath || vsCopilotPath || ghCliPath || vscodeOAuthPath) {
+        if (desktopAuthPath) console.log(`[PROXY MODE] Intercepting Copilot Desktop request: ${req.method} ${req.url}`);
+        if (ghcpSpecificPath) console.log(`[PROXY MODE] Intercepting GitHub App request: ${req.method} ${req.url}`);
+        if (vsCopilotPath) console.log(`[PROXY MODE] Intercepting VS-family request: ${req.method} ${req.url}`);
+        if (ghCliPath) console.log(`[PROXY MODE] Intercepting gh CLI request: ${req.method} ${req.url}`);
+        if (vscodeOAuthPath) console.log(`[PROXY MODE] Intercepting VS Code OAuth request: ${req.method} ${req.url}`);
         const result = await deviceLogin.handleDeviceLogin(handlerInput);
         if (result.handled && result.response) {
           if (result.response._streamed) {
@@ -752,11 +894,50 @@ async function forwardWithInterceptor(client: TLSSocket | Socket, method: string
 
   const useHttps = finalPort === 443;
   const upstreamHost = await getRealIp(finalHost);
+  let streamingStarted = false;
   const req = (useHttps ? httpsRequest : httpRequest)({
     hostname: upstreamHost, port: finalPort, path: finalUrl, method: finalMethod,
     headers: { ...finalHeaders, host: finalHost },
     rejectUnauthorized: false,
+    agent: (useHttps ? HTTPS_UPSTREAM_AGENT : HTTP_UPSTREAM_AGENT) as any,
   }, async (res) => {
+    const ctVal = (res.headers as Record<string, string>)["content-type"] || "";
+    if (ctVal.includes("text/event-stream")) {
+      streamingStarted = true;
+      const statusCode = res.statusCode || 200;
+      const statusMessage = res.statusMessage || "OK";
+      const sseHeaders = { ...res.headers as Record<string, string> };
+      let respHeader = `HTTP/1.1 ${statusCode} ${statusMessage}\r\n`;
+      respHeader += serializeHeaders(sseHeaders, ["transfer-encoding", "connection", "keep-alive", "content-length"]);
+      respHeader += `Connection: close\r\n\r\n`;
+      client.write(respHeader);
+
+      let sseLen = 0;
+      res.on("data", (chunk: Buffer) => {
+        try {
+          const ok = client.write(chunk);
+          sseLen += chunk.length;
+          if (!ok) res.pause();
+        } catch {}
+      });
+      client.on("drain", () => { try { res.resume(); } catch {} });
+      res.on("end", () => {
+        try { client.end(); } catch {}
+        logPlainEnglish(reqNum, "RESPONSE", finalMethod, finalUrl, finalHost, statusCode, sseHeaders, `(streamed ${sseLen}B)`, agentTag(finalHeaders));
+        if (recorder.isRecording) {
+          recorder.recordEntry(
+            { method: finalMethod, url: finalUrl, headers: finalHeaders, body: finalBody?.toString() ?? null },
+            { statusCode, statusMessage, headers: sseHeaders, body: "(streamed)" },
+          );
+        }
+      });
+      res.on("error", (err: Error) => {
+        log("ERROR", `SSE stream error: ${err.message}`);
+        try { client.end(); } catch {}
+      });
+      return;
+    }
+
     const chunks: Buffer[] = [];
     res.on("data", (chunk: Buffer) => chunks.push(chunk));
     res.on("end", async () => {
@@ -822,12 +1003,19 @@ async function forwardWithInterceptor(client: TLSSocket | Socket, method: string
       if (responseBody.length > 0) client.write(responseBody);
       client.end();
     });
+    res.on("error", (err: Error) => {
+      log("ERROR", `Upstream response error: ${err.message}`);
+      try { client.write("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 11\r\nConnection: close\r\n\r\nBad Gateway\r\n"); } catch {}
+      try { client.end(); } catch {}
+    });
   });
 
   req.on("error", (err: Error) => {
     log("ERROR", `Upstream error: ${err.message}`);
-    client.write("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 11\r\nConnection: close\r\n\r\nBad Gateway\r\n");
-    client.end();
+    if (!streamingStarted) {
+      try { client.write("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 11\r\nConnection: close\r\n\r\nBad Gateway\r\n"); } catch {}
+    }
+    try { client.end(); } catch {}
   });
 
   if (finalBody && finalBody.length > 0) req.write(finalBody);
@@ -1192,6 +1380,9 @@ async function handlePlainHttpRequest(clientSocket: Socket, data: Buffer, port: 
       blocked: false, clientSocket: clientSocket as any,
     };
     await runRequestInterceptors(interceptedReq);
+    if ((interceptedReq as any)._responseSent) {
+      return;
+    }
     if (interceptedReq.response && !(interceptedReq as any)._responseSent) {
       const { statusCode, statusMessage, headers: respHeaders, body: respBody } = interceptedReq.response;
       let resp = `HTTP/1.1 ${statusCode} ${statusMessage || "OK"}\r\n`;
@@ -1375,6 +1566,8 @@ if (INTERCEPT_MODE === "hosts") {
 log("DEBUG", `CA cert: ${CA_CERT_PATH}`);
 log("READY", "Proxy ready — status bar above, live log below");
 startWsPushLoop();
+// Pre-resolve real GitHub IPs via DoH so upstream connections don't use stale fallbacks
+primeRealIpCache().catch(() => {});
 
 // Self-test: verify MITM interception works
 setTimeout(() => {

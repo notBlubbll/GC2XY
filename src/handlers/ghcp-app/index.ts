@@ -4,7 +4,6 @@ import { handleGHCPModels } from "./models.ts";
 import { trackRequest } from "../../usage-tracker.ts";
 
 export function handleGHCPApp(req: HandlerInput): Promise<HandlerResult> {
-  trackRequest("ghcp");
   return _handleGHCPApp(req);
 }
 
@@ -43,14 +42,19 @@ export async function _handleGHCPApp(req: HandlerInput): Promise<HandlerResult> 
   if (feedbackResult.handled) return feedbackResult;
 
   if (!isGHCPApp(req)) return { handled: false };
+  trackRequest("ghcp");
 
   // GHCP-specific model list
   const modelsResult = await handleGHCPModels(req);
-  if (modelsResult.handled) return modelsResult;
+  if (modelsResult.handled) {
+    console.log(`\n[GHCP APP] Models list: ${req.url}`);
+    return modelsResult;
+  }
 
   // Autopilot team membership check — fake user is always a member
   if (req.method === "GET" && req.url.match(/\/orgs\/github\/teams\/autopilot\/memberships\//)) {
     const username = req.url.split("/").pop() || getGithubUsername();
+    console.log(`\n[GHCP APP] Autopilot membership for ${username}`);
     return { handled: true, response: { statusCode: 200, headers: { "content-type": "application/json; charset=utf-8", "access-control-allow-origin": "*" }, body: Buffer.from(JSON.stringify({ url: `https://api.github.com/orgs/github/teams/autopilot/memberships/${username}`, role: "member", state: "active" })) } };
   }
 
